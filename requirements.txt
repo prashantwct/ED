@@ -1,8 +1,7 @@
-streamlit==1.59.2
-pandas==3.0.2
-numpy==2.4.4
-pydeck==0.9.3
-plotly==6.9.0
-scipy==1.17.1
-python-dateutil==2.9.0.post0
-pytest==9.1.1
+streamlit
+pandas
+numpy
+pydeck
+plotly
+scipy
+python-dateutil
