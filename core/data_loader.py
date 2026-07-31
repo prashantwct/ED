@@ -1,100 +1,180 @@
-import numpy as np
+"""CSV ingestion and validation for the Elephant Sighting & Conflict Dashboard.
+
+The goal of this module is to turn an arbitrary, hand-maintained field CSV
+into a clean, typed DataFrame - or fail with a clear, specific message
+about *why* it failed. Nothing in here talks to Streamlit; it is pure
+pandas so it can be unit tested and reused (e.g. from a CLI or notebook).
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import BinaryIO, List, Tuple, Union
+
 import pandas as pd
 
+from core.exceptions import DataValidationError
+
+logger = logging.getLogger(__name__)
+
+# Columns without which the dashboard cannot function at all.
 REQUIRED_COLUMNS = {"Date", "Latitude", "Longitude", "Division", "Range", "Beat"}
 
-# Rough bounding box around the Madhya Pradesh elephant range divisions this
-# app covers. Not a hard reject -- a row outside it is flagged, not dropped,
-# since it may be a real edge-of-range sighting rather than a bad GPS fix.
-MP_LAT_RANGE = (20.5, 26.5)
-MP_LON_RANGE = (78.0, 84.5)
+# Columns that unlock extra features (severity components, night calc,
+# etc.) but are not mandatory. Missing ones simply disable that feature.
+OPTIONAL_NUMERIC_COLUMNS = ["Total Count", "Crop Damage", "House Damage", "Injury"]
 
-NIGHT_START_HOUR = 19  # 7 PM
-NIGHT_END_HOUR = 2     # 2 AM, inclusive
+# Text columns that get normalised (title-cased, trimmed) if present.
+TEXT_COLUMNS = ["Division", "Range", "Beat"]
+
+VALID_LAT_RANGE = (-90.0, 90.0)
+VALID_LON_RANGE = (-180.0, 180.0)
 
 
-def load_and_validate_csv(file):
+def load_and_validate_csv(
+    file: Union[str, BinaryIO],
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Load a sightings/conflict CSV and validate it for dashboard use.
+
+    Args:
+        file: A path, or a file-like object such as the one returned by
+            ``st.file_uploader`` (must support ``.seek``/``.read``).
+
+    Returns:
+        A tuple of ``(dataframe, warnings)``. ``warnings`` is a list of
+        human-readable strings describing non-fatal issues encountered
+        during loading (e.g. rows dropped for bad coordinates). The list
+        is empty when the file was clean.
+
+    Raises:
+        DataValidationError: If the file cannot be parsed as CSV, is
+            empty, or is missing one of ``REQUIRED_COLUMNS``.
     """
-    Loads a Gajrakshak sightings export, validates and types it.
+    warnings: List[str] = []
+    df = _read_csv_with_fallback_encoding(file)
 
-    Returns (df, warnings): warnings is a list of human-readable data
-    quality notices meant for the UI. Rows are only ever dropped when
-    they're unusable (unparseable date, non-numeric coordinates) and
-    every drop is counted in warnings -- nothing disappears silently.
-    """
-    warnings = []
-
-    try:
-        df = pd.read_csv(file)
-    except UnicodeDecodeError:
-        file.seek(0)
-        df = pd.read_csv(file, encoding="ISO-8859-1")
+    if df.empty:
+        raise DataValidationError(
+            "The uploaded file has no rows. Please check the export and try again."
+        )
 
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
-        raise ValueError(f"Missing required columns: {sorted(missing)}")
+        raise DataValidationError(
+            "The CSV is missing required column(s): "
+            f"{', '.join(sorted(missing))}. "
+            f"Required columns are: {', '.join(sorted(REQUIRED_COLUMNS))}."
+        )
 
-    n_start = len(df)
+    df = df.copy()
 
-    # Gajrakshak exports are DD/MM/YYYY. Pinned explicitly -- relying on
-    # pandas' format inference works today only because this file happens
-    # to be unambiguous; a differently-formatted future export could
-    # silently mis-parse the whole column without this.
-    df["Date"] = pd.to_datetime(df["Date"], format="%d/%m/%Y", errors="coerce")
-    bad_dates = int(df["Date"].isna().sum())
+    # --- Date -----------------------------------------------------------
+    original_rows = len(df)
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    bad_dates = df["Date"].isna().sum()
     if bad_dates:
-        warnings.append(f"{bad_dates} row(s) had an unparseable Date and were excluded.")
+        warnings.append(
+            f"Dropped {bad_dates} row(s) with an unreadable or missing 'Date' value."
+        )
     df = df.dropna(subset=["Date"])
 
+    # --- Coordinates ------------------------------------------------------
     for col in ["Latitude", "Longitude"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    bad_coords = int(df[["Latitude", "Longitude"]].isna().any(axis=1).sum())
-    if bad_coords:
-        warnings.append(f"{bad_coords} row(s) had a non-numeric Latitude/Longitude and were excluded from mapping.")
-    df = df.dropna(subset=["Latitude", "Longitude"])
 
-    out_of_bounds = ~(
-        df["Latitude"].between(*MP_LAT_RANGE) & df["Longitude"].between(*MP_LON_RANGE)
-    )
-    n_oob = int(out_of_bounds.sum())
-    if n_oob:
+    coord_na = df["Latitude"].isna() | df["Longitude"].isna()
+    if coord_na.any():
         warnings.append(
-            f"{n_oob} row(s) have coordinates outside the expected range for these divisions "
-            f"(lat {MP_LAT_RANGE[0]}-{MP_LAT_RANGE[1]}, lon {MP_LON_RANGE[0]}-{MP_LON_RANGE[1]}) -- "
-            "flagged on the map rather than dropped, worth a field check."
+            f"Dropped {int(coord_na.sum())} row(s) with missing or non-numeric coordinates."
         )
-    df["Coordinate Flagged"] = out_of_bounds.values
+    df = df[~coord_na]
 
-    for col in ["Division", "Range", "Beat"]:
-        df[col] = df[col].astype(str).str.strip().str.title().fillna("Unknown")
+    lat_ok = df["Latitude"].between(*VALID_LAT_RANGE)
+    lon_ok = df["Longitude"].between(*VALID_LON_RANGE)
+    coord_out_of_range = ~(lat_ok & lon_ok)
+    if coord_out_of_range.any():
+        warnings.append(
+            f"Dropped {int(coord_out_of_range.sum())} row(s) with coordinates "
+            "outside valid latitude/longitude ranges."
+        )
+    df = df[~coord_out_of_range]
 
-    if "Time" in df.columns:
-        parsed_time = pd.to_datetime(df["Time"], format="%H:%M:%S", errors="coerce")
-        df["Hour"] = parsed_time.dt.hour
-        df["Is_Night"] = (
-            (df["Hour"] >= NIGHT_START_HOUR) | (df["Hour"] <= NIGHT_END_HOUR)
-        ).fillna(False)
-    else:
-        df["Hour"] = np.nan
-        df["Is_Night"] = False
-        warnings.append("No Time column found -- night-window analysis will be unavailable.")
+    if df.empty:
+        raise DataValidationError(
+            "No rows remained after removing invalid dates and coordinates. "
+            "Please check the source data."
+        )
 
-    death_count_cols = [c for c in ["Male Death Count", "Female Death Count", "Children Death Count"] if c in df.columns]
-    if death_count_cols and "Death" in df.columns:
-        death_flag = pd.to_numeric(df["Death"], errors="coerce").fillna(0)
-        count_sum = df[death_count_cols].sum(axis=1, min_count=1).fillna(0)
-        mismatched = df.loc[(count_sum > 0) & (death_flag <= 0), "ID"] if "ID" in df.columns else pd.Series(dtype=object)
-        if len(mismatched):
-            ids = ", ".join(str(i) for i in mismatched.tolist())
-            warnings.append(
-                f"{len(mismatched)} row(s) have a death count filled in but the Death flag not set "
-                f"(ID {ids}) -- treated as NOT a counted fatality here since these matched same-day, "
-                "same-beat reports of a death already logged elsewhere in this export. Worth confirming "
-                "with the field reporter that these are duplicates and not separate incidents."
+    # --- Text / categorical columns ---------------------------------------
+    for col in TEXT_COLUMNS:
+        df[col] = (
+            df[col]
+            .astype(str)
+            .str.strip()
+            .str.title()
+            .replace({"": "Unknown", "Nan": "Unknown"})
+        )
+
+    # --- Optional numeric flag columns -------------------------------------
+    for col in OPTIONAL_NUMERIC_COLUMNS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # --- Hour / Time, used later to derive Is_Night ------------------------
+    if "Hour" in df.columns:
+        df["Hour"] = pd.to_numeric(df["Hour"], errors="coerce")
+    elif "Time" in df.columns:
+        # Try the common "HH:MM" field format first (fast, no warnings);
+        # fall back to flexible parsing for any values it couldn't handle.
+        parsed_time = pd.to_datetime(df["Time"], format="%H:%M", errors="coerce")
+        still_missing = parsed_time.isna() & df["Time"].notna()
+        if still_missing.any():
+            parsed_time.loc[still_missing] = pd.to_datetime(
+                df.loc[still_missing, "Time"], errors="coerce"
             )
+        df["Hour"] = parsed_time.dt.hour
+        if parsed_time.isna().any() and df["Time"].notna().any():
+            unparsed = int(parsed_time.isna().sum() - df["Time"].isna().sum())
+            if unparsed > 0:
+                warnings.append(
+                    f"Could not parse a time value for {unparsed} row(s); "
+                    "night/day classification will be unknown for those rows."
+                )
+    else:
+        warnings.append(
+            "No 'Hour' or 'Time' column found - night vs. day analysis will be unavailable."
+        )
 
-    n_end = len(df)
-    if n_end < n_start:
-        warnings.append(f"{n_start - n_end} of {n_start} total row(s) excluded; {n_end} remain for analysis.")
+    df = df.reset_index(drop=True)
+    logger.info(
+        "Loaded %d valid rows (from %d original) with %d warning(s).",
+        len(df),
+        original_rows,
+        len(warnings),
+    )
+    return df, warnings
 
-    return df.reset_index(drop=True), warnings
+
+def _read_csv_with_fallback_encoding(file: Union[str, BinaryIO]) -> pd.DataFrame:
+    """Read a CSV, retrying with a Latin-1 fallback for legacy field exports."""
+    try:
+        return pd.read_csv(file)
+    except UnicodeDecodeError:
+        if hasattr(file, "seek"):
+            file.seek(0)
+        try:
+            return pd.read_csv(file, encoding="ISO-8859-1")
+        except Exception as exc:  # noqa: BLE001 - surfaced as a clean error
+            raise DataValidationError(
+                "Could not read the file as CSV, even with a fallback encoding. "
+                "Please confirm it is a valid, comma-separated CSV export."
+            ) from exc
+    except pd.errors.EmptyDataError as exc:
+        raise DataValidationError("The uploaded file is empty.") from exc
+    except pd.errors.ParserError as exc:
+        raise DataValidationError(
+            "The file could not be parsed as CSV. Please confirm the export "
+            "format and that it uses standard comma delimiters."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - last-resort, user-facing message
+        raise DataValidationError(f"Could not read the uploaded file: {exc}") from exc
