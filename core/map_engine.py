@@ -10,26 +10,28 @@ import pydeck as pdk
 import streamlit as st
 
 from core.analytics import CONFLICT_CATEGORIES, classify_conflict
+from core.ui import CATEGORY_STYLE, category_legend
+
+
+def _hex_to_rgb(value: str) -> Tuple[int, int, int]:
+    value = value.lstrip("#")
+    return tuple(int(value[i : i + 2], 16) for i in (0, 2, 4))
+
 
 # Colour by *what happened*, not by a normalised severity ramp. With a
 # fatality weighted at 100 and a crop raid at 3, a continuous ramp
 # anchored on the maximum renders every non-fatal incident the same shade
-# of green -- which is precisely the distinction a manager needs to see.
+# -- precisely the distinction a manager needs to see.
+#
+# Palette comes from core.ui so the map, the legend and the report cannot
+# drift apart, and it is the colourblind-safe sequence rather than a
+# red-to-green ramp. Size carries the same signal in parallel, so the
+# categories stay separable without colour at all.
 CATEGORY_COLORS: Dict[str, Tuple[int, int, int]] = {
-    "Death": (140, 20, 30),
-    "Injury": (214, 39, 40),
-    "House": (232, 126, 20),
-    "Crop": (240, 200, 30),
-    "Presence": (46, 168, 82),
+    key: _hex_to_rgb(style["color"]) for key, style in CATEGORY_STYLE.items()
 }
 
-CATEGORY_LABELS = {
-    "Death": "Human fatality",
-    "Injury": "Human injury",
-    "House": "House / store damage",
-    "Crop": "Crop or grain loss",
-    "Presence": "Presence only",
-}
+CATEGORY_LABELS = {key: style["label"] for key, style in CATEGORY_STYLE.items()}
 
 # Radii are given in metres, but Deck.GL is told to clamp them to a pixel
 # range. This landscape spans roughly 150 km, which the adaptive view
@@ -130,30 +132,11 @@ def render_map(df: pd.DataFrame) -> None:
     )
 
     st.pydeck_chart(deck, width="stretch")
-    _render_legend(plot_df)
-
-
-def _render_legend(plot_df: pd.DataFrame) -> None:
-    """Draw a category legend with the count of each category plotted."""
-    counts = plot_df["_category"].value_counts()
-    chips: List[str] = []
-    for category in CONFLICT_CATEGORIES:
-        count = int(counts.get(category, 0))
-        if not count:
-            continue
-        r, g, b = CATEGORY_COLORS[category]
-        chips.append(
-            f"<span style='display:inline-block;margin-right:14px;white-space:nowrap;'>"
-            f"<span style='display:inline-block;width:11px;height:11px;border-radius:50%;"
-            f"background:rgb({r},{g},{b});margin-right:5px;"
-            f"vertical-align:middle;border:1px solid #555;'></span>"
-            f"{CATEGORY_LABELS[category]} ({count:,})</span>"
-        )
-    if chips:
-        st.markdown(
-            f"<div style='font-size:13px;margin-top:6px;'>{''.join(chips)}</div>",
-            unsafe_allow_html=True,
-        )
+    category_legend(plot_df["_category"].value_counts().to_dict())
+    st.caption(
+        "Casualty incidents are drawn at full size regardless of severity "
+        "arithmetic, so the most serious points stay findable at landscape zoom."
+    )
 
 
 def _severity_to_radius(df: pd.DataFrame) -> pd.Series:

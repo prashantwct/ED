@@ -37,14 +37,36 @@ out why. Only the second is news.
 conflict events, reported with how concentrated it actually is. Seasonality is
 reported the same way, and stays silent when there isn't any.
 
-**Village exposure.** With centroids loaded, villages ranked by the conflict
-recorded around them — casualties first.
+**Movement hotspots.** Density clusters found in the point data itself, not in
+the administrative grid. A herd working a corridor along a beat boundary shows
+up as moderate pressure in two beats but as the one hotspot it actually is
+here. Each hotspot reports its centre, footprint, conflict share, casualties
+and night share.
+
+**Villages at risk.** Every conflict incident within a chosen radius of each
+village, so a settlement sitting between two hotspots is credited with both —
+nearest-village attribution hides exactly that case. Requires village
+centroids; see the note below.
 
 **A brief.** One structured object renders both the in-app panel and the
 downloadable HTML, so the numbers on screen and the numbers in the document
 forwarded upwards cannot drift apart.
 
-### Three design rules
+### Village data is required to name villages
+
+The sighting export has no village field. Beat, Range and Division are the only
+place names in it, and the free-text description is inconsistent — in a real
+1,761-row export only 5 rows used "निवासी" and 29 used "ग्राम", and those lines
+carry victim names. Scraping villages out of it would be both unreliable and a
+privacy problem, so the app does not.
+
+Village ranking therefore needs a centroids CSV with `Village, Latitude,
+Longitude`. The Census village directory, a state forest department village
+layer, or OpenStreetMap place nodes all work. Without it, hotspots are still
+located, sized and tiered — they just cannot be named, and the app says so
+instead of returning an empty table with no explanation.
+
+### Design rules
 
 **Tier decides, score only orders.** Tiers come from fixed, written-down rules,
 so "Critical" means the same thing in April as in October and in one division as
@@ -52,6 +74,20 @@ in the next. The continuous priority score orders beats *within* a tier and
 nothing more. Scores normalised against whatever is currently on screen move
 when a filter changes — a number like "67.3" is not a fact about the beat, and a
 posting decision must not hang on it.
+
+**Critical means recent.** A beat reaches Critical only if someone was killed or
+injured there in the last 90 days of the period under review. A fatality two
+years ago is history and should not hold a beat at the top of the list forever;
+it still puts the beat in High, because somewhere that has killed someone is not
+a routine beat either. Both the recent and the whole-period casualty counts are
+shown, so the tier is always accountable to figures on screen.
+
+The window is anchored to the end of the review period, not to each beat's own
+last report. Otherwise selecting a beat that stopped reporting six months ago
+would measure its window from its own final entry and flip an old fatality back
+to Critical purely because it was selected. It is also a fixed constant rather
+than the adjustable escalation window — a tier that moves when you drag a slider
+is not a tier.
 
 **Raw rates from thin data are not evidence.** One conflict in one report is a
 100% conflict rate. Beat rates are shrunk toward the landscape rate using an
@@ -109,18 +145,44 @@ import on four functions that no longer existed — so nothing caught it.
   looked reset. Selections are now pruned before the dependent widget renders.
 - `use_container_width` (deprecated, removal date passed) replaced with `width=`.
 
+- **A single blank Beat took the whole app down.** On the Arrow-backed string
+  dtype pandas now uses, `astype(str)` leaves a missing value as NaN rather than
+  the string `"nan"`, so the null survived normalisation into `Beat`. The
+  sidebar builds its filter options with `sorted(df["Beat"].unique())`, which
+  then raised `'<' not supported between 'float' and 'str'`. Found by running
+  the app against a real export, not by reading the code. Blanks now become
+  "Unknown" and are reported.
+- **`HH:MM:SS` times fell back to per-element dateutil parsing**, emitting a
+  "could not infer format" warning on a file that was in fact perfectly
+  consistent. Both field formats are now tried directly.
+
 ### Added
 
 - `core/intelligence.py` — the layer described above.
+- `core/hotspots.py` — DBSCAN clustering of movement (via scipy's KD-tree, no
+  new dependency) plus village risk ranking. Parameters were tuned against a
+  real 1,761-row export rather than picked for roundness: DBSCAN chains, and at
+  a 2.5 km neighbour distance 94% of points collapsed into 7 "hotspots", the
+  largest with a 17.7 km radius — a region, not a patrol target. At 1.0 km the
+  radii settle at 1–3 km. Anything over 5 km is flagged in the output as
+  probable chaining.
+- `core/ui.py` — design tokens, inline SVG icons and shared components. Tier is
+  never signalled by colour alone: every badge carries a shape, a glyph and a
+  word, so the ranking survives a black-and-white photocopy and readers with a
+  colour vision deficiency. Map categories use the Okabe-Ito colourblind-safe
+  sequence rather than a red-to-green ramp, with size carrying the same signal
+  in parallel. Data columns use tabular figures. Both light and dark themes are
+  defined.
 - Data-quality warnings surfaced in-app, including the death-count/death-flag
   mismatch, named with row IDs. Those rows are excluded from the death count on
   the basis that they have matched same-day, same-beat follow-up reports of a
   death already logged elsewhere — a judgement call about someone's death, so it
   is stated rather than resolved silently.
 - Monthly trend, hourly conflict profile, and conflict-rate-by-division.
-- 71 tests across five files, covering the regressions above and the properties
+- 103 tests across six files, covering the regressions above and the properties
   that make the ranking usable: shrinkage, tier stability under filtering,
-  escalation, midnight-wrapping windows, and the flat-data cases.
+  casualty recency, escalation, cluster compactness, kilometre-accurate radii,
+  midnight-wrapping windows, and the flat-data cases.
 
 ### Known limits
 
@@ -143,3 +205,10 @@ import on four functions that no longer existed — so nothing caught it.
   working, and is a candidate for deletion.
 - `centroids.csv` still does not exist; `centroids.sample.csv` shows the format.
   Enrichment no-ops without it and the app says so.
+- **Hotspot clustering is unweighted.** Every sighting counts the same toward
+  cluster density, so a hotspot marks where reporting concentrates, which is not
+  identical to where elephants concentrate. The conflict share and casualty
+  columns are what separate a busy patrol route from a dangerous place.
+- **`Movement Direction` is not used.** The field exists but its values are
+  inconsistently cased (`northWest`, `north_east`, `northEast`) and it is blank
+  on most rows, so corridor direction is not yet derived from it.

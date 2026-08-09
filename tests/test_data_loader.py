@@ -115,6 +115,34 @@ def test_out_of_range_hour_becomes_unknown():
     assert any("0-23" in w for w in warnings)
 
 
+def test_blank_beat_becomes_unknown_and_stays_sortable():
+    """A single blank Beat used to take the whole app down.
+
+    On the Arrow-backed string dtype, astype(str) leaves a missing value
+    as NaN rather than "nan", so the null survived into Beat. The sidebar
+    builds its filter options with sorted(df["Beat"].unique()), which
+    then raises comparing float to str.
+    """
+    csv = io.StringIO(
+        HEADER + "03/04/2026,22.3,80.6,Div,Rng,\n04/04/2026,22.3,80.6,Div,Rng,Bhola\n"
+    )
+    df, warnings = load_and_validate_csv(csv)
+
+    assert df["Beat"].isna().sum() == 0
+    assert "Unknown" in set(df["Beat"])
+    sorted(df["Beat"].unique())  # must not raise
+    assert any("no 'Beat' value" in w for w in warnings)
+
+
+def test_blank_rows_are_not_dropped_silently():
+    """Grouping them under Unknown keeps them in the totals."""
+    csv = io.StringIO(
+        HEADER + "03/04/2026,22.3,80.6,,Rng,Beat\n04/04/2026,22.3,80.6,Div,Rng,Beat\n"
+    )
+    df, _ = load_and_validate_csv(csv)
+    assert len(df) == 2
+
+
 def test_empty_file_raises():
     with pytest.raises(DataValidationError):
         load_and_validate_csv(io.StringIO(HEADER))

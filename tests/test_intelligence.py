@@ -40,6 +40,11 @@ def _rows(beat, n, conflict_n=0, deaths=0, injuries=0, hour=12, day_step=1,
     out = []
     for i in range(n):
         is_conflict = i < conflict_n
+        # Casualties go on the most recent days, so a fixture that asks
+        # for a death gets one inside the Critical window by default.
+        # Tests about historical fatalities place them explicitly.
+        is_death = deaths and i >= n - deaths
+        is_injury = injuries and i >= n - injuries
         out.append({
             "Date": start + pd.Timedelta(days=i * day_step),
             "Division": division, "Range": range_name, "Beat": beat,
@@ -48,9 +53,9 @@ def _rows(beat, n, conflict_n=0, deaths=0, injuries=0, hour=12, day_step=1,
             "Crop Damage": int(is_conflict and not house),
             "Grain Damage": 0,
             "House Damage": int(is_conflict and house),
-            "Injury": 1 if (injuries and i < injuries) else 0,
-            "Death": 1 if (deaths and i < deaths) else 0,
-            "Male Death Count": 1 if (deaths and i < deaths) else 0,
+            "Injury": int(bool(is_injury)),
+            "Death": int(bool(is_death)),
+            "Male Death Count": int(bool(is_death)),
             "Female Death Count": 0, "Children Death Count": 0,
         })
     return out
@@ -99,9 +104,12 @@ def test_prior_strength_is_higher_when_beats_look_alike():
 def test_a_fatality_beat_outranks_a_high_volume_crop_damage_beat():
     """The whole point of the ranking: no amount of crop damage should
     displace the beat where someone was killed."""
+    # Fatal's 20 days are aligned to end with CropHeavy's 200, so its
+    # fatality falls inside the Critical window.
     df = _prepare(
         _rows("CropHeavy", 200, conflict_n=150)
-        + _rows("Fatal", 20, conflict_n=5, deaths=1, division="D2", range_name="R2")
+        + _rows("Fatal", 20, conflict_n=5, deaths=1, division="D2", range_name="R2",
+                start=START + pd.Timedelta(days=180))
     )
     table = beat_intelligence(df)
     assert table.iloc[0]["Beat"] == "Fatal"
@@ -117,19 +125,147 @@ def test_quiet_beat_is_routine():
 
 def test_tier_is_stable_when_other_beats_are_filtered_out():
     """A tier must describe the beat, not its rank on the current screen.
-    Filtering away unrelated beats must not change the survivor's tier."""
-    full = _prepare(
-        _rows("Fatal", 20, conflict_n=5, deaths=1)
-        + _rows("Other", 200, conflict_n=150, division="D2", range_name="R2")
-    )
-    tier_together = (
-        beat_intelligence(full).set_index("Beat").loc["Fatal", "Priority Tier"]
-    )
+    Filtering away unrelated beats must not change the survivor's tier.
 
-    alone = _prepare(_rows("Fatal", 20, conflict_n=5, deaths=1))
-    tier_alone = beat_intelligence(alone).set_index("Beat").loc["Fatal", "Priority Tier"]
+    The period end is passed explicitly, exactly as the app does, so the
+    casualty window is anchored to the review period rather than to
+    whichever rows survived the filter."""
+    fatal_rows = _rows(
+        "Fatal", 20, conflict_n=5, deaths=1, start=START + pd.Timedelta(days=180)
+    )
+    full = _prepare(
+        fatal_rows + _rows("Other", 200, conflict_n=150, division="D2", range_name="R2")
+    )
+    period_end = full["Date"].max()
+
+    tier_together = (
+        beat_intelligence(full, as_of=period_end)
+        .set_index("Beat")
+        .loc["Fatal", "Priority Tier"]
+    )
+    tier_alone = (
+        beat_intelligence(_prepare(fatal_rows), as_of=period_end)
+        .set_index("Beat")
+        .loc["Fatal", "Priority Tier"]
+    )
 
     assert tier_together == tier_alone == TIER_CRITICAL
+
+
+def test_selecting_a_stale_beat_does_not_resurrect_an_old_fatality():
+    """Anchored to the beat's own last report, a beat that stopped
+    reporting months ago would have its old fatality counted as recent
+    and flip to Critical just by being selected."""
+    stale = _with_death_on_day("Stale", 60, death_day=5)
+    active = _with_death_on_day(
+        "Active", 400, death_day=None, division="D2", range_name="R2"
+    )
+    period_end = _prepare(stale + active)["Date"].max()
+
+    tier = (
+        beat_intelligence(_prepare(stale), as_of=period_end)
+        .set_index("Beat")
+        .loc["Stale", "Priority Tier"]
+    )
+    assert tier == "High"
+
+
+def _with_death_on_day(beat, n_days, death_day, division="D1", range_name="R1"):
+    """One report per day for ``n_days``, with a fatality on ``death_day``."""
+    rows = []
+    for i in range(n_days):
+        rows.append({
+            "Date": START + pd.Timedelta(days=i),
+            "Division": division, "Range": range_name, "Beat": beat,
+            "Latitude": 22.3, "Longitude": 80.6, "Hour": 20, "Total Count": 1,
+            "Crop Damage": int(i % 3 == 0), "Grain Damage": 0, "House Damage": 0,
+            "Injury": 0,
+            "Death": int(i == death_day),
+            "Male Death Count": int(i == death_day),
+            "Female Death Count": 0, "Children Death Count": 0,
+        })
+    return rows
+
+
+def test_only_a_recent_fatality_reaches_critical():
+    """A fatality 390 days ago is history. Critical is the deploy-now
+    tier, so it keys off the recent window, not the whole period."""
+    df = _prepare(
+        _with_death_on_day("Fresh", 400, death_day=395)
+        + _with_death_on_day("Old", 400, death_day=10, division="D2", range_name="R2")
+    )
+    table = beat_intelligence(df, critical_window_days=90).set_index("Beat")
+
+    assert table.loc["Fresh", "Priority Tier"] == TIER_CRITICAL
+    assert table.loc["Old", "Priority Tier"] == "High"
+
+
+def test_an_old_fatality_still_keeps_a_beat_above_routine():
+    """Dropping a beat that has killed someone all the way to Routine
+    would be a worse error than holding it too high."""
+    df = _prepare(
+        _with_death_on_day("Old", 400, death_day=10)
+        + _with_death_on_day("Clean", 400, death_day=None, division="D2", range_name="R2")
+    )
+    table = beat_intelligence(df, critical_window_days=90).set_index("Beat")
+
+    assert table.loc["Old", "Priority Tier"] == "High"
+    assert table.loc["Clean", "Priority Tier"] == TIER_ROUTINE
+
+
+def test_recent_and_period_death_counts_are_both_reported():
+    """The tier is unexplainable if the reader cannot see both."""
+    df = _prepare(_with_death_on_day("Old", 400, death_day=10))
+    row = beat_intelligence(df, critical_window_days=90).iloc[0]
+
+    assert row["Human Deaths"] == 1
+    assert row["Recent Deaths"] == 0
+
+
+def test_a_fresh_fatality_outranks_an_old_one_within_the_same_tier():
+    df = _prepare(
+        _with_death_on_day("Old", 400, death_day=10)
+        + _with_death_on_day("Older", 400, death_day=5, division="D2", range_name="R2")
+        + _with_death_on_day("Fresh", 400, death_day=395, division="D3", range_name="R3")
+    )
+    table = beat_intelligence(df, critical_window_days=90)
+    assert table.iloc[0]["Beat"] == "Fresh"
+
+
+def test_short_period_treats_every_fatality_as_recent():
+    """When the filtered period is shorter than the window, everything in
+    it is by definition recent."""
+    df = _prepare(_with_death_on_day("Short", 20, death_day=2))
+    table = beat_intelligence(df, critical_window_days=90).set_index("Beat")
+    assert table.loc["Short", "Priority Tier"] == TIER_CRITICAL
+
+
+def test_missing_dates_fail_toward_critical_rather_than_away():
+    """With no usable dates the window cannot be established. For a
+    casualty rule, over-escalating is recoverable and missing a fatality
+    is not."""
+    df = _prepare(_with_death_on_day("NoDates", 40, death_day=5))
+    df["Date"] = pd.NaT
+    table = beat_intelligence(df, critical_window_days=90).set_index("Beat")
+    assert table.loc["NoDates", "Priority Tier"] == TIER_CRITICAL
+
+
+def test_critical_window_is_independent_of_the_escalation_slider():
+    """Moving the escalation window must not silently redefine what
+    Critical means."""
+    df = _prepare(_with_death_on_day("Old", 400, death_day=10))
+    tiers = {
+        beat_intelligence(df, recent_days=days, critical_window_days=90)
+        .iloc[0]["Priority Tier"]
+        for days in (30, 90, 180)
+    }
+    assert tiers == {"High"}
+
+
+def test_brief_states_the_critical_window():
+    df = _prepare(_with_death_on_day("Old", 400, death_day=10))
+    brief = management_brief(df, critical_window_days=90)
+    assert any("90 days" in c for c in brief["caveats"])
 
 
 def test_a_landscape_with_no_conflict_is_all_routine():

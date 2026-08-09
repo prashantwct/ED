@@ -80,6 +80,19 @@ CONFIDENCE_THRESHOLDS = {CONFIDENCE_HIGH: 30, CONFIDENCE_MEDIUM: 10}
 
 # Comparison window for escalation detection, in days.
 DEFAULT_RECENT_DAYS = 90
+
+# How recent a casualty must be to put a beat in the Critical tier.
+#
+# Deliberately a fixed constant rather than the user-adjustable
+# escalation window. Critical is meant to mean the same thing in April as
+# in October; if it tracked a slider, dragging that slider would silently
+# redefine the tier and the whole "tier decides, score orders" guarantee
+# would go with it.
+#
+# Anchored to the latest date in the data, not to today, so that
+# reviewing a past period still surfaces the beats that were Critical
+# *then* instead of returning nothing.
+CRITICAL_CASUALTY_WINDOW_DAYS = 90
 # Below this the two comparison windows are too short to say anything.
 MIN_WINDOW_DAYS = 14
 # Combined conflict events across both windows needed to call a trend.
@@ -115,6 +128,11 @@ SCORE_WEIGHTS = {
 # other beats happen to be in view.
 CASUALTY_POINTS_PER_DEATH = 60.0
 CASUALTY_POINTS_PER_INJURY = 25.0
+
+# Weight applied to casualties older than the Critical window when
+# ordering beats. They still count -- a beat with a history of killing
+# people is not equivalent to one without -- but less than a fresh one.
+HISTORICAL_CASUALTY_DISCOUNT = 0.5
 
 # Default empirical-Bayes prior strength when it cannot be fitted.
 FALLBACK_PRIOR_STRENGTH = 10.0
@@ -224,6 +242,8 @@ def _fit_prior_strength(x: np.ndarray, n: np.ndarray, prior_mean: float) -> floa
 def beat_intelligence(
     df: pd.DataFrame,
     recent_days: int = DEFAULT_RECENT_DAYS,
+    critical_window_days: int = CRITICAL_CASUALTY_WINDOW_DAYS,
+    as_of: Optional[pd.Timestamp] = None,
 ) -> pd.DataFrame:
     """Build the per-beat priority table that drives deployment decisions.
 
@@ -233,6 +253,14 @@ def beat_intelligence(
             casualty columns, and ``Severity Score`` when present.
         recent_days: Length of the recent window used for escalation
             detection. The window immediately before it is the baseline.
+        critical_window_days: How recent a casualty must be to put a beat
+            in the Critical tier. See
+            :data:`CRITICAL_CASUALTY_WINDOW_DAYS`.
+        as_of: End of the review period, which the Critical window is
+            measured back from. Pass the period end (not the filtered
+            frame's own maximum) so that narrowing to a beat or division
+            cannot move the goalposts and change a tier. Defaults to the
+            latest date in ``df``.
 
     Returns:
         One row per beat, sorted by tier then priority score, with the
@@ -241,11 +269,17 @@ def beat_intelligence(
 
         ``Beat``, ``Division``, ``Range``, ``Reports``,
         ``Conflict Events``, ``Conflict Rate %``, ``Adj. Conflict Rate %``,
-        ``Human Deaths``, ``People Injured``, ``House Damage Events``,
+        ``Human Deaths``, ``People Injured``, ``Recent Deaths``,
+        ``Recent Injuries``, ``House Damage Events``,
         ``Crop Damage Events``, ``Damage Burden``, ``Night Conflict %``,
         ``Near Village %``, ``Trend``, ``Recent vs Prior``,
         ``Priority Score``, ``Priority Tier``, ``Confidence``,
         ``Recommended Action``.
+
+        ``Human Deaths`` counts the whole filtered period; ``Recent
+        Deaths`` counts only the Critical window. Both are shown because
+        a tier the reader cannot account for is a tier they will not
+        trust.
 
         Empty input yields an empty frame with those columns.
     """
@@ -274,6 +308,12 @@ def beat_intelligence(
             "Damage Burden": ("_property", "sum"),
         },
     ).reset_index()
+
+    recent_deaths, recent_injuries = _window_casualties(
+        working, key_cols, critical_window_days, as_of=as_of
+    )
+    table["Recent Deaths"] = recent_deaths
+    table["Recent Injuries"] = recent_injuries
 
     table["Conflict Events"] = table["Conflict Events"].astype(int)
     table["House Damage Events"] = (
@@ -347,6 +387,8 @@ def _beat_columns() -> List[str]:
         "Adj. Conflict Rate %",
         "Human Deaths",
         "People Injured",
+        "Recent Deaths",
+        "Recent Injuries",
         "House Damage Events",
         "Crop Damage Events",
         "Damage Burden",
@@ -389,6 +431,52 @@ def _share_by_group(
     )
     all_groups = df.groupby(key_cols, observed=True, dropna=False).size().index
     return shares.reindex(all_groups).to_numpy(dtype=float)
+
+
+def _window_casualties(
+    df: pd.DataFrame,
+    key_cols: List[str],
+    window_days: int,
+    as_of: Optional[pd.Timestamp] = None,
+) -> tuple:
+    """People killed and injured per beat within the last ``window_days``.
+
+    The window ends at ``as_of`` -- the end of the review period -- not
+    at today and not at each beat's own last report. Callers should pass
+    the period end explicitly.
+
+    Why it must not default to the filtered frame's own maximum in real
+    use: a beat whose reporting stopped six months ago would then have
+    its window measured from *its* last report, so selecting that beat in
+    the sidebar would make its old fatality "recent" and flip it to
+    Critical. Recency has to be a property of the period under review,
+    not of which rows the user happens to have selected.
+
+    When no usable dates exist the window cannot be established and this
+    counts the whole period. That direction is deliberate: for a casualty
+    rule, over-escalating a beat is recoverable and missing a fatality is
+    not.
+
+    Returns:
+        ``(deaths, injuries)`` as numpy arrays aligned to the beat
+        grouping order used by :func:`beat_intelligence`.
+    """
+    index = df.groupby(key_cols, observed=True, dropna=False).size().index
+
+    if "Date" not in df.columns or df["Date"].isna().all():
+        recent = df
+    else:
+        anchor = pd.Timestamp(as_of) if as_of is not None else df["Date"].max()
+        cutoff = anchor - pd.Timedelta(days=window_days)
+        recent = df[df["Date"] > cutoff]
+
+    def _summed(column: str) -> np.ndarray:
+        if recent.empty:
+            return np.zeros(len(index), dtype=float)
+        totals = recent.groupby(key_cols, observed=True, dropna=False)[column].sum()
+        return totals.reindex(index, fill_value=0.0).to_numpy(dtype=float)
+
+    return _summed("_deaths"), _summed("_injuries")
 
 
 def _beat_trends(
@@ -481,9 +569,18 @@ def _priority_score(table: pd.DataFrame) -> pd.Series:
     are relative to the beats currently in view, so the number moves when
     the user changes a filter. The tier does not.
     """
+    # Casualties inside the Critical window score at full weight, older
+    # ones at half. Without the split, a beat whose fatalities are all
+    # historical would order above one with a fresh death, which is the
+    # opposite of what the tier change is for.
+    older_deaths = (table["Human Deaths"] - table["Recent Deaths"]).clip(lower=0)
+    older_injuries = (table["People Injured"] - table["Recent Injuries"]).clip(lower=0)
+
     casualty = (
-        table["Human Deaths"] * CASUALTY_POINTS_PER_DEATH
-        + table["People Injured"] * CASUALTY_POINTS_PER_INJURY
+        table["Recent Deaths"] * CASUALTY_POINTS_PER_DEATH
+        + table["Recent Injuries"] * CASUALTY_POINTS_PER_INJURY
+        + older_deaths * CASUALTY_POINTS_PER_DEATH * HISTORICAL_CASUALTY_DISCOUNT
+        + older_injuries * CASUALTY_POINTS_PER_INJURY * HISTORICAL_CASUALTY_DISCOUNT
     ).clip(upper=100.0)
 
     burden = _percentile_rank(table["Damage Burden"])
@@ -519,7 +616,16 @@ def _priority_tier(table: pd.DataFrame, landscape_rate: float) -> pd.Series:
     so that they mean the same thing across divisions, across reporting
     periods, and regardless of what the user has filtered to. "Critical"
     should describe the beat, not the beat's rank on today's screen.
+
+    Critical is the "deploy now" tier, so every one of its triggers is
+    measured over the recent casualty window rather than the whole
+    filtered period. A fatality two years ago is history and should not
+    hold a beat at the top of the list indefinitely; it still elevates
+    the beat to High, because a place that has killed someone before is
+    not a routine beat either.
     """
+    recent_deaths = table["Recent Deaths"]
+    recent_injuries = table["Recent Injuries"]
     deaths = table["Human Deaths"]
     injuries = table["People Injured"]
     events = table["Conflict Events"]
@@ -535,12 +641,13 @@ def _priority_tier(table: pd.DataFrame, landscape_rate: float) -> pd.Series:
     rate_elevated = (rate >= rate_threshold) & (rate > 0) & (landscape_rate > 0)
 
     critical = (
-        (deaths > 0)
-        | ((injuries > 0) & escalating)
-        | (injuries >= INJURIES_FOR_CRITICAL)
+        (recent_deaths > 0)
+        | ((recent_injuries > 0) & escalating)
+        | (recent_injuries >= INJURIES_FOR_CRITICAL)
     )
     high = (
-        (injuries > 0)
+        (deaths > 0)  # a fatality anywhere in the period, however old
+        | (injuries > 0)
         | (rate_elevated & confident)
         | (table["House Damage Events"] >= HOUSE_EVENTS_FOR_HIGH)
         | (escalating & (events >= EVENTS_FOR_ESCALATION_HIGH))
@@ -574,12 +681,22 @@ def _recommended_actions(table: pd.DataFrame, max_actions: int = 3) -> pd.Series
         # Fatality and injury responses overlap heavily, so they are
         # mutually exclusive here -- stacking both would spend the whole
         # action budget restating "send the response team".
-        if row["Human Deaths"] > 0:
+        #
+        # A fatality inside the Critical window calls for deployment; one
+        # outside it calls for a look at whether the mitigation put in
+        # place at the time actually held.
+        if row["Recent Deaths"] > 0:
             items.append(
                 "Post rapid-response team; process ex-gratia; issue community alert"
             )
-        elif row["People Injured"] > 0:
+        elif row["Recent Injuries"] > 0:
             items.append("Rapid-response team on call; check early-warning coverage")
+        elif row["Human Deaths"] > 0:
+            items.append(
+                "Past fatality, none recent: verify the mitigation put in place is holding"
+            )
+        elif row["People Injured"] > 0:
+            items.append("Past injury, none recent: confirm early-warning coverage")
 
         night = row["Night Conflict %"]
         if pd.notna(night) and night >= NIGHT_SHARE_FOR_PATROL_SHIFT and room():
@@ -834,6 +951,8 @@ def village_exposure(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
 def management_brief(
     df: pd.DataFrame,
     recent_days: int = DEFAULT_RECENT_DAYS,
+    critical_window_days: int = CRITICAL_CASUALTY_WINDOW_DAYS,
+    as_of: Optional[pd.Timestamp] = None,
 ) -> Dict[str, object]:
     """Assemble the full conservation-intelligence brief for a period.
 
@@ -844,6 +963,8 @@ def management_brief(
     Args:
         df: Filtered, enriched dataframe.
         recent_days: Escalation comparison window.
+        critical_window_days: Casualty recency window behind the
+            Critical tier.
 
     Returns:
         Dict with ``period``, ``coverage``, ``kpis``, ``beats``,
@@ -851,7 +972,12 @@ def management_brief(
         ``headlines`` (ready-to-read sentences) and ``caveats``.
     """
     kpis = compute_kpis(df)
-    beats = beat_intelligence(df, recent_days=recent_days)
+    beats = beat_intelligence(
+        df,
+        recent_days=recent_days,
+        critical_window_days=critical_window_days,
+        as_of=as_of,
+    )
     temporal = temporal_risk_windows(df)
     villages = village_exposure(df)
 
@@ -868,6 +994,7 @@ def management_brief(
         "beats": int(len(beats)),
         "divisions": int(df["Division"].nunique()) if "Division" in df.columns else 0,
         "recent_days": recent_days,
+        "critical_window_days": critical_window_days,
     }
 
     return {
@@ -879,8 +1006,10 @@ def management_brief(
         "escalating": escalating,
         "temporal": temporal,
         "villages": villages,
-        "headlines": _headlines(kpis, beats, priority, escalating, temporal),
-        "caveats": _caveats(df, kpis, beats, villages),
+        "headlines": _headlines(
+            kpis, beats, priority, escalating, temporal, critical_window_days
+        ),
+        "caveats": _caveats(df, kpis, beats, villages, critical_window_days),
     }
 
 
@@ -890,6 +1019,7 @@ def _headlines(
     priority: pd.DataFrame,
     escalating: pd.DataFrame,
     temporal: Dict[str, object],
+    critical_window_days: int = CRITICAL_CASUALTY_WINDOW_DAYS,
 ) -> List[str]:
     """The handful of sentences worth putting at the top of the brief."""
     lines: List[str] = []
@@ -914,7 +1044,10 @@ def _headlines(
     critical = beats[beats["Priority Tier"] == TIER_CRITICAL] if not beats.empty else beats
     if len(critical):
         names = ", ".join(critical["Beat"].head(5).astype(str))
-        lines.append(f"{len(critical)} beat(s) in the Critical tier: {names}.")
+        lines.append(
+            f"{len(critical)} beat(s) in the Critical tier -- a casualty in the last "
+            f"{critical_window_days} days: {names}."
+        )
     elif len(priority):
         names = ", ".join(priority["Beat"].head(5).astype(str))
         lines.append(f"{len(priority)} beat(s) require priority attention: {names}.")
@@ -941,6 +1074,7 @@ def _caveats(
     kpis: Dict[str, float],
     beats: pd.DataFrame,
     villages: pd.DataFrame,
+    critical_window_days: int = CRITICAL_CASUALTY_WINDOW_DAYS,
 ) -> List[str]:
     """Limits a manager should know before acting on any of the above.
 
@@ -983,6 +1117,25 @@ def _caveats(
             caveats.append(
                 f"The period covers {span} day(s) -- too short to compare against a "
                 "previous window, so no trend is claimed."
+            )
+
+    caveats.append(
+        f"Critical means a person was killed or injured in the last "
+        f"{critical_window_days} days of the period shown. Beats with older "
+        "casualties and nothing recent sit in High, not Critical -- check the "
+        "'Human Deaths' column alongside 'Recent Deaths' before concluding a "
+        "beat is safe."
+    )
+
+    if not beats.empty and "Recent Deaths" in beats.columns:
+        historical_only = int(
+            ((beats["Human Deaths"] > 0) & (beats["Recent Deaths"] == 0)).sum()
+        )
+        if historical_only:
+            caveats.append(
+                f"{historical_only} beat(s) had a fatality earlier in the period but "
+                f"none in the last {critical_window_days} days, so they are High "
+                "rather than Critical."
             )
 
     caveats.append(

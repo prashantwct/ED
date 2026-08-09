@@ -149,14 +149,32 @@ def load_and_validate_csv(
         )
 
     # --- Text / categorical columns ---------------------------------------
+    #
+    # Nulls are filled *before* the string conversion, not after. On the
+    # Arrow-backed string dtype pandas now uses for CSV text columns,
+    # `astype(str)` leaves a missing value as NaN rather than turning it
+    # into the string "nan", so a trailing `.replace({"Nan": ...})` never
+    # sees it. The null then survives into Beat/Division/Range, and the
+    # first `sorted(df["Beat"].unique())` -- which is how the sidebar
+    # builds its filter options -- raises on comparing float to str.
+    # One blank beat in an export is enough to take the whole app down.
     for col in TEXT_COLUMNS:
-        df[col] = (
+        blank = df[col].isna()
+        cleaned = (
             df[col]
+            .astype("object")
+            .where(~blank, "Unknown")
             .astype(str)
             .str.strip()
             .str.title()
-            .replace({"": "Unknown", "Nan": "Unknown", "None": "Unknown"})
+            .replace({"": "Unknown", "Nan": "Unknown", "None": "Unknown", "<Na>": "Unknown"})
         )
+        df[col] = cleaned
+        if blank.any():
+            warnings.append(
+                f"{int(blank.sum())} row(s) have no '{col}' value; grouped under "
+                "'Unknown' so they still appear in totals rather than vanishing."
+            )
 
     # --- Optional numeric flag columns -------------------------------------
     for col in OPTIONAL_NUMERIC_COLUMNS:
@@ -285,13 +303,24 @@ def _derive_hour(df: pd.DataFrame) -> List[str]:
         return warnings
 
     if "Time" in df.columns:
-        # Try the common "HH:MM" field format first (fast, no warnings);
-        # fall back to flexible parsing for any values it couldn't handle.
-        parsed_time = pd.to_datetime(df["Time"], format="%H:%M", errors="coerce")
+        # Try the known field formats first. Gajrakshak exports use
+        # "HH:MM:SS"; older sheets use "HH:MM". Matching one of these
+        # avoids dateutil's per-element fallback, which parses every row
+        # individually and emits a "could not infer format" warning on a
+        # file that is in fact perfectly consistent.
+        parsed_time = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            missing = parsed_time.isna() & df["Time"].notna()
+            if not missing.any():
+                break
+            parsed_time.loc[missing] = pd.to_datetime(
+                df.loc[missing, "Time"], format=fmt, errors="coerce"
+            )
+
         still_missing = parsed_time.isna() & df["Time"].notna()
         if still_missing.any():
             parsed_time.loc[still_missing] = pd.to_datetime(
-                df.loc[still_missing, "Time"], errors="coerce"
+                df.loc[still_missing, "Time"], errors="coerce", format="mixed"
             )
         df["Hour"] = parsed_time.dt.hour
 

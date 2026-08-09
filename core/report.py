@@ -82,12 +82,23 @@ _TIER_CLASSES = {
     TIER_WATCH: "tier-watch",
 }
 
+# A glyph per tier so the ranking survives a black-and-white photocopy
+# and readers with a colour vision deficiency. These briefs get printed.
+_TIER_GLYPHS = {
+    TIER_CRITICAL: "▲",
+    TIER_HIGH: "◆",
+    TIER_WATCH: "●",
+    "Routine": "○",
+}
+
 
 def generate_html_report(
     df: pd.DataFrame,
     start_date: Optional[date],
     end_date: Optional[date],
     recent_days: int = 90,
+    hotspots: Optional[pd.DataFrame] = None,
+    village_risk: Optional[pd.DataFrame] = None,
 ) -> str:
     """Build a complete, styled conservation intelligence brief.
 
@@ -98,6 +109,9 @@ def generate_html_report(
         end_date: Period end to display.
         recent_days: Escalation comparison window passed through to
             :func:`core.intelligence.management_brief`.
+        hotspots: Output of :func:`core.hotspots.detect_hotspots`.
+            Omitted from the document when None.
+        village_risk: Output of :func:`core.hotspots.villages_at_risk`.
 
     Returns:
         A complete HTML document as a string.
@@ -142,6 +156,12 @@ def generate_html_report(
 
     <h2>Priority Beats <span class="sub">tier set by fixed rules; score orders within tier</span></h2>
     {_beat_table_html(brief["beats"])}
+
+    <h2>Movement Hotspots <span class="sub">density clusters in the point data</span></h2>
+    {_hotspot_html(hotspots)}
+
+    <h2>Villages at Risk</h2>
+    {_village_risk_html(village_risk)}
 
     <h2>Escalating Beats <span class="sub">last {brief['coverage']['recent_days']} days vs the window before</span></h2>
     {_escalation_html(brief["escalating"])}
@@ -200,8 +220,6 @@ def _beat_table_html(beats: pd.DataFrame, top_n: int = 15) -> str:
 
     rows = []
     for row in beats.head(top_n).to_dict("records"):
-        tier = str(row["Priority Tier"])
-        tier_class = _TIER_CLASSES.get(tier, "tier-routine")
         conf = str(row["Confidence"])
         conf_html = (
             f'<span class="conf-low">{escape(conf)}</span>' if conf == "Low" else escape(conf)
@@ -210,12 +228,12 @@ def _beat_table_html(beats: pd.DataFrame, top_n: int = 15) -> str:
             "<tr>"
             f"<td><b>{escape(str(row['Beat']))}</b><br/>"
             f"<span class='sub'>{escape(str(row['Division']))} / {escape(str(row['Range']))}</span></td>"
-            f"<td><span class='tier {tier_class}'>{escape(tier)}</span></td>"
+            f"<td>{_tier_cell(row['Priority Tier'])}</td>"
             f"<td class='num'>{row['Priority Score']:.0f}</td>"
             f"<td class='num'>{int(row['Reports'])}</td>"
             f"<td class='num'>{int(row['Conflict Events'])}</td>"
             f"<td class='num'>{_pct(row['Adj. Conflict Rate %'])}</td>"
-            f"<td class='num'>{int(row['Human Deaths'])} / {int(row['People Injured'])}</td>"
+            f"<td class='num'>{_casualty_cell(row)}</td>"
             f"<td class='num'>{_pct(row['Night Conflict %'])}</td>"
             f"<td>{_trend_html(row['Trend'], row['Recent vs Prior'])}</td>"
             f"<td>{conf_html}</td>"
@@ -226,7 +244,8 @@ def _beat_table_html(beats: pd.DataFrame, top_n: int = 15) -> str:
         "<table><thead><tr>"
         "<th>Beat</th><th>Tier</th><th class='num'>Score</th><th class='num'>Reports</th>"
         "<th class='num'>Conflicts</th><th class='num'>Adj. rate</th>"
-        "<th class='num'>Killed / injured</th><th class='num'>Night</th>"
+        "<th class='num'>Killed / injured<br/><span class='sub'>recent</span></th>"
+        "<th class='num'>Night</th>"
         "<th>Trend</th><th>Confidence</th><th>Recommended action</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
     )
@@ -254,6 +273,85 @@ def _escalation_html(escalating: pd.DataFrame) -> str:
         "<th>Recommended action</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
+
+
+def _hotspot_html(hotspots: Optional[pd.DataFrame], top_n: int = 10) -> str:
+    if hotspots is None:
+        return (
+            '<p class="empty-note">Hotspot clustering was not run for this brief.</p>'
+        )
+    if hotspots.empty:
+        return (
+            '<p class="empty-note">No density hotspots at the current settings -- '
+            "sightings are too dispersed to form clusters.</p>"
+        )
+
+    rows = "".join(
+        "<tr>"
+        f"<td><b>{escape(str(r['Hotspot']))}</b></td>"
+        f"<td>{_tier_cell(r['Tier'])}</td>"
+        f"<td>{escape(str(r['Divisions']))}<br/>"
+        f"<span class='sub'>{escape(str(r['Beats']))}</span></td>"
+        f"<td class='num'>{int(r['Sightings']):,}</td>"
+        f"<td class='num'>{int(r['Conflict Events']):,}</td>"
+        f"<td class='num'>{r['Conflict Share %']:.0f}%</td>"
+        f"<td class='num'>{int(r['Human Deaths'])} / {int(r['People Injured'])}</td>"
+        f"<td class='num'>{_pct(r['Night Share %'])}</td>"
+        f"<td class='num'>{r['Radius (km)']:.1f} km</td>"
+        f"<td class='num'>{r['Centre Latitude']:.4f},<br/>{r['Centre Longitude']:.4f}</td>"
+        "</tr>"
+        for r in hotspots.head(top_n).to_dict("records")
+    )
+    return (
+        "<table><thead><tr><th>ID</th><th>Tier</th><th>Where</th>"
+        "<th class='num'>Sightings</th><th class='num'>Conflicts</th>"
+        "<th class='num'>Share</th><th class='num'>Killed / injured</th>"
+        "<th class='num'>Night</th><th class='num'>Radius</th>"
+        "<th class='num'>Centre</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def _village_risk_html(village_risk: Optional[pd.DataFrame], top_n: int = 15) -> str:
+    if village_risk is None or village_risk.empty:
+        return (
+            '<p class="empty-note">No village-level ranking. Sighting exports carry '
+            "no village field, so villages can only be identified from a centroids "
+            "file (Village, Latitude, Longitude).</p>"
+        )
+
+    rows = "".join(
+        "<tr>"
+        f"<td>{escape(str(r['Village']))}</td>"
+        f"<td>{_tier_cell(r['Tier'])}</td>"
+        f"<td class='num'>{int(r['Conflict Events']):,}</td>"
+        f"<td class='num'>{int(r['Human Deaths'])} / {int(r['People Injured'])}</td>"
+        f"<td class='num'>{int(r['House Damage Events'])}</td>"
+        f"<td class='num'>{int(r['Crop Damage Events'])}</td>"
+        f"<td class='num'>{_pct(r['Night Share %'])}</td>"
+        f"<td>{escape(str(r['Nearest Hotspot']))}"
+        f"{' (inside)' if r['Inside Hotspot'] else ''}</td>"
+        f"<td class='num'>{_km(r['Distance to Hotspot (km)'])}</td>"
+        "</tr>"
+        for r in village_risk.head(top_n).to_dict("records")
+    )
+    return (
+        "<table><thead><tr><th>Village</th><th>Tier</th>"
+        "<th class='num'>Conflicts</th><th class='num'>Killed / injured</th>"
+        "<th class='num'>House</th><th class='num'>Crop</th>"
+        "<th class='num'>Night</th><th>Hotspot</th>"
+        "<th class='num'>Distance</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def _tier_cell(tier: object) -> str:
+    """Tier badge carrying a glyph as well as colour, so it survives
+    greyscale printing and colour vision deficiency."""
+    label = str(tier)
+    css = _TIER_CLASSES.get(label, "tier-routine")
+    glyph = _TIER_GLYPHS.get(label, "○")
+    return f"<span class='tier {css}'>{glyph} {escape(label)}</span>"
 
 
 def _temporal_html(temporal: Dict[str, object]) -> str:
@@ -399,6 +497,27 @@ def _format_period(start_date: Optional[date], end_date: Optional[date]) -> str:
         return f"{pd.Timestamp(start_date):%d %b %Y} to {pd.Timestamp(end_date):%d %b %Y}"
     except Exception:  # noqa: BLE001 - report generation must never crash
         return "N/A"
+
+
+def _casualty_cell(row: dict) -> str:
+    """Recent killed/injured, with the period total when it is larger.
+
+    Both are shown because the Critical tier keys off the recent figure
+    alone: a reader who sees only "0 / 0" on a beat that killed someone
+    eight months ago would draw the wrong conclusion about it.
+    """
+    recent = f"{int(row['Recent Deaths'])} / {int(row['Recent Injuries'])}"
+    total_deaths = int(row["Human Deaths"])
+    total_injuries = int(row["People Injured"])
+
+    if total_deaths > int(row["Recent Deaths"]) or total_injuries > int(
+        row["Recent Injuries"]
+    ):
+        return (
+            f"{recent}<br/><span class='sub'>{total_deaths} / {total_injuries} "
+            "in period</span>"
+        )
+    return recent
 
 
 def _pct(value: object) -> str:
