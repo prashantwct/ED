@@ -578,6 +578,46 @@ def hotspot_caveats(
     return notes
 
 
+def village_caveats(
+    village_risk: pd.DataFrame,
+    df: pd.DataFrame,
+    radius_km: float = DEFAULT_VILLAGE_RADIUS_KM,
+) -> List[str]:
+    """Limits a reader needs before acting on the village ranking.
+
+    The important one is that the casualty columns do not add up. Village
+    search radii overlap, so a single fatality is credited to every
+    village near it -- which is the right answer for "is this village
+    exposed" and the wrong answer for "how many people died". On a real
+    export the village rows summed to 23 deaths against an actual 6.
+    """
+    notes: List[str] = []
+    if village_risk.empty:
+        return notes
+
+    actual_deaths = float(human_deaths(df).sum())
+    counted = float(village_risk["Human Deaths"].sum())
+    if counted > actual_deaths:
+        notes.append(
+            f"Casualty columns are per-village exposure and do not sum: the "
+            f"{radius_km:g} km radii overlap, so one incident is credited to every "
+            f"village near it. These rows total {counted:.0f} deaths against "
+            f"{actual_deaths:.0f} actually recorded. Read a row as 'this village is "
+            "exposed to a fatality', not as that village's own toll."
+        )
+
+    outside = village_risk[~village_risk["Inside Hotspot"].fillna(False).astype(bool)]
+    critical_outside = outside[outside["Tier"] == TIER_CRITICAL]
+    if len(critical_outside):
+        notes.append(
+            f"{len(critical_outside)} of the Critical villages sit outside every "
+            "detected hotspot. Fatalities are not confined to where movement "
+            "concentrates, so hotspot patrols alone will not cover them."
+        )
+
+    return notes
+
+
 def hotspot_membership(
     df: pd.DataFrame,
     eps_km: float = DEFAULT_EPS_KM,

@@ -23,6 +23,7 @@ from core.hotspots import (
     detect_hotspots,
     hotspot_caveats,
     hotspot_membership,
+    village_caveats,
     villages_at_risk,
 )
 
@@ -249,6 +250,41 @@ def test_village_inside_hotspot_is_flagged():
     out = villages_at_risk(df, _villages(V=(LAT, LON)), hotspots, radius_km=3.0)
     assert bool(out.iloc[0]["Inside Hotspot"]) is True
     assert out.iloc[0]["Nearest Hotspot"] == "H1"
+
+
+def test_village_casualty_columns_are_flagged_as_non_additive():
+    """Overlapping radii credit one fatality to every village near it.
+    Right for 'is this village exposed', wrong for 'how many died' -- on
+    a real export the rows summed to 23 deaths against an actual 6."""
+    df = _prepare(_blob(LAT, LON, 30, deaths=1, conflicts=20, seed=30))
+    villages = _villages(
+        A=(LAT, LON), B=(LAT + 0.005, LON), C=(LAT, LON + 0.005)
+    )
+    out = villages_at_risk(df, villages, None, radius_km=3.0)
+
+    assert out["Human Deaths"].sum() > 1, "the same death reaches all three"
+    notes = village_caveats(out, df, 3.0)
+    assert any("do not sum" in n for n in notes)
+
+
+def test_critical_villages_outside_hotspots_are_called_out():
+    """Fatalities are not confined to where movement concentrates, so
+    hotspot patrols alone would miss these."""
+    cluster = _blob(LAT, LON, 40, conflicts=10, seed=31)
+    far_death = _blob(LAT + 0.25, LON + 0.25, 1, beat="B2", deaths=1, conflicts=1, seed=32)
+    df = _prepare(cluster + far_death)
+
+    hotspots = detect_hotspots(df, eps_km=1.0, min_samples=10)
+    out = villages_at_risk(
+        df, _villages(Far=(LAT + 0.25, LON + 0.25)), hotspots, radius_km=3.0
+    )
+    notes = village_caveats(out, df, 3.0)
+    assert any("outside every detected hotspot" in n for n in notes)
+
+
+def test_no_caveats_for_an_empty_village_table():
+    df = _prepare(_blob(LAT, LON, 20, seed=33))
+    assert village_caveats(pd.DataFrame(), df, 3.0) == []
 
 
 def test_village_radius_is_kilometres_not_degrees():

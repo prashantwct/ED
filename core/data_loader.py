@@ -18,6 +18,7 @@ from typing import BinaryIO, List, Optional, Tuple, Union
 
 import pandas as pd
 
+from core.csv_io import read_csv_resilient
 from core.exceptions import DataValidationError
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,10 @@ def load_and_validate_csv(
             empty, or is missing one of ``REQUIRED_COLUMNS``.
     """
     warnings: List[str] = []
-    df = _read_csv_with_fallback_encoding(file)
+    df, read_warnings = read_csv_resilient(
+        file, on_error=lambda message: DataValidationError(message)
+    )
+    warnings.extend(read_warnings)
 
     if df.empty:
         raise DataValidationError(
@@ -101,6 +105,17 @@ def load_and_validate_csv(
 
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
+        # The two uploaders sit close together and the files are both
+        # called something-.csv, so putting the centroids file in the
+        # sightings slot is an easy slip. Listing four missing columns
+        # gives the user no clue that is what happened.
+        if _looks_like_centroids(df):
+            raise DataValidationError(
+                "This looks like a village centroids file (Village, Latitude, "
+                "Longitude), not a sightings export. Upload it under 'Village "
+                "centroids' in the sidebar instead; the main uploader expects the "
+                "sightings CSV with Date, Division, Range and Beat columns."
+            )
         raise DataValidationError(
             "The CSV is missing required column(s): "
             f"{', '.join(sorted(missing))}. "
@@ -202,6 +217,14 @@ def load_and_validate_csv(
         len(warnings),
     )
     return df, warnings
+
+
+def _looks_like_centroids(df: pd.DataFrame) -> bool:
+    """True when the frame is a village centroids table, not sightings."""
+    columns = set(df.columns)
+    return "Village" in columns and {"Latitude", "Longitude"} <= columns and not (
+        {"Date", "Beat"} & columns
+    )
 
 
 def _parse_dates(series: pd.Series) -> Tuple[pd.Series, List[str]]:
@@ -391,28 +414,3 @@ def _id_suffix(rows: pd.DataFrame, limit: int = 10) -> str:
     if len(ids) > limit:
         shown += f", +{len(ids) - limit} more"
     return f" (ID {shown})"
-
-
-def _read_csv_with_fallback_encoding(file: Union[str, BinaryIO]) -> pd.DataFrame:
-    """Read a CSV, retrying with a Latin-1 fallback for legacy field exports."""
-    try:
-        return pd.read_csv(file)
-    except UnicodeDecodeError:
-        if hasattr(file, "seek"):
-            file.seek(0)
-        try:
-            return pd.read_csv(file, encoding="ISO-8859-1")
-        except Exception as exc:  # noqa: BLE001 - surfaced as a clean error
-            raise DataValidationError(
-                "Could not read the file as CSV, even with a fallback encoding. "
-                "Please confirm it is a valid, comma-separated CSV export."
-            ) from exc
-    except pd.errors.EmptyDataError as exc:
-        raise DataValidationError("The uploaded file is empty.") from exc
-    except pd.errors.ParserError as exc:
-        raise DataValidationError(
-            "The file could not be parsed as CSV. Please confirm the export "
-            "format and that it uses standard comma delimiters."
-        ) from exc
-    except Exception as exc:  # noqa: BLE001 - last-resort, user-facing message
-        raise DataValidationError(f"Could not read the uploaded file: {exc}") from exc

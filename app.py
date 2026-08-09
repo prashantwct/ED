@@ -36,6 +36,7 @@ from core.hotspots import (
     DEFAULT_VILLAGE_RADIUS_KM,
     detect_hotspots,
     hotspot_caveats,
+    village_caveats,
     villages_at_risk,
 )
 from core.intelligence import (
@@ -152,10 +153,15 @@ with st.sidebar.expander("Village centroids (optional)", expanded=False):
     st.caption("Falls back to a local `centroids.csv` next to app.py if present.")
 
 try:
-    villages = load_village_centroids(centroid_upload if centroid_upload else None)
+    villages, centroid_warnings = load_village_centroids(
+        centroid_upload if centroid_upload else None
+    )
 except SpatialEnrichmentError as exc:
     st.sidebar.warning(f"Village centroids not applied: {exc}")
-    villages = None
+    villages, centroid_warnings = None, []
+
+for warning in centroid_warnings:
+    st.sidebar.warning(warning)
 
 df, spatial_warnings = attach_nearest_village(raw_df, villages)
 for warning in spatial_warnings:
@@ -450,6 +456,8 @@ else:
         "villages_at_risk.csv",
         mime="text/csv",
     )
+    for note in village_caveats(village_risk, filtered, village_radius):
+        st.caption(note)
 
 
 # ---------------------------------------------------------------------------

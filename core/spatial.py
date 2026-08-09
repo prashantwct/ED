@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 from scipy.spatial import cKDTree
 
+from core.csv_io import read_csv_resilient
 from core.exceptions import SpatialEnrichmentError
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_VILLAGE_FILE = "centroids.csv"
 REQUIRED_VILLAGE_COLUMNS = {"Latitude", "Longitude", "Village"}
 EARTH_RADIUS_KM = 6371.0
+
+VALID_LAT_RANGE = (-90.0, 90.0)
+VALID_LON_RANGE = (-180.0, 180.0)
 
 # Distance below which a sighting counts as "at the village" for risk
 # scoring. Centroids are single points, but a village is not: its built
@@ -44,7 +48,7 @@ NEAR_VILLAGE_THRESHOLD_KM = 2.0
 
 def load_village_centroids(
     source: Optional[Union[str, Path, BinaryIO]] = None,
-) -> Optional[pd.DataFrame]:
+) -> Tuple[Optional[pd.DataFrame], List[str]]:
     """Load and validate a village-centroids table.
 
     Args:
@@ -52,9 +56,12 @@ def load_village_centroids(
             to fall back to :data:`DEFAULT_VILLAGE_FILE` if it exists.
 
     Returns:
-        A validated DataFrame with ``Latitude``, ``Longitude``, ``Village``
-        columns, or ``None`` if no source was supplied/found (this is a
-        normal, silent no-op - the app should just skip enrichment).
+        ``(dataframe, warnings)``. The dataframe has ``Latitude``,
+        ``Longitude`` and ``Village`` columns, or is ``None`` if no
+        source was supplied/found (a normal, silent no-op - the app just
+        skips enrichment). ``warnings`` describes non-fatal problems:
+        a fallback encoding, rows dropped for bad coordinates, duplicate
+        village names.
 
     Raises:
         SpatialEnrichmentError: If a source WAS supplied (explicitly, not
@@ -62,23 +69,24 @@ def load_village_centroids(
             required columns. This lets the caller warn the user instead
             of silently pretending enrichment happened.
     """
+    warnings: List[str] = []
+
     explicit_source = source is not None
     if source is None:
         if not Path(DEFAULT_VILLAGE_FILE).exists():
-            return None
+            return None, warnings
         source = DEFAULT_VILLAGE_FILE
 
     try:
-        if hasattr(source, "seek"):
-            source.seek(0)
-        villages = pd.read_csv(source)
-    except Exception as exc:  # noqa: BLE001
+        villages, read_warnings = read_csv_resilient(
+            source, on_error=lambda msg: SpatialEnrichmentError(msg)
+        )
+    except SpatialEnrichmentError as exc:
         if explicit_source:
-            raise SpatialEnrichmentError(
-                f"Could not read the village centroids file: {exc}"
-            ) from exc
+            raise
         logger.warning("Default centroids.csv present but unreadable: %s", exc)
-        return None
+        return None, warnings
+    warnings.extend(read_warnings)
 
     missing = REQUIRED_VILLAGE_COLUMNS - set(villages.columns)
     if missing:
@@ -90,21 +98,51 @@ def load_village_centroids(
         if explicit_source:
             raise SpatialEnrichmentError(message)
         logger.warning(message)
-        return None
+        return None, warnings
 
     villages = villages.copy()
+    original_rows = len(villages)
+
     villages["Latitude"] = pd.to_numeric(villages["Latitude"], errors="coerce")
     villages["Longitude"] = pd.to_numeric(villages["Longitude"], errors="coerce")
+    villages["Village"] = villages["Village"].astype("object").where(
+        villages["Village"].notna()
+    )
     villages = villages.dropna(subset=["Latitude", "Longitude", "Village"])
+
+    out_of_range = ~(
+        villages["Latitude"].between(*VALID_LAT_RANGE)
+        & villages["Longitude"].between(*VALID_LON_RANGE)
+    )
+    if out_of_range.any():
+        warnings.append(
+            f"Dropped {int(out_of_range.sum())} village(s) with coordinates outside "
+            "valid latitude/longitude ranges."
+        )
+        villages = villages[~out_of_range]
+
+    dropped = original_rows - len(villages)
+    if dropped and not out_of_range.any():
+        warnings.append(
+            f"Dropped {dropped} village(s) with a missing name or coordinates."
+        )
 
     if villages.empty:
         message = "Village centroids file has no valid rows after cleaning."
         if explicit_source:
             raise SpatialEnrichmentError(message)
         logger.warning(message)
-        return None
+        return None, warnings
 
-    return villages.reset_index(drop=True)
+    duplicates = int(villages["Village"].astype(str).duplicated().sum())
+    if duplicates:
+        warnings.append(
+            f"{duplicates} village name(s) appear more than once. They are kept as "
+            "separate points, so risk totals are reported per location rather than "
+            "merged under one name."
+        )
+
+    return villages.reset_index(drop=True), warnings
 
 
 def attach_nearest_village(

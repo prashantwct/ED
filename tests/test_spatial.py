@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from core.exceptions import SpatialEnrichmentError
 from core.spatial import (
     NEAR_VILLAGE_THRESHOLD_KM,
     _haversine_km,
@@ -96,7 +97,70 @@ def test_enrichment_is_a_no_op_without_centroids():
 
 def test_missing_default_centroids_file_returns_none(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    assert load_village_centroids(None) is None
+    villages, warnings = load_village_centroids(None)
+    assert villages is None
+    assert warnings == []
+
+
+def test_centroids_survive_a_single_bad_byte(tmp_path):
+    """A real 9,230-village file was rejected outright because one village
+    name contained a stray 0xbb. Refusing 9,229 usable villages over one
+    byte is the wrong trade."""
+    path = tmp_path / "centroids.csv"
+    path.write_bytes(
+        b"Village,Latitude,Longitude\n"
+        b"Padaha,24.34377207,81.02676918\n"
+        b"Dharampura?\xbb Amsil,24.54412834,80.44449572\n"
+        b"Tala,24.74631222,81.803796\n"
+    )
+    villages, warnings = load_village_centroids(str(path))
+
+    assert len(villages) == 3
+    assert any("not valid UTF-8" in w for w in warnings)
+    assert "Padaha" in set(villages["Village"])
+
+
+def test_centroids_with_bad_coordinates_are_dropped(tmp_path):
+    path = tmp_path / "centroids.csv"
+    path.write_text(
+        "Village,Latitude,Longitude\n"
+        "Good,24.3,81.0\n"
+        "Bad,999,81.0\n"
+        "NoCoords,,81.0\n"
+    )
+    villages, warnings = load_village_centroids(str(path))
+
+    assert list(villages["Village"]) == ["Good"]
+    assert any("outside valid latitude" in w for w in warnings)
+
+
+def test_duplicate_village_names_are_reported_not_merged(tmp_path):
+    path = tmp_path / "centroids.csv"
+    path.write_text(
+        "Village,Latitude,Longitude\n"
+        "Tala,24.7,81.8\n"
+        "Tala,23.7,80.9\n"
+    )
+    villages, warnings = load_village_centroids(str(path))
+
+    assert len(villages) == 2, "same name in two places is two places"
+    assert any("more than once" in w for w in warnings)
+
+
+def test_binary_junk_fails_on_columns_not_on_bytes(tmp_path):
+    """Latin-1 maps all 256 byte values, so with it in the fallback chain
+    decoding never fails -- binary junk decodes to nonsense text instead.
+    It must then be rejected on its columns, with a message that names
+    what was expected rather than leaking a codec error."""
+    path = tmp_path / "centroids.csv"
+    path.write_bytes(b"\xff\xfe\x00\x00" * 200)
+
+    with pytest.raises(SpatialEnrichmentError) as exc:
+        load_village_centroids(str(path))
+
+    message = str(exc.value)
+    assert "missing required column" in message
+    assert "Village" in message
 
 
 if __name__ == "__main__":
