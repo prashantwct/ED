@@ -1,7 +1,8 @@
-# Elephant Sighting & Conflict Dashboard
+# Elephant Conflict Intelligence
 
-Streamlit app for reviewing Gajrakshak elephant sighting exports: severity scoring,
-conflict-rate-by-division, night-window risk, and a beat-level priority ranking.
+Streamlit app for turning Gajrakshak elephant sighting/conflict exports into
+decisions a protected-area manager can act on: which beats to resource, which
+shift to staff, which villages to warn, and what is getting worse.
 
 ## Run it
 
@@ -17,74 +18,128 @@ pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-The test suite is a regression net for the specific bugs this rewrite fixed (see
-below) -- if any of them come back, a test should fail rather than the app
-quietly shipping a wrong number again.
+## What it produces
 
-## What changed (July 2026 review)
+The dashboard reports what happened. The intelligence layer
+(`core/intelligence.py`) answers what to do about it.
 
-### Fixed
-- **Human deaths now outrank routine crop damage in severity scoring.**
-  Previously `Death` had no weight at all -- a fatality scored 0.5 (identical to
-  a plain footprint sighting), while ordinary crop damage scored 3.0. Deaths are
-  now weighted per person killed (100 points/person), using the actual
-  `Male/Female/Children Death Count` fields rather than a flat indicator, so a
-  two-person fatality outranks a one-person one.
-- **The "conflicts" KPI no longer drops pure-fatality reports.** The old
-  definition was `Crop OR House OR Injury` -- Death wasn't in the condition, so
-  a death-only report (no crop/house/injury flag) didn't count as a conflict at
-  all. Now included.
-- **`risk_engine.py` was not valid Python** (an indentation error, confirmed by
-  a direct import attempt) and wasn't wired into `app.py` either. Rewritten,
-  tested, and now feeds the "Priority beats" table.
-- **Death-count vs. Death-flag mismatch in the source data.** Two rows have
-  `Male/Female Death Count` populated but the `Death` flag not set. Both matched
-  a same-day, same-beat, same-gender report of a fatality already logged
-  elsewhere in the export -- almost certainly a duplicate/follow-up entry, not a
-  new death. These are excluded from the death count (to avoid double-counting)
-  but surfaced as a named, ID-specific data quality warning in the app rather
-  than silently resolved either way -- worth confirming with the field reporters.
-- **Map points are now visible at landscape scale.** The data spans roughly
-  150 km x 140 km; the old radius-in-metres encoding made every point a few
-  pixels or less at the zoom level used. `radius_min_pixels`/`radius_max_pixels`
-  now floor point size regardless of zoom, and points are colored by conflict
-  category (death/injury/house/crop/presence) instead of uniform red.
-- Explicit `%d/%m/%Y` date parsing instead of implicit format inference (worked
-  by luck on this file; not guaranteed on a future export).
-- Cascading filter bug: narrowing the Division filter correctly narrowed the
-  Range options, but widening Division back out left Range holding its stale,
-  narrower selection -- silently keeping rows excluded even though the UI
-  looked "reset." Fixed via explicit session-state sync.
-- `use_container_width` (deprecated, removal date already passed) replaced with
-  `width=`.
+**Beat priorities.** Every beat gets a decision *tier* — Critical, High, Watch,
+Routine — plus the evidence behind it: reports, conflict events, adjusted
+conflict rate, people killed and injured, night share, village proximity, trend,
+and a recommended action.
+
+**Escalation.** Each beat's most recent N days are compared against the N days
+immediately before, like for like. A beat that has been large for years needs
+steady resourcing; a small beat that has doubled needs someone to go and find
+out why. Only the second is news.
+
+**Timing.** The shortest contiguous block of hours holding a target share of
+conflict events, reported with how concentrated it actually is. Seasonality is
+reported the same way, and stays silent when there isn't any.
+
+**Village exposure.** With centroids loaded, villages ranked by the conflict
+recorded around them — casualties first.
+
+**A brief.** One structured object renders both the in-app panel and the
+downloadable HTML, so the numbers on screen and the numbers in the document
+forwarded upwards cannot drift apart.
+
+### Three design rules
+
+**Tier decides, score only orders.** Tiers come from fixed, written-down rules,
+so "Critical" means the same thing in April as in October and in one division as
+in the next. The continuous priority score orders beats *within* a tier and
+nothing more. Scores normalised against whatever is currently on screen move
+when a filter changes — a number like "67.3" is not a fact about the beat, and a
+posting decision must not hang on it.
+
+**Raw rates from thin data are not evidence.** One conflict in one report is a
+100% conflict rate. Beat rates are shrunk toward the landscape rate using an
+empirical-Bayes estimator whose strength is fitted from how much beats actually
+differ from one another, and every beat carries an explicit confidence label.
+
+**Counts measure patrol effort as much as elephants.** More reports from a beat
+can mean more conflict or simply more staff walking it. Nothing here can fully
+separate the two, so rates sit alongside volumes rather than replacing them, and
+the brief says so every time rather than only on bad days.
+
+## What changed (August 2026 review)
+
+The previous pass documented a set of fixes in this README, but the last upload
+to `core/` reverted the analytics to a pre-fix state while the README and tests
+kept describing the fixed one. The test suite did not run at all — it failed at
+import on four functions that no longer existed — so nothing caught it.
+
+### Correctness
+
+- **Human deaths were scoring below crop damage again.** A two-person fatality
+  scored 0.5, identical to a plain footprint sighting; ordinary crop damage
+  scored 3.0. Deaths are weighted per person killed (100 points/person) from the
+  actual `Male/Female/Children Death Count` fields.
+- **The conflict KPI dropped pure-fatality reports.** The mask was
+  `Crop OR House OR Injury` — a death-only report counted as no conflict at all.
+  Death and Grain Damage are both included now.
+- **Day-first dates were silently mangled and rows deleted.** Inferred parsing
+  locks onto the layout implied by the first value: in a `DD/MM/YYYY` export,
+  `03/04/2026` was read as 4 March and `21/04/2026` failed to parse and was
+  dropped as "unreadable". Formats are now tried explicitly against the whole
+  column, and genuine ambiguity is reported rather than guessed.
+- **Nearest-village search was biased and its distances wrong.** The neighbour
+  tree was built on unscaled lat/lon, which treats a degree of longitude as
+  equal to a degree of latitude. At 22 °N that overstates east-west distance by
+  8.1% and pulls the "nearest" village north-south. Longitude is now scaled by
+  cos(latitude) and distances reported with haversine.
+- **The near-village radius was too tight to fire.** A village is not a point;
+  at 0.5 km from the centroid almost nothing qualified and the proximity signal
+  contributed nothing. Now 2 km, which is what centroid-only data supports.
+- **Map points were invisible.** This landscape spans ~150 km, which the
+  adaptive view fits at ~950 m/pixel — a 60 m radius is 0.06 px. Points now have
+  a pixel floor, are coloured by conflict category rather than a severity ramp
+  that renders every non-fatal incident the same green, and are log-scaled so
+  property damage stays distinguishable next to a fatality.
+- **The report interpolated CSV values into HTML unescaped.** Beat and village
+  names are now escaped; the file gets emailed onward.
+- **Severity bands were equal-width.** With fatalities at 100 and sightings at
+  0.5, that put ~everything in bucket one. Bands are now fixed at the boundaries
+  that mean something: presence, crop/grain, property, injury, fatality.
+- **The reset-filters button did nothing.** It called `st.rerun()` without
+  clearing the widget state it was meant to reset.
+- **Cascading filters kept stale selections.** Widening Division back out left
+  Range holding values no longer offered, silently excluding rows while the UI
+  looked reset. Selections are now pruned before the dependent widget renders.
+- `use_container_width` (deprecated, removal date passed) replaced with `width=`.
 
 ### Added
-- Sidebar filters: Division, Range (cascading, see above), date range.
-- Monthly trend and hourly conflict-profile charts (Plotly was already a listed
-  dependency and was never actually used).
-- "Priority beats" table -- the direct payoff of fixing `risk_engine.py`: beats
-  ranked by accumulated severity, night share, and village proximity.
-- Conflict-rate-by-division table (not just raw sighting counts, which favor
-  whichever division has the most reporting activity rather than the most
-  actual conflict).
-- Grain Damage is now included as its own conflict type (previously ignored
-  entirely). This moves the headline conflict count from 363 to 378 --
-  intentional, not a regression: 15 rows had grain damage with no other
-  conflict flag set.
-- Data-quality warnings are now surfaced in-app (bad dates, bad coordinates,
-  the death-count/flag mismatch above) instead of silently coerced or dropped.
-- `tests/test_analytics.py` -- smoke + regression coverage for the above.
 
-### Explicitly out of scope for this pass (see the review discussion for the
-fuller phased plan)
-- No persistent store -- still a fresh CSV upload per session, so month-over-month
-  comparison across sessions still requires keeping and re-uploading files.
-- No authentication/access control. The data contains named victims of fatal
-  incidents and named field reporters; if this is ever deployed somewhere
-  shareable, that needs addressing before the data does.
-- Map is still point-based (no clustering/hex-binning) -- fine at
-  division/range zoom, still visually dense at full-landscape zoom with all
-  ~2,100 points loaded at once.
-- `centroids.csv` (village locations, for the "Near Village" risk factor) still
-  doesn't exist. `attach_nearest_village()` continues to safely no-op without
-  it, and the app now says so explicitly instead of staying silent about it.
+- `core/intelligence.py` — the layer described above.
+- Data-quality warnings surfaced in-app, including the death-count/death-flag
+  mismatch, named with row IDs. Those rows are excluded from the death count on
+  the basis that they have matched same-day, same-beat follow-up reports of a
+  death already logged elsewhere — a judgement call about someone's death, so it
+  is stated rather than resolved silently.
+- Monthly trend, hourly conflict profile, and conflict-rate-by-division.
+- 71 tests across five files, covering the regressions above and the properties
+  that make the ranking usable: shrinkage, tier stability under filtering,
+  escalation, midnight-wrapping windows, and the flat-data cases.
+
+### Known limits
+
+- **No authentication.** The data contains named victims of fatal incidents and
+  named field reporters, and the filtered-data download exposes them. This needs
+  addressing before the app is deployed anywhere shareable.
+- **No basemap.** The map renders points on a blank background (`map_style=None`),
+  so there is no terrain, boundary or river context. Fixing this means choosing
+  a tile provider, which is a licensing and network-access decision — relevant
+  if the deployment is air-gapped.
+- **No persistent store.** Still a fresh CSV upload per session, so
+  month-over-month comparison across sessions requires re-uploading files.
+- **Effort is not modelled.** Conflict rates control for how many reports a beat
+  filed, but not for how many patrols produced them. A beat that files reports
+  only when something goes wrong will look worse than one that logs every walk.
+- **Night is a fixed 18:00–06:00 window,** not sunset-to-sunrise, which shifts by
+  more than an hour across the year in central India.
+- `core/risk_engine.py` is superseded by `core/intelligence.py` and no longer
+  used by the app or the report. It is kept only so existing callers keep
+  working, and is a candidate for deletion.
+- `centroids.csv` still does not exist; `centroids.sample.csv` shows the format.
+  Enrichment no-ops without it and the app says so.

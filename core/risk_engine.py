@@ -1,15 +1,26 @@
-"""Beat-level risk scoring.
+"""Beat-level risk scoring. SUPERSEDED -- see :mod:`core.intelligence`.
 
-Combines three signals into a single 0-100 "Risk Score" per Beat so
-field staff can quickly see where to prioritise patrols or mitigation:
+Combines three signals into a single 0-100 "Risk Score" per Beat:
 
 * Total severity of incidents in the beat (50% weight)
 * Share of incidents occurring at night (30% weight)
 * Share of incidents near a village, when that data is available (20%)
 
-The previous version of this file had broken indentation (module-level
-code outside any function) and was never imported by app.py. It is now
-a proper function with normalised, comparable scores across beats.
+**No longer used by the app or the report.**
+:func:`core.intelligence.beat_intelligence` replaced it, because this
+scoring has three problems that matter for a real posting decision:
+
+1. Severity is normalised against the highest-scoring beat currently in
+   view, so every score shifts when the user changes a filter and no
+   score is comparable across two reporting periods.
+2. Raw shares are used with no correction for how few reports a beat
+   has, so one incident in one report reads as 100%.
+3. It groups by ``Beat`` alone. Beat names repeat across ranges, so two
+   distinct beats sharing a name are silently merged into one row.
+
+Kept only so existing callers and tests keep working. New code should
+use :func:`core.intelligence.beat_intelligence`, and this module is a
+reasonable candidate for deletion once nothing references it.
 """
 
 from __future__ import annotations
