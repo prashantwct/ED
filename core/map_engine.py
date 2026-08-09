@@ -3,29 +3,56 @@
 from __future__ import annotations
 
 import math
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
 
-# Green -> yellow -> red, used to colour points by normalised severity.
-_COLOR_STOPS: List[Tuple[float, Tuple[int, int, int]]] = [
-    (0.0, (46, 168, 82)),
-    (0.5, (240, 200, 30)),
-    (1.0, (214, 39, 40)),
-]
+from core.analytics import CONFLICT_CATEGORIES, classify_conflict
+from core.ui import CATEGORY_STYLE, category_legend
 
+
+def _hex_to_rgb(value: str) -> Tuple[int, int, int]:
+    value = value.lstrip("#")
+    return tuple(int(value[i : i + 2], 16) for i in (0, 2, 4))
+
+
+# Colour by *what happened*, not by a normalised severity ramp. With a
+# fatality weighted at 100 and a crop raid at 3, a continuous ramp
+# anchored on the maximum renders every non-fatal incident the same shade
+# -- precisely the distinction a manager needs to see.
+#
+# Palette comes from core.ui so the map, the legend and the report cannot
+# drift apart, and it is the colourblind-safe sequence rather than a
+# red-to-green ramp. Size carries the same signal in parallel, so the
+# categories stay separable without colour at all.
+CATEGORY_COLORS: Dict[str, Tuple[int, int, int]] = {
+    key: _hex_to_rgb(style["color"]) for key, style in CATEGORY_STYLE.items()
+}
+
+CATEGORY_LABELS = {key: style["label"] for key, style in CATEGORY_STYLE.items()}
+
+# Radii are given in metres, but Deck.GL is told to clamp them to a pixel
+# range. This landscape spans roughly 150 km, which the adaptive view
+# fits at about zoom 7 -- close to 1 km per pixel. A 60 m radius is
+# 0.06 px there, i.e. invisible: without a pixel floor the map renders
+# empty at exactly the zoom level a division-wide review uses.
 MIN_RADIUS_M = 60
 MAX_RADIUS_M = 500
+RADIUS_MIN_PIXELS = 3
+RADIUS_MAX_PIXELS = 14
+
+# Categories that get drawn larger regardless of severity arithmetic.
+EMPHASIS_CATEGORIES = ("Death", "Injury")
 
 
 def render_map(df: pd.DataFrame) -> None:
-    """Render an interactive severity map, or a friendly message if empty.
+    """Render an interactive conflict map, or a friendly message if empty.
 
-    Points are colour-scaled green -> yellow -> red by normalised
-    ``Severity Score``, sized the same way, and the initial view adapts
-    its zoom level to the geographic spread of the filtered data.
+    Points are coloured by conflict category (fatality through
+    presence-only) and sized by severity with a pixel floor so they stay
+    visible at landscape zoom.
 
     Args:
         df: Filtered/enriched dataframe with ``Latitude``, ``Longitude``,
@@ -40,88 +67,98 @@ def render_map(df: pd.DataFrame) -> None:
         return
 
     plot_df = df.copy()
-    max_severity = float(plot_df["Severity Score"].max())
-    colors = plot_df["Severity Score"].apply(lambda s: _severity_to_color(s, max_severity))
+    plot_df["_category"] = classify_conflict(plot_df)
+    plot_df["_category_label"] = plot_df["_category"].map(CATEGORY_LABELS).fillna("Unknown")
+
+    colors = plot_df["_category"].map(CATEGORY_COLORS)
+    colors = colors.where(colors.notna(), pd.Series([(120, 120, 120)] * len(plot_df), index=plot_df.index))
     plot_df[["_r", "_g", "_b"]] = pd.DataFrame(colors.tolist(), index=plot_df.index)
-    plot_df["_radius"] = _severity_to_radius(plot_df["Severity Score"])
+    plot_df["_radius"] = _severity_to_radius(plot_df)
 
     for optional_col in ["Division", "Range", "Beat", "Nearest Village"]:
         if optional_col not in plot_df.columns:
             plot_df[optional_col] = "N/A"
 
-    plot_df["_crop"] = _flag_label(plot_df, "Crop Damage")
-    plot_df["_house"] = _flag_label(plot_df, "House Damage")
-    plot_df["_injury"] = _flag_label(plot_df, "Injury")
+    plot_df["_date"] = (
+        plot_df["Date"].dt.strftime("%d %b %Y")
+        if "Date" in plot_df.columns
+        else "N/A"
+    )
+
+    # Send only what the layer and tooltip use. The whole frame is
+    # serialised to JSON and shipped to the browser, so the unused
+    # columns are pure payload -- and datetime/nullable-boolean columns
+    # do not survive that round trip cleanly anyway (a Timestamp
+    # serialises to an empty object), which is why the tooltip reads the
+    # pre-formatted `_date` string instead of `Date`.
+    layer_df = plot_df[
+        [
+            "Longitude", "Latitude", "_radius", "_r", "_g", "_b",
+            "_category_label", "_date", "Severity Score",
+            "Division", "Range", "Beat", "Nearest Village",
+        ]
+    ]
 
     layer = pdk.Layer(
         "ScatterplotLayer",
-        data=plot_df,
+        data=layer_df,
         get_position="[Longitude, Latitude]",
         get_radius="_radius",
-        get_fill_color="[_r, _g, _b, 180]",
+        get_fill_color="[_r, _g, _b, 190]",
         get_line_color=[40, 40, 40],
         line_width_min_pixels=1,
+        radius_min_pixels=RADIUS_MIN_PIXELS,
+        radius_max_pixels=RADIUS_MAX_PIXELS,
         pickable=True,
         auto_highlight=True,
     )
 
-    view_state = _adaptive_view_state(plot_df)
-
     deck = pdk.Deck(
         layers=[layer],
-        initial_view_state=view_state,
+        initial_view_state=_adaptive_view_state(plot_df),
         map_style=None,
         tooltip={
             "html": (
+                "<b>{_category_label}</b><br/>"
+                "<b>Date:</b> {_date} &nbsp; "
                 "<b>Severity:</b> {Severity Score}<br/>"
                 "<b>Division:</b> {Division} &nbsp; "
                 "<b>Range:</b> {Range} &nbsp; "
                 "<b>Beat:</b> {Beat}<br/>"
-                "<b>Nearest Village:</b> {Nearest Village}<br/>"
-                "<b>Crop damage:</b> {_crop} &nbsp; "
-                "<b>House damage:</b> {_house} &nbsp; "
-                "<b>Injury:</b> {_injury}"
+                "<b>Nearest Village:</b> {Nearest Village}"
             ),
-            "style": {"backgroundColor": "steelblue", "color": "white"},
+            "style": {"backgroundColor": "#1f5f3f", "color": "white"},
         },
     )
 
-    st.pydeck_chart(deck, use_container_width=True)
-    st.caption("🟢 Low severity → 🟡 Moderate → 🔴 High severity")
+    st.pydeck_chart(deck, width="stretch")
+    category_legend(plot_df["_category"].value_counts().to_dict())
+    st.caption(
+        "Casualty incidents are drawn at full size regardless of severity "
+        "arithmetic, so the most serious points stay findable at landscape zoom."
+    )
 
 
-def _flag_label(df: pd.DataFrame, column: str) -> pd.Series:
-    """Return 'Yes'/'No' labels for an optional boolean-ish flag column."""
-    if column not in df.columns:
-        return pd.Series("N/A", index=df.index)
-    return (pd.to_numeric(df[column], errors="coerce").fillna(0) > 0).map({True: "Yes", False: "No"})
+def _severity_to_radius(df: pd.DataFrame) -> pd.Series:
+    """Scale severity into a metre radius, with casualties given a floor.
 
-
-def _severity_to_color(score: float, max_score: float) -> Tuple[int, int, int]:
-    """Map a raw severity score to an RGB colour via green-yellow-red stops.
-
-    Args:
-        score: This row's severity score.
-        max_score: The maximum severity score across the plotted data,
-            used to normalise ``score`` into a 0-1 range.
+    Severity is log-scaled rather than linear. A fatality scores ~200x a
+    presence sighting, so linear scaling collapses everything that is not
+    a death onto the minimum radius and throws away every distinction
+    among the property-damage incidents that make up most of the data.
     """
-    normalised = 0.0 if max_score <= 0 else min(max(score / max_score, 0.0), 1.0)
+    scores = pd.to_numeric(df.get("Severity Score"), errors="coerce").fillna(0.0)
 
-    for (lo_t, lo_c), (hi_t, hi_c) in zip(_COLOR_STOPS, _COLOR_STOPS[1:]):
-        if lo_t <= normalised <= hi_t:
-            span = hi_t - lo_t or 1.0
-            frac = (normalised - lo_t) / span
-            return tuple(int(lo_c[i] + (hi_c[i] - lo_c[i]) * frac) for i in range(3))
-    return _COLOR_STOPS[-1][1]
+    log_scores = scores.clip(lower=0).apply(math.log1p)
+    max_log = float(log_scores.max())
+    normalised = log_scores / max_log if max_log > 0 else log_scores * 0.0
 
+    radius = MIN_RADIUS_M + normalised * (MAX_RADIUS_M - MIN_RADIUS_M)
 
-def _severity_to_radius(scores: pd.Series) -> pd.Series:
-    """Scale severity scores into a reasonable pixel-radius range (metres)."""
-    max_score = scores.max()
-    if max_score <= 0:
-        return pd.Series(MIN_RADIUS_M, index=scores.index)
-    normalised = (scores / max_score).clip(lower=0, upper=1)
-    return MIN_RADIUS_M + normalised * (MAX_RADIUS_M - MIN_RADIUS_M)
+    if "_category" in df.columns:
+        emphasised = df["_category"].isin(EMPHASIS_CATEGORIES)
+        radius = radius.mask(emphasised, MAX_RADIUS_M)
+    return radius
 
 
 def _adaptive_view_state(df: pd.DataFrame) -> pdk.ViewState:
@@ -130,18 +167,20 @@ def _adaptive_view_state(df: pd.DataFrame) -> pdk.ViewState:
     lon_min, lon_max = df["Longitude"].min(), df["Longitude"].max()
 
     lat_span = max(lat_max - lat_min, 0.01)
-    lon_span = max(lon_max - lon_min, 0.01)
+    # Longitude degrees are shorter than latitude degrees; compare the
+    # two spans in comparable units before picking the limiting one.
+    mean_lat = float((lat_min + lat_max) / 2)
+    lon_span = max((lon_max - lon_min) * math.cos(math.radians(mean_lat)), 0.01)
     span = max(lat_span, lon_span)
 
-    # Rough heuristic: halve zoom level for each doubling of angular span,
+    # Rough heuristic: drop one zoom level per doubling of angular span,
     # anchored so a ~0.05 degree spread (a couple of km) reads as zoom 12.
     zoom = 12 - math.log2(max(span / 0.05, 1))
     zoom = min(max(zoom, 5), 14)
 
     return pdk.ViewState(
-        latitude=float((lat_min + lat_max) / 2),
+        latitude=mean_lat,
         longitude=float((lon_min + lon_max) / 2),
         zoom=zoom,
         pitch=0,
     )
-
