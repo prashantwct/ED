@@ -1,40 +1,20 @@
-"""Conservation intelligence layer for protected-area managers.
+"""Conservation intelligence: beat priorities, timing, village exposure.
 
-The dashboard's other modules answer "what happened". This module
-answers the questions a range officer or division manager actually acts
-on:
+Answers the questions a range officer acts on -- where to post the team,
+when to run the shift, what is getting worse, and how much of it to
+trust.
 
-* **Where** do I put the response team this quarter?
-* **When** should the patrol shift start?
-* **What** is getting worse, versus what is merely large?
-* **How much** of this can I trust, given how thin the reporting is?
+Three rules run through it:
 
-Three design decisions run through everything here and are worth
-stating, because they are what separate this from a leaderboard of
-counts.
-
-**1. Tier decides, score only orders.**
-A beat's *tier* (Critical / High / Watch / Routine) comes from absolute,
-written-down rules -- a fatality puts a beat in Critical whether or not
-any other beat had one. The continuous priority score exists only to
-order beats *within* a tier. Scores that are normalised against whatever
-is currently on screen change when the user changes a filter, so a
-number like "67.3" is not a fact about the beat and must not be the
-thing a posting decision hangs on.
-
-**2. Raw rates from thin data are not evidence.**
-One conflict in one report is a 100% conflict rate. Left alone, every
-barely-surveyed beat outranks every well-surveyed one. Beat rates are
-therefore shrunk toward the landscape rate with an empirical-Bayes
-estimator whose strength is fitted from how much beats actually differ
-from each other (:func:`shrink_rates`), and every beat carries an
-explicit confidence label.
-
-**3. Counts measure patrol effort as much as elephants.**
-More reports from a beat can mean more conflict or simply more staff
-walking it. Nothing here can fully separate the two, so rates sit
-alongside volumes rather than replacing them, and the brief says so out
-loud instead of implying the data is cleaner than it is.
+* Tier decides, score only orders. Tiers come from fixed rules, so they
+  mean the same thing across periods and filters. The continuous score
+  only orders beats within a tier, because it is normalised against
+  whatever is currently on screen.
+* Raw rates from thin data are not evidence. One conflict in one report
+  is a 100% rate, so rates are shrunk toward the landscape rate and every
+  beat carries a confidence label.
+* Counts measure patrol effort as much as elephants. Rates sit alongside
+  volumes rather than replacing them.
 """
 
 from __future__ import annotations
@@ -45,6 +25,29 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from core.config import (
+    CASUALTY_POINTS_PER_DEATH,
+    CASUALTY_POINTS_PER_INJURY,
+    CONFIDENCE_THRESHOLDS,
+    CRITICAL_CASUALTY_WINDOW_DAYS,
+    DEFAULT_COVERAGE_TARGET,
+    DEFAULT_RECENT_DAYS,
+    ESCALATION_RATIO,
+    EVENTS_FOR_ESCALATION_HIGH,
+    FALLBACK_PRIOR_STRENGTH,
+    HISTORICAL_CASUALTY_DISCOUNT,
+    HOUSE_EVENTS_FOR_HIGH,
+    INJURIES_FOR_CRITICAL,
+    MAX_PEAK_MONTHS,
+    MIN_EVENTS_FOR_TREND,
+    MIN_WINDOW_DAYS,
+    NIGHT_SHARE_FOR_PATROL_SHIFT,
+    PRIOR_STRENGTH_BOUNDS,
+    RATE_MULTIPLE_FOR_HIGH,
+    SCORE_WEIGHTS,
+    SEASONAL_LIFT,
+    VILLAGE_SHARE_FOR_EARLY_WARNING,
+)
 from core.analytics import (
     classify_conflict,
     compute_kpis,
@@ -57,7 +60,7 @@ from core.analytics import (
 
 logger = logging.getLogger(__name__)
 
-# --- Decision tiers --------------------------------------------------------
+# --- Labels ---------------------------------------------------------------
 TIER_CRITICAL = "Critical"
 TIER_HIGH = "High"
 TIER_WATCH = "Watch"
@@ -75,71 +78,9 @@ CONFIDENCE_HIGH = "High"
 CONFIDENCE_MEDIUM = "Medium"
 CONFIDENCE_LOW = "Low"
 
-# Reports needed in a beat before its own rate is treated as informative.
-CONFIDENCE_THRESHOLDS = {CONFIDENCE_HIGH: 30, CONFIDENCE_MEDIUM: 10}
 
-# Comparison window for escalation detection, in days.
-DEFAULT_RECENT_DAYS = 90
-
-# How recent a casualty must be to put a beat in the Critical tier.
-#
-# Deliberately a fixed constant rather than the user-adjustable
-# escalation window. Critical is meant to mean the same thing in April as
-# in October; if it tracked a slider, dragging that slider would silently
-# redefine the tier and the whole "tier decides, score orders" guarantee
-# would go with it.
-#
-# Anchored to the latest date in the data, not to today, so that
-# reviewing a past period still surfaces the beats that were Critical
-# *then* instead of returning nothing.
-CRITICAL_CASUALTY_WINDOW_DAYS = 90
-# Below this the two comparison windows are too short to say anything.
-MIN_WINDOW_DAYS = 14
-# Combined conflict events across both windows needed to call a trend.
-MIN_EVENTS_FOR_TREND = 5
-# Recent-vs-prior ratios at which a beat is called escalating / easing.
-ESCALATION_RATIO = 1.5
 EASING_RATIO = 1 / ESCALATION_RATIO
 
-# A beat's adjusted conflict rate must exceed the landscape rate by this
-# multiple before rate alone promotes it.
-RATE_MULTIPLE_FOR_HIGH = 1.5
-
-# Thresholds used by the tier rules and action recommendations.
-INJURIES_FOR_CRITICAL = 3
-HOUSE_EVENTS_FOR_HIGH = 5
-EVENTS_FOR_ESCALATION_HIGH = 10
-NIGHT_SHARE_FOR_PATROL_SHIFT = 60.0
-VILLAGE_SHARE_FOR_EARLY_WARNING = 50.0
-
-# Priority-score component weights. Casualty pressure carries the most
-# weight by design: for human-elephant conflict, no volume of crop loss
-# should outrank a beat where someone was killed.
-SCORE_WEIGHTS = {
-    "casualty": 0.40,
-    "burden": 0.20,
-    "intensity": 0.20,
-    "exposure": 0.10,
-    "trend": 0.10,
-}
-
-# Casualty component anchors (points per person, capped at 100). Absolute
-# rather than relative, so a beat with a death scores the same whichever
-# other beats happen to be in view.
-CASUALTY_POINTS_PER_DEATH = 60.0
-CASUALTY_POINTS_PER_INJURY = 25.0
-
-# Weight applied to casualties older than the Critical window when
-# ordering beats. They still count -- a beat with a history of killing
-# people is not equivalent to one without -- but less than a fresh one.
-HISTORICAL_CASUALTY_DISCOUNT = 0.5
-
-# Default empirical-Bayes prior strength when it cannot be fitted.
-FALLBACK_PRIOR_STRENGTH = 10.0
-PRIOR_STRENGTH_BOUNDS = (1.0, 200.0)
-
-# Share of conflict events a recommended patrol window should cover.
-DEFAULT_COVERAGE_TARGET = 0.60
 
 BEAT_KEY_COLUMNS = ["Division", "Range", "Beat"]
 
@@ -154,30 +95,23 @@ def shrink_rates(
 ) -> Dict[str, object]:
     """Shrink per-group rates toward the pooled rate (empirical Bayes).
 
-    Without this, a beat with one report and one conflict shows a 100%
-    conflict rate and outranks a beat with 200 reports and 90 conflicts.
-    Shrinkage pulls each beat toward the landscape rate by an amount that
-    depends on how much evidence that beat actually has::
+    Otherwise one conflict in one report reads as a 100% rate and
+    outranks 90 conflicts in 200 reports::
 
         adjusted = (conflicts + k * landscape_rate) / (reports + k)
 
-    ``k`` is the prior strength in units of reports: a beat needs roughly
-    ``k`` reports of its own before its observed rate outweighs the
-    landscape rate. Rather than pick ``k`` arbitrarily it is fitted from
-    the data by method of moments -- if beats genuinely differ a lot,
-    ``k`` comes out small and each beat is trusted; if the spread between
-    beats looks like sampling noise, ``k`` comes out large and everything
-    is pulled hard toward the middle.
+    ``k`` is the prior strength in reports: a group needs roughly ``k``
+    of its own before its observed rate outweighs the landscape rate. It
+    is fitted by method of moments rather than picked.
 
     Args:
         successes: Conflict events per group.
         trials: Total reports per group.
-        prior_strength: Override for ``k``. Fitted from the data if None.
+        prior_strength: Override for ``k``. Fitted from data if None.
 
     Returns:
-        Dict with ``adjusted`` (numpy array of rates in 0-1),
-        ``prior_mean`` (the pooled landscape rate), and
-        ``prior_strength`` (the ``k`` actually used).
+        Dict with ``adjusted`` (rates in 0-1), ``prior_mean`` and
+        ``prior_strength``.
     """
     x = np.asarray(successes, dtype=float)
     n = np.asarray(trials, dtype=float)
@@ -206,10 +140,8 @@ def shrink_rates(
 def _fit_prior_strength(x: np.ndarray, n: np.ndarray, prior_mean: float) -> float:
     """Method-of-moments estimate of the Beta-Binomial prior strength.
 
-    Compares how much group rates actually vary against how much they
-    would vary from binomial sampling noise alone. Excess variation means
-    the groups really are different, which warrants a weak prior; no
-    excess means the differences are noise, which warrants a strong one.
+    Excess variation over binomial sampling noise means the groups really
+    differ, warranting a weak prior; no excess warrants a strong one.
     """
     usable = n > 0
     if usable.sum() < 2 or prior_mean <= 0 or prior_mean >= 1:
@@ -441,25 +373,16 @@ def _window_casualties(
 ) -> tuple:
     """People killed and injured per beat within the last ``window_days``.
 
-    The window ends at ``as_of`` -- the end of the review period -- not
-    at today and not at each beat's own last report. Callers should pass
-    the period end explicitly.
+    The window ends at ``as_of``, the review period's end -- not at each
+    beat's own last report. Otherwise selecting a beat that stopped
+    reporting months ago would measure from its final entry and flip an
+    old fatality back to Critical.
 
-    Why it must not default to the filtered frame's own maximum in real
-    use: a beat whose reporting stopped six months ago would then have
-    its window measured from *its* last report, so selecting that beat in
-    the sidebar would make its old fatality "recent" and flip it to
-    Critical. Recency has to be a property of the period under review,
-    not of which rows the user happens to have selected.
-
-    When no usable dates exist the window cannot be established and this
-    counts the whole period. That direction is deliberate: for a casualty
-    rule, over-escalating a beat is recoverable and missing a fatality is
-    not.
+    With no usable dates the whole period counts. For a casualty rule,
+    over-escalating is recoverable and missing a fatality is not.
 
     Returns:
-        ``(deaths, injuries)`` as numpy arrays aligned to the beat
-        grouping order used by :func:`beat_intelligence`.
+        ``(deaths, injuries)`` aligned to the beat grouping order.
     """
     index = df.groupby(key_cols, observed=True, dropna=False).size().index
 
@@ -482,16 +405,11 @@ def _window_casualties(
 def _beat_trends(
     df: pd.DataFrame, key_cols: List[str], recent_days: int
 ) -> pd.DataFrame:
-    """Compare conflict events in the recent window against the one before it.
+    """Compare conflict events in the recent window against the prior one.
 
-    This is the difference between reporting and intelligence: a large
-    beat that has been large for years needs steady resourcing, whereas a
-    small beat that has doubled needs someone to go and find out why.
-
-    Both windows are the same length so the comparison is like-for-like.
-    When the dataset is too short to hold two windows, the windows shrink
-    to half the available span; below :data:`MIN_WINDOW_DAYS` no trend is
-    claimed at all.
+    Equal-length windows, so the comparison is like-for-like. Short
+    datasets shrink both to half the span; below ``MIN_WINDOW_DAYS`` no
+    trend is claimed.
     """
     empty = pd.DataFrame(columns=key_cols + ["Trend", "Recent vs Prior"])
     if "Date" not in df.columns or df["Date"].isna().all():
@@ -564,15 +482,11 @@ def _percentile_rank(values: pd.Series) -> pd.Series:
 def _priority_score(table: pd.DataFrame) -> pd.Series:
     """Blend the component signals into a 0-100 ordering score.
 
-    Deliberately used only to order beats *within* a tier. Two of the
-    five components (damage burden, and implicitly the rate percentile)
-    are relative to the beats currently in view, so the number moves when
-    the user changes a filter. The tier does not.
+    Orders beats within a tier only: some components are relative to the
+    beats currently in view, so the number moves when filters change.
     """
-    # Casualties inside the Critical window score at full weight, older
-    # ones at half. Without the split, a beat whose fatalities are all
-    # historical would order above one with a fresh death, which is the
-    # opposite of what the tier change is for.
+    # Recent casualties at full weight, older at half: otherwise a beat
+    # with only historical fatalities orders above one with a fresh death.
     older_deaths = (table["Human Deaths"] - table["Recent Deaths"]).clip(lower=0)
     older_injuries = (table["People Injured"] - table["Recent Injuries"]).clip(lower=0)
 
@@ -612,17 +526,11 @@ def _priority_score(table: pd.DataFrame) -> pd.Series:
 def _priority_tier(table: pd.DataFrame, landscape_rate: float) -> pd.Series:
     """Assign a decision tier from absolute rules.
 
-    The rules are written out rather than derived from the distribution
-    so that they mean the same thing across divisions, across reporting
-    periods, and regardless of what the user has filtered to. "Critical"
-    should describe the beat, not the beat's rank on today's screen.
+    Written out rather than derived from the distribution, so a tier
+    means the same thing across divisions, periods and filters.
 
-    Critical is the "deploy now" tier, so every one of its triggers is
-    measured over the recent casualty window rather than the whole
-    filtered period. A fatality two years ago is history and should not
-    hold a beat at the top of the list indefinitely; it still elevates
-    the beat to High, because a place that has killed someone before is
-    not a routine beat either.
+    Critical is the deploy-now tier: all its triggers use the recent
+    casualty window. An older fatality still elevates the beat to High.
     """
     recent_deaths = table["Recent Deaths"]
     recent_injuries = table["Recent Injuries"]
@@ -665,26 +573,17 @@ def _priority_tier(table: pd.DataFrame, landscape_rate: float) -> pd.Series:
 
 
 def _recommended_actions(table: pd.DataFrame, max_actions: int = 3) -> pd.Series:
-    """Translate the signals behind each beat's tier into concrete actions.
-
-    A ranking alone still leaves the manager to work out what the ranking
-    implies. These map the specific signal that fired -- fatalities,
-    night concentration, village proximity, house versus crop damage --
-    onto the intervention that addresses it.
-    """
+    """Map the signal that put a beat in its tier onto an intervention."""
     actions: List[str] = []
 
     for row in table.to_dict("records"):
         items: List[str] = []
         room = lambda: len(items) < max_actions  # noqa: E731 - local readability
 
-        # Fatality and injury responses overlap heavily, so they are
-        # mutually exclusive here -- stacking both would spend the whole
-        # action budget restating "send the response team".
-        #
-        # A fatality inside the Critical window calls for deployment; one
-        # outside it calls for a look at whether the mitigation put in
-        # place at the time actually held.
+        # Mutually exclusive: stacking both would spend the action
+        # budget restating "send the response team". A fatality inside
+        # the window calls for deployment; one outside it calls for a
+        # check that the mitigation put in place then still holds.
         if row["Recent Deaths"] > 0:
             items.append(
                 "Post rapid-response team; process ex-gratia; issue community alert"
@@ -826,11 +725,6 @@ def _peak_hour_window(
                 "lift": float(share / (length / 24)),
             }
     return None
-
-
-# A month must exceed an even spread by this much to count as seasonal.
-SEASONAL_LIFT = 1.25
-MAX_PEAK_MONTHS = 4
 
 
 def _peak_months(monthly: pd.Series) -> List[str]:
@@ -1076,12 +970,7 @@ def _caveats(
     villages: pd.DataFrame,
     critical_window_days: int = CRITICAL_CASUALTY_WINDOW_DAYS,
 ) -> List[str]:
-    """Limits a manager should know before acting on any of the above.
-
-    Stated every time, not only when something looks wrong. A brief that
-    only mentions its limits on bad days trains its readers to assume the
-    silent ones are unqualified.
-    """
+    """Limits to state every time, not only when something looks wrong."""
     caveats = [
         "Report counts reflect patrol and reporting effort as well as elephant "
         "activity. A beat with more reports may be better watched, not worse "

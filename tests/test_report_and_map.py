@@ -72,7 +72,7 @@ def test_report_includes_casualty_and_priority_sections():
     df = _df()
     html = generate_html_report(df, df["Date"].min(), df["Date"].max())
     for section in ["Assessment", "Priority Beats", "Timing", "People Killed",
-                    "Village Exposure", "How to read this"]:
+                    "Villages at Risk", "Movement Hotspots", "How to read this"]:
         assert section in html
 
 
@@ -157,3 +157,144 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# UI escaping
+# ---------------------------------------------------------------------------
+def test_ui_escapes_names_taken_from_the_csv(monkeypatch):
+    """core.ui renders through unsafe_allow_html. Beat and division names
+    come from an uploaded file, so they must never reach the DOM raw."""
+    from core import ui
+
+    captured = []
+    monkeypatch.setattr(ui.st, "markdown", lambda html, **kw: captured.append(html))
+
+    ui.hotspot_card({
+        "Hotspot": "H1",
+        "Tier": "High",
+        "Divisions": "<script>alert(1)</script>",
+        "Beats": "<img src=x onerror=alert(2)>",
+        "Sightings": 10, "Conflict Events": 3, "Conflict Share %": 30.0,
+        "Human Deaths": 0, "People Injured": 0, "Night Share %": 50.0,
+        "Radius (km)": 1.2,
+    })
+
+    html = "".join(captured)
+    # Escaping neutralises the angle brackets rather than stripping the
+    # text, so assert no tag can form -- not that the words are absent.
+    assert "<script" not in html
+    assert "<img" not in html
+    assert "&lt;script&gt;" in html
+    assert "&lt;img" in html
+
+
+def test_ui_escapes_section_subtitles(monkeypatch):
+    from core import ui
+
+    captured = []
+    monkeypatch.setattr(ui.st, "markdown", lambda html, **kw: captured.append(html))
+    ui.section("target", "Title", "<b>not bold</b>")
+
+    assert "<b>not bold</b>" not in "".join(captured)
+
+
+# ---------------------------------------------------------------------------
+# Basemap configuration
+# ---------------------------------------------------------------------------
+def test_basemap_style_url_is_built_from_the_configured_key(monkeypatch):
+    from core import map_engine
+
+    monkeypatch.setattr(map_engine, "maptiler_key", lambda: "TESTKEY")
+    url = map_engine.basemap_style("Satellite")
+
+    assert url.startswith("https://api.maptiler.com/maps/satellite/style.json")
+    assert "key=TESTKEY" in url
+    assert map_engine.basemap_warning() is None
+
+
+def test_maps_degrade_without_a_key(monkeypatch):
+    """A missing key must not break the map -- it drops the basemap only."""
+    from core import map_engine
+
+    monkeypatch.setattr(map_engine, "maptiler_key", lambda: None)
+    assert map_engine.basemap_style("Satellite") is None
+    assert "MAPTILER_KEY" in map_engine.basemap_warning()
+
+
+def test_unknown_style_falls_back_to_the_default(monkeypatch):
+    from core import map_engine
+
+    monkeypatch.setattr(map_engine, "maptiler_key", lambda: "K")
+    fallback = map_engine.BASEMAP_STYLES[map_engine.DEFAULT_BASEMAP]
+    assert fallback in map_engine.basemap_style("no such style")
+
+
+def test_key_is_read_from_the_environment(monkeypatch):
+    from core import map_engine
+
+    monkeypatch.setenv("MAPTILER_KEY", "FROM_ENV")
+    monkeypatch.setattr(map_engine.st, "secrets", {}, raising=False)
+    assert map_engine.maptiler_key() == "FROM_ENV"
+
+
+def test_no_maptiler_key_is_committed_to_the_repo():
+    """The key is client-side and cannot be hidden, but it must not be
+    baked into tracked source."""
+    import subprocess
+
+    tracked = subprocess.run(
+        ["git", "grep", "-lE", "api.maptiler.com.*key=[A-Za-z0-9]{10}", "--", "."],
+        capture_output=True, text=True,
+    )
+    assert tracked.stdout.strip() == "", f"key literal in: {tracked.stdout}"
+
+
+def test_village_labels_do_not_overprint():
+    """deck.gl TextLayer has no collision handling. Labelling every
+    Critical and High village produced an illegible smear on the real
+    data (36 labels in two tight clusters)."""
+    import math
+
+    from core.map_engine import (
+        LABEL_SEPARATION_KM,
+        MAX_LABELS,
+        _select_labels,
+    )
+
+    # Ten villages 1 km apart -- far too close to all carry a label.
+    rows = [{
+        "Village": f"V{i}", "Tier": "Critical",
+        "Latitude": 23.0 + i * (1 / 110.57), "Longitude": 81.0,
+        "Human Deaths": 1, "Conflict Events": 10 - i,
+    } for i in range(10)]
+    kept = _select_labels(pd.DataFrame(rows))
+
+    assert 0 < len(kept) < 10
+    assert len(kept) <= MAX_LABELS
+    separations = [
+        abs(a - b) * 110.57
+        for i, a in enumerate(kept["Latitude"]) for b in kept["Latitude"][i + 1:]
+    ]
+    assert all(s >= LABEL_SEPARATION_KM - 0.01 for s in separations)
+
+
+def test_labels_prefer_the_worst_village_in_a_cluster():
+    from core.map_engine import _select_labels
+
+    rows = [
+        {"Village": "Fatal", "Tier": "Critical", "Latitude": 23.0, "Longitude": 81.0,
+         "Human Deaths": 2, "Conflict Events": 3},
+        {"Village": "Nearby", "Tier": "High", "Latitude": 23.002, "Longitude": 81.0,
+         "Human Deaths": 0, "Conflict Events": 50},
+    ]
+    kept = _select_labels(pd.DataFrame(rows))
+    assert list(kept["Village"]) == ["Fatal"]
+
+
+def test_routine_villages_are_never_labelled():
+    from core.map_engine import _select_labels
+
+    rows = [{"Village": "Quiet", "Tier": "Routine", "Latitude": 23.0,
+             "Longitude": 81.0, "Human Deaths": 0, "Conflict Events": 1}]
+    assert _select_labels(pd.DataFrame(rows)).empty

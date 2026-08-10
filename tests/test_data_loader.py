@@ -115,6 +115,26 @@ def test_out_of_range_hour_becomes_unknown():
     assert any("0-23" in w for w in warnings)
 
 
+def test_centroids_in_the_sightings_slot_says_so():
+    """Both files are called something.csv and the uploaders sit close
+    together, so this swap is an easy slip. 'Missing Beat, Date, Division,
+    Range' gives the user no clue that is what happened."""
+    csv = io.StringIO("Village,Latitude,Longitude\nPadaha,24.3,81.0\n")
+    with pytest.raises(DataValidationError) as exc:
+        load_and_validate_csv(csv)
+
+    message = str(exc.value)
+    assert "centroids" in message.lower()
+    assert "sidebar" in message.lower()
+
+
+def test_a_genuinely_incomplete_sightings_file_still_gets_the_column_list():
+    csv = io.StringIO("Date,Latitude,Longitude\n03/04/2026,22.3,80.6\n")
+    with pytest.raises(DataValidationError) as exc:
+        load_and_validate_csv(csv)
+    assert "missing required column" in str(exc.value).lower()
+
+
 def test_blank_beat_becomes_unknown_and_stays_sortable():
     """A single blank Beat used to take the whole app down.
 

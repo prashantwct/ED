@@ -1,0 +1,13 @@
+[server]
+# The sightings export is ~400 KB and centroids ~260 KB. A tight cap keeps
+# an accidental multi-GB upload from exhausting the container's memory.
+maxUploadSize = 10
+enableXsrfProtection = true
+enableCORS = false
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#1f5f3f"

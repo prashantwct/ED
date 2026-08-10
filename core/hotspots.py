@@ -1,25 +1,12 @@
 """Movement hotspots and the villages exposed to them.
 
-A beat is an administrative unit. Elephants do not move in beats, and a
-herd that works a corridor along a beat boundary shows up as moderate
-pressure in two beats rather than as the one hotspot it actually is.
-This module finds the clusters in the point data directly, then asks
-which settlements sit in or beside them.
+A beat is an administrative unit; elephants do not move in beats. A herd
+working a corridor along a beat boundary reads as moderate pressure in
+two beats rather than the one hotspot it is. This clusters the point
+data directly, then asks which settlements sit in or beside the result.
 
-Two stages:
-
-1. :func:`detect_hotspots` clusters sighting locations by density
-   (DBSCAN). Density-based rather than grid-based because a grid imposes
-   arbitrary boundaries -- a corridor straddling two cells is split in
-   half -- and density clustering also refuses to invent a hotspot where
-   the points are simply spread out.
-2. :func:`villages_at_risk` ranks villages by the conflict recorded
-   around them and their exposure to those hotspots.
-
-Stage 2 needs village centroids, which the sighting export does not
-contain. Without them the hotspots are still located, sized and tiered;
-they just cannot be named. The functions say so rather than silently
-returning nothing.
+Village naming needs centroids (``data/centroids.csv``). Without them
+hotspots are still located, sized and tiered.
 """
 
 from __future__ import annotations
@@ -38,8 +25,18 @@ from core.analytics import (
     human_deaths,
     human_injuries,
 )
-from core.intelligence import (
+from core.config import (
+    CONFLICT_SHARE_FOR_HIGH,
     CRITICAL_CASUALTY_WINDOW_DAYS,
+    DEFAULT_EPS_KM,
+    DEFAULT_MIN_SAMPLES,
+    DEFAULT_VILLAGE_RADIUS_KM,
+    EVENTS_FOR_WATCH,
+    KM_PER_DEG_LAT,
+    KM_PER_DEG_LON_EQUATOR,
+    MAX_SENSIBLE_RADIUS_KM,
+)
+from core.intelligence import (
     TIER_CRITICAL,
     TIER_HIGH,
     TIER_ORDER,
@@ -49,40 +46,6 @@ from core.intelligence import (
 
 logger = logging.getLogger(__name__)
 
-# Kilometres per degree, near enough at these latitudes for clustering.
-KM_PER_DEG_LAT = 110.57
-KM_PER_DEG_LON_EQUATOR = 111.32
-
-# Two sightings within this distance are neighbours.
-#
-# Tuned against a real 1,761-row export rather than picked for
-# roundness. DBSCAN chains: if eps reaches the scale at which sightings
-# are continuously distributed, clusters merge through the moderate
-# density between them and the output stops being hotspots. On that
-# export the failure is abrupt -- at eps 2.5 km, 94% of points fell into
-# 7 "hotspots", the largest with a 17.7 km radius, which is a region and
-# not somewhere a team can be sent. At 1.0 km the radii settle at 1-3 km.
-DEFAULT_EPS_KM = 1.0
-
-# Neighbours required before a point can anchor a cluster. Kept high
-# relative to eps: this is what stops a chain of moderate density from
-# linking two genuine concentrations, and stops a handful of scattered
-# reports being promoted into a "hotspot".
-DEFAULT_MIN_SAMPLES = 15
-
-# A hotspot wider than this is a sign eps is chaining rather than
-# concentrating. Not an error -- some landscapes really do have broad
-# activity belts -- but the brief says so instead of presenting it as a
-# patrol target.
-MAX_SENSIBLE_RADIUS_KM = 5.0
-
-# Radius around a village searched for incidents when ranking exposure.
-DEFAULT_VILLAGE_RADIUS_KM = 3.0
-
-# A hotspot needs at least this share of its sightings to be conflict
-# before it is treated as a conflict hotspot rather than a movement one.
-CONFLICT_SHARE_FOR_HIGH = 0.25
-EVENTS_FOR_WATCH = 5
 
 NOISE_LABEL = -1
 
@@ -90,10 +53,8 @@ NOISE_LABEL = -1
 def _to_km_plane(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
     """Project lat/lon onto a local plane in kilometres.
 
-    Longitude is scaled by cos(latitude) for the same reason as in
-    :mod:`core.spatial`: unscaled degrees make east-west separation look
-    ~8% larger than it is at this latitude, which distorts which points
-    are neighbours and therefore where cluster boundaries fall.
+    Longitude scaled by cos(latitude): unscaled degrees overstate
+    east-west separation by ~8% here, distorting cluster boundaries.
     """
     reference_lat = float(np.nanmean(lat))
     x = lon * KM_PER_DEG_LON_EQUATOR * math.cos(math.radians(reference_lat))
@@ -104,9 +65,8 @@ def _to_km_plane(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
 def _dbscan(points: np.ndarray, eps: float, min_samples: int) -> np.ndarray:
     """Minimal DBSCAN over a KD-tree.
 
-    Implemented here rather than pulled from scikit-learn to avoid adding
-    a heavy dependency to a field-deployed app for one algorithm; scipy
-    is already required for the KD-tree.
+    Hand-rolled to avoid a scikit-learn dependency for one algorithm;
+    scipy is already required.
 
     Returns:
         Integer cluster labels, ``-1`` for points in no cluster.
@@ -203,8 +163,7 @@ def detect_hotspots(
             clustered["Date"] > cutoff, 0.0
         )
     else:
-        # No usable dates: count every casualty as recent. Over-flagging
-        # a hotspot is recoverable; missing a fatal one is not.
+        # No usable dates: count every casualty as recent.
         clustered["_recent_death"] = clustered["_deaths"]
 
     rows = []
@@ -263,9 +222,8 @@ def _resolve_anchor(df: pd.DataFrame, as_of: Optional[pd.Timestamp]):
 def _name_list(group: pd.DataFrame, column: str, limit: Optional[int] = None) -> str:
     """Comma-joined unique values, tolerant of nulls and mixed dtypes.
 
-    Field exports arrive with Arrow-backed string columns that keep
-    ``pd.NA`` through ``astype(str)``, which makes a bare ``sorted()``
-    raise on comparing NA to str.
+    Arrow-backed string columns keep ``pd.NA`` through ``astype(str)``,
+    so a bare ``sorted()`` raises comparing NA to str.
     """
     if column not in group.columns:
         return "N/A"
@@ -282,9 +240,8 @@ def _summarise_cluster(cluster_id: int, group: pd.DataFrame) -> Dict[str, object
     centre_lat = float(group["Latitude"].mean())
     centre_lon = float(group["Longitude"].mean())
 
-    # Radius as the 90th percentile of member distances from the centre,
-    # not the maximum -- a single outlying report should not inflate the
-    # footprint a manager plans patrol coverage around.
+    # 90th percentile, not the maximum: one outlying report should not
+    # inflate the footprint patrol coverage is planned around.
     dx = group["_x"] - group["_x"].mean()
     dy = group["_y"] - group["_y"].mean()
     distances = np.sqrt(dx**2 + dy**2)
@@ -460,6 +417,8 @@ def _village_columns() -> List[str]:
         "Nearest Hotspot",
         "Distance to Hotspot (km)",
         "Inside Hotspot",
+        "Latitude",
+        "Longitude",
     ]
 
 
@@ -472,8 +431,8 @@ def _summarise_village(village: pd.Series, nearby: pd.DataFrame) -> Dict[str, ob
 
     return {
         "Village": str(village["Village"]),
-        "_lat": float(village["Latitude"]),
-        "_lon": float(village["Longitude"]),
+        "Latitude": float(village["Latitude"]),
+        "Longitude": float(village["Longitude"]),
         "Conflict Events": int(len(nearby)),
         "Human Deaths": float(nearby["_deaths"].sum()),
         "Recent Deaths": float(nearby["_recent_death"].sum()),
@@ -495,15 +454,15 @@ def _attach_hotspot_context(
         table["Nearest Hotspot"] = "N/A"
         table["Distance to Hotspot (km)"] = float("nan")
         table["Inside Hotspot"] = False
-        return table.drop(columns=["_lat", "_lon"])
+        return table
 
     hs_pts = np.column_stack([
         hotspots["Centre Longitude"].to_numpy(dtype=float) * lon_scale,
         hotspots["Centre Latitude"].to_numpy(dtype=float) * KM_PER_DEG_LAT,
     ])
     village_pts = np.column_stack([
-        table["_lon"].to_numpy(dtype=float) * lon_scale,
-        table["_lat"].to_numpy(dtype=float) * KM_PER_DEG_LAT,
+        table["Longitude"].to_numpy(dtype=float) * lon_scale,
+        table["Latitude"].to_numpy(dtype=float) * KM_PER_DEG_LAT,
     ])
 
     distances, indices = cKDTree(hs_pts).query(village_pts, k=1)
@@ -512,7 +471,7 @@ def _attach_hotspot_context(
     table["Inside Hotspot"] = (
         distances <= hotspots.iloc[indices]["Radius (km)"].to_numpy()
     )
-    return table.drop(columns=["_lat", "_lon"])
+    return table
 
 
 def _village_tiers(table: pd.DataFrame) -> pd.Series:
@@ -573,6 +532,43 @@ def hotspot_caveats(
             "No village centroids loaded, so hotspots cannot be named against "
             "settlements. The sighting export carries no village field; supply a "
             "centroids file (Village, Latitude, Longitude) to rank villages at risk."
+        )
+
+    return notes
+
+
+def village_caveats(
+    village_risk: pd.DataFrame,
+    df: pd.DataFrame,
+    radius_km: float = DEFAULT_VILLAGE_RADIUS_KM,
+) -> List[str]:
+    """Limits a reader needs before acting on the village ranking.
+
+    Chiefly that the casualty columns do not add up: overlapping radii
+    credit one fatality to every village near it.
+    """
+    notes: List[str] = []
+    if village_risk.empty:
+        return notes
+
+    actual_deaths = float(human_deaths(df).sum())
+    counted = float(village_risk["Human Deaths"].sum())
+    if counted > actual_deaths:
+        notes.append(
+            f"Casualty columns are per-village exposure and do not sum: the "
+            f"{radius_km:g} km radii overlap, so one incident is credited to every "
+            f"village near it. These rows total {counted:.0f} deaths against "
+            f"{actual_deaths:.0f} actually recorded. Read a row as 'this village is "
+            "exposed to a fatality', not as that village's own toll."
+        )
+
+    outside = village_risk[~village_risk["Inside Hotspot"].fillna(False).astype(bool)]
+    critical_outside = outside[outside["Tier"] == TIER_CRITICAL]
+    if len(critical_outside):
+        notes.append(
+            f"{len(critical_outside)} of the Critical villages sit outside every "
+            "detected hotspot. Fatalities are not confined to where movement "
+            "concentrates, so hotspot patrols alone will not cover them."
         )
 
     return notes
