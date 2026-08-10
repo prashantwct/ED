@@ -1,9 +1,10 @@
 [server]
-# The sightings export is ~400 KB and centroids ~260 KB. A tight cap keeps
-# an accidental multi-GB upload from exhausting the container's memory.
+# The sightings export is ~400 KB and centroids ~260 KB. A tight cap stops
+# an accidental multi-GB upload exhausting the container.
 maxUploadSize = 10
+# XSRF protection requires CORS to stay enabled; setting enableCORS=false
+# alongside it is overridden by Streamlit and warns on every start.
 enableXsrfProtection = true
-enableCORS = false
 
 [browser]
 gatherUsageStats = false

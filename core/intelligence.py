@@ -972,32 +972,31 @@ def _caveats(
 ) -> List[str]:
     """Limits to state every time, not only when something looks wrong."""
     caveats = [
-        "Report counts reflect patrol and reporting effort as well as elephant "
-        "activity. A beat with more reports may be better watched, not worse "
-        "affected -- read the adjusted conflict rate alongside the raw volume."
+        "Report counts reflect patrol effort as well as elephant activity. Read "
+        "the adjusted rate alongside raw volume."
     ]
 
     if not beats.empty:
         thin = int((beats["Confidence"] == CONFIDENCE_LOW).sum())
         if thin:
             caveats.append(
-                f"{thin} of {len(beats)} beats have fewer than "
-                f"{CONFIDENCE_THRESHOLDS[CONFIDENCE_MEDIUM]} reports. Their rates are "
-                "shrunk toward the landscape average and marked low confidence."
+                f"{thin} of {len(beats)} beats have under "
+                f"{CONFIDENCE_THRESHOLDS[CONFIDENCE_MEDIUM]} reports. Rates shrunk "
+                "toward the landscape average, marked low confidence."
             )
 
     night_known = kpis.get("night_known", 0)
     entries = kpis.get("entries", 0)
     if entries and night_known < entries:
         caveats.append(
-            f"Night/day is known for {night_known:,} of {entries:,} reports; "
-            "timing figures are based only on those."
+            f"Night/day known for {night_known:,} of {entries:,} reports; timing "
+            "is based on those only."
         )
 
     if villages.empty:
         caveats.append(
-            "No village-centroid data applied, so village exposure and the "
-            "proximity component of the priority score are unavailable."
+            "No village centroids applied: village exposure and the proximity "
+            "component of the score are unavailable."
         )
 
     if not df.empty and "Date" in df.columns and df["Date"].notna().any():
@@ -1009,11 +1008,9 @@ def _caveats(
             )
 
     caveats.append(
-        f"Critical means a person was killed or injured in the last "
-        f"{critical_window_days} days of the period shown. Beats with older "
-        "casualties and nothing recent sit in High, not Critical -- check the "
-        "'Human Deaths' column alongside 'Recent Deaths' before concluding a "
-        "beat is safe."
+        f"Critical = a casualty in the last {critical_window_days} days. Older "
+        "casualties put a beat in High. Check 'Killed (period)' as well as "
+        "'Killed (recent)'."
     )
 
     if not beats.empty and "Recent Deaths" in beats.columns:
@@ -1022,14 +1019,13 @@ def _caveats(
         )
         if historical_only:
             caveats.append(
-                f"{historical_only} beat(s) had a fatality earlier in the period but "
-                f"none in the last {critical_window_days} days, so they are High "
-                "rather than Critical."
+                f"{historical_only} beat(s) had a fatality earlier in the period "
+                f"but none in the last {critical_window_days} days: High, not "
+                "Critical."
             )
 
     caveats.append(
-        "Tiers are set by fixed rules and are comparable across periods and "
-        "filters. The priority score only orders beats within a tier and will "
-        "move when filters change."
+        "Tiers are comparable across periods and filters. The score only orders "
+        "within a tier and moves when filters change."
     )
     return caveats
