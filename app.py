@@ -46,7 +46,12 @@ from core.intelligence import (
     format_window,
     management_brief,
 )
-from core.map_engine import render_map
+from core.map_engine import (
+    BASEMAP_STYLES,
+    DEFAULT_BASEMAP,
+    render_map,
+    render_village_map,
+)
 from core.report import generate_html_report
 from core.spatial import attach_nearest_village, load_village_centroids
 from core.ui import (
@@ -152,15 +157,15 @@ st.success(f"Loaded {len(raw_df):,} valid rows.")
 # ---------------------------------------------------------------------------
 # 2. Sidebar: centroids, filters, tuning
 # ---------------------------------------------------------------------------
-with st.sidebar.expander("Village centroids (optional)", expanded=False):
+with st.sidebar.expander("Village centroids", expanded=False):
     st.caption(
-        "Sighting exports carry no village field, so villages can only be named "
-        "against a centroids file. Needs columns: Village, Latitude, Longitude."
+        "Centroids for the Shahdol-Anuppur landscape ship with the app and load "
+        "automatically. Upload a file here only to override them for a different "
+        "landscape. Needs columns: Village, Latitude, Longitude."
     )
     centroid_upload = st.file_uploader(
-        "Upload centroids.csv", type="csv", key="centroids_upload"
+        "Override centroids", type="csv", key="centroids_upload"
     )
-    st.caption("Falls back to a local `centroids.csv` next to app.py if present.")
 
 try:
     villages, centroid_warnings = load_village_centroids(
@@ -254,6 +259,19 @@ village_radius = st.sidebar.slider(
     min_value=1.0, max_value=10.0, value=DEFAULT_VILLAGE_RADIUS_KM, step=0.5,
     help="Incidents within this distance of a village count towards its risk.",
 )
+
+st.sidebar.divider()
+st.sidebar.subheader("Map")
+basemap = st.sidebar.selectbox(
+    "Basemap",
+    list(BASEMAP_STYLES),
+    index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP),
+    help="MapTiler basemap. Terrain and imagery are more useful than street "
+    "cartography for reading elephant movement against the landscape.",
+)
+layer_sightings = st.sidebar.checkbox("Layer: sightings", value=True)
+layer_hotspots = st.sidebar.checkbox("Layer: hotspot footprints", value=True)
+layer_villages = st.sidebar.checkbox("Layer: villages at risk", value=True)
 
 filtered = filter_dataframe(
     df,
@@ -458,6 +476,9 @@ else:
     for note in village_caveats(village_risk, filtered, village_radius):
         st.caption(note)
 
+    st.markdown("**Village risk map**")
+    render_village_map(village_risk, hotspots, style_name=basemap)
+
 
 # ---------------------------------------------------------------------------
 # 8. Escalation & timing
@@ -509,8 +530,21 @@ with time_col:
 # ---------------------------------------------------------------------------
 # 9. Map
 # ---------------------------------------------------------------------------
-section("map", "Spatial view", "Coloured by what happened, sized by severity")
-render_map(filtered)
+section(
+    "map",
+    "Spatial view",
+    "Sightings coloured by what happened, hotspot footprints to scale, "
+    "villages by tier. Toggle layers in the sidebar.",
+)
+render_map(
+    filtered,
+    hotspots=hotspots,
+    villages=village_risk,
+    style_name=basemap,
+    show_sightings=layer_sightings,
+    show_hotspots=layer_hotspots,
+    show_villages=layer_villages,
+)
 
 
 # ---------------------------------------------------------------------------

@@ -417,6 +417,8 @@ def _village_columns() -> List[str]:
         "Nearest Hotspot",
         "Distance to Hotspot (km)",
         "Inside Hotspot",
+        "Latitude",
+        "Longitude",
     ]
 
 
@@ -429,8 +431,8 @@ def _summarise_village(village: pd.Series, nearby: pd.DataFrame) -> Dict[str, ob
 
     return {
         "Village": str(village["Village"]),
-        "_lat": float(village["Latitude"]),
-        "_lon": float(village["Longitude"]),
+        "Latitude": float(village["Latitude"]),
+        "Longitude": float(village["Longitude"]),
         "Conflict Events": int(len(nearby)),
         "Human Deaths": float(nearby["_deaths"].sum()),
         "Recent Deaths": float(nearby["_recent_death"].sum()),
@@ -452,15 +454,15 @@ def _attach_hotspot_context(
         table["Nearest Hotspot"] = "N/A"
         table["Distance to Hotspot (km)"] = float("nan")
         table["Inside Hotspot"] = False
-        return table.drop(columns=["_lat", "_lon"])
+        return table
 
     hs_pts = np.column_stack([
         hotspots["Centre Longitude"].to_numpy(dtype=float) * lon_scale,
         hotspots["Centre Latitude"].to_numpy(dtype=float) * KM_PER_DEG_LAT,
     ])
     village_pts = np.column_stack([
-        table["_lon"].to_numpy(dtype=float) * lon_scale,
-        table["_lat"].to_numpy(dtype=float) * KM_PER_DEG_LAT,
+        table["Longitude"].to_numpy(dtype=float) * lon_scale,
+        table["Latitude"].to_numpy(dtype=float) * KM_PER_DEG_LAT,
     ])
 
     distances, indices = cKDTree(hs_pts).query(village_pts, k=1)
@@ -469,7 +471,7 @@ def _attach_hotspot_context(
     table["Inside Hotspot"] = (
         distances <= hotspots.iloc[indices]["Radius (km)"].to_numpy()
     )
-    return table.drop(columns=["_lat", "_lon"])
+    return table
 
 
 def _village_tiers(table: pd.DataFrame) -> pd.Series:

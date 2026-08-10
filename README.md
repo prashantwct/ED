@@ -33,6 +33,15 @@ Dates are parsed by trying each candidate format against the whole column,
 day-first first. Genuinely ambiguous files (every day ≤ 12) are read day-first
 and flagged. Non-UTF-8 files fall back to cp1252 then Latin-1.
 
+**MapTiler key (optional).** Set `MAPTILER_KEY` in `.streamlit/secrets.toml`
+locally, or under Manage app → Settings → Secrets on Streamlit Cloud. See
+`.streamlit/secrets.toml.example`. Without it the maps still render, on a blank
+background.
+
+The key is fetched by the browser to load tiles, so it is visible to anyone
+using the app and cannot be kept secret. Restrict it by origin in the MapTiler
+dashboard (Keys → Allowed origins) rather than relying on secrecy.
+
 **Village centroids (bundled).** `data/centroids.csv` — 9,229 villages,
 `Village, Latitude, Longitude`, UTF-8. Constant reference data, loaded by
 default from a repo-relative path so it resolves regardless of working
@@ -60,6 +69,12 @@ village, so a settlement between two hotspots is credited with both.
 **Timing.** The shortest contiguous block of hours holding a target share of
 conflict, reported with how concentrated it actually is. Seasonality likewise,
 and silent when there is none.
+
+**Two maps.** The spatial view carries three toggleable layers — sightings
+coloured by what happened, hotspot footprints drawn at true radius, and
+villages by tier. The village-risk map leads with the settlements: circle size
+is conflict count, colour is tier, and the worst are labelled. Basemap is
+selectable (terrain, satellite, hybrid, topographic, streets, minimal).
 
 **A brief.** One structured object renders both the in-app panel and the
 downloadable HTML, so the numbers on screen and in the forwarded document
@@ -133,9 +148,11 @@ changes, use Streamlit secrets — never commit them.
   description and named reporters, and the filtered-data download exposes both.
   Put the app behind auth or keep it private before sharing a link. This is the
   most important item on this list.
-- **No basemap.** The map draws points on a blank background. Adding tiles means
-  choosing a provider, which is a licensing and network-access decision that
-  matters for an air-gapped deployment.
+- **Basemap needs network.** Tiles come from MapTiler, so an air-gapped
+  deployment gets points on a blank background. Everything else still works.
+- **Map labels are thinned.** deck.gl has no label collision handling, so at
+  most 14 village labels are drawn, and only where they clear 4 km of each
+  other. Unlabelled villages are still plotted and still have tooltips.
 - **Hotspot clustering is unweighted.** Every sighting counts the same, so a
   hotspot marks where reporting concentrates. The conflict-share and casualty
   columns are what separate a busy patrol route from a dangerous place.

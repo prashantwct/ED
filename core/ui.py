@@ -333,6 +333,22 @@ def hotspot_card(row: dict) -> None:
     )
 
 
+def map_legend(title: str, styles: dict) -> None:
+    """Legend for a map layer keyed on tier, glyph included."""
+    items = []
+    for entry in styles.values():
+        items.append(
+            f'<span class="ci-legend__item">'
+            f'<span class="ci-legend__dot" style="background:{entry["accent"]};"></span>'
+            f'{entry["glyph"]} {escape(entry["label"])}</span>'
+        )
+    st.markdown(
+        f'<div class="ci-legend"><span class="ci-legend__item">'
+        f"<b>{escape(title)}</b></span>{''.join(items)}</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def category_legend(counts: dict) -> None:
     """Map legend: colour swatch plus the category name in words."""
     items = []
