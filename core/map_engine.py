@@ -5,9 +5,9 @@ toggleable) and a village-risk view that leads with the settlements.
 
 The MapTiler key is read from Streamlit secrets or the environment, never
 hard-coded. Tiles are fetched by the browser, so the key is visible to
-anyone using the app regardless -- restrict it by origin in the MapTiler
-dashboard rather than trying to hide it. Without a key the maps still
-render, on a blank background.
+anyone using the app -- restrict it by origin in the MapTiler dashboard
+rather than trying to hide it. Without a key the maps fall back to a
+keyless Carto basemap.
 """
 
 from __future__ import annotations
@@ -47,6 +47,16 @@ DEFAULT_BASEMAP = "Outdoor (terrain)"
 
 _MAPTILER_STYLE_URL = "https://api.maptiler.com/maps/{style}/style.json?key={key}"
 
+# Keyless fallback. Carto's Positron basemap needs no API key, so the map
+# still has geographic context when MAPTILER_KEY is unset -- points on a
+# blank white background are close to useless for reading a landscape.
+_CARTO_FALLBACK_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+
+# maplibre is the provider for third-party style URLs. Leaving it at the
+# 'carto' default asks the frontend to treat a MapTiler URL as a Carto
+# basemap.
+_MAP_PROVIDER = "maplibre"
+
 
 def _hex_to_rgb(value: str) -> Tuple[int, int, int]:
     value = value.lstrip("#")
@@ -71,10 +81,15 @@ EMPHASIS_CATEGORIES = ("Death", "Injury")
 
 # Label only what a reader can act on; labelling 231 villages is noise.
 LABELLED_TIERS = ("Critical", "High")
-# Labels have no collision detection in deck.gl, and the villages cluster
-# tightly enough that 36 of them overprint into an unreadable smear.
-MAX_LABELS = 14
-LABEL_SEPARATION_KM = 4.0
+
+# deck.gl's TextLayer has no collision handling, so labels are thinned by
+# hand. The separation has to be in *pixels*: at the zoom that fits this
+# landscape one pixel is nearly 2 km, so a 4 km rule spaced labels 13 px
+# apart while a name like "Kekarpani" is ~70 px wide. Converted to a
+# ground distance per zoom level in _label_separation_km.
+LABEL_SEPARATION_PX = 70
+MAX_LABELS = 8
+LABEL_FONT_SIZE = 13
 
 
 def maptiler_key() -> Optional[str]:
@@ -88,23 +103,23 @@ def maptiler_key() -> Optional[str]:
     return os.getenv("MAPTILER_KEY") or None
 
 
-def basemap_style(style_name: str = DEFAULT_BASEMAP) -> Optional[str]:
-    """MapTiler style URL, or None when no key is configured."""
+def basemap_style(style_name: str = DEFAULT_BASEMAP) -> str:
+    """Basemap style URL. Falls back to the keyless Carto basemap."""
     key = maptiler_key()
     if not key:
-        return None
+        return _CARTO_FALLBACK_STYLE
     style = BASEMAP_STYLES.get(style_name, BASEMAP_STYLES[DEFAULT_BASEMAP])
     return _MAPTILER_STYLE_URL.format(style=style, key=key)
 
 
 def basemap_warning() -> Optional[str]:
-    """Message to show when no basemap can be loaded."""
+    """Message shown when the selected basemap is unavailable."""
     if maptiler_key():
         return None
     return (
-        "No MAPTILER_KEY configured, so points are drawn without a basemap. "
-        "Add the key under Streamlit secrets to get terrain and settlement "
-        "context behind the data."
+        "No MAPTILER_KEY set, so the basemap selector is inactive and a plain "
+        "fallback map is shown. Add the key under Streamlit secrets for terrain "
+        "and satellite."
     )
 
 
@@ -129,6 +144,7 @@ def render_map(
         return
 
     plot_df = _prepare_sightings(df)
+    view_state = _adaptive_view_state(plot_df)
 
     layers = []
     if show_hotspots and hotspots is not None and not hotspots.empty:
@@ -136,13 +152,13 @@ def render_map(
     if show_sightings:
         layers.append(_sighting_layer(plot_df))
     if show_villages and villages is not None and not villages.empty:
-        layers.extend(_village_layers(villages))
+        layers.extend(_village_layers(villages, view_state))
 
     if not layers:
         st.info("All map layers are switched off. Enable one in the sidebar.")
         return
 
-    _render_deck(layers, _adaptive_view_state(plot_df), style_name)
+    _render_deck(layers, view_state, style_name)
 
     if show_sightings:
         category_legend(plot_df["_category"].value_counts().to_dict())
@@ -163,17 +179,19 @@ def render_village_map(
         )
         return
 
+    view_state = _adaptive_view_state(village_risk)
+
     layers = []
     if hotspots is not None and not hotspots.empty:
         layers.extend(_hotspot_layers(hotspots, labels=False))
-    layers.extend(_village_layers(village_risk, emphasise=True))
+    layers.extend(_village_layers(village_risk, view_state, emphasise=True))
 
-    _render_deck(layers, _adaptive_view_state(village_risk), style_name)
+    _render_deck(layers, view_state, style_name)
     map_legend("Villages by tier", TIER_STYLE)
     st.caption(
-        "Circle size is the number of conflict incidents within the exposure "
-        "radius. Shaded rings are hotspot footprints. Critical and High "
-        "villages are labelled."
+        "Circle size is conflict count; rings are hotspot footprints. Only the "
+        "worst few villages are labelled to keep names legible - hover for the "
+        "rest."
     )
     _basemap_note()
 
@@ -189,6 +207,7 @@ def _render_deck(layers, view_state, style_name: str) -> None:
         layers=layers,
         initial_view_state=view_state,
         map_style=basemap_style(style_name),
+        map_provider=_MAP_PROVIDER,
         tooltip={
             "html": "{_tooltip}",
             "style": {"backgroundColor": "#1f5f3f", "color": "white",
@@ -303,17 +322,25 @@ def _hotspot_layers(hotspots: pd.DataFrame, labels: bool = True) -> list:
                 get_position="[Centre Longitude, Centre Latitude]",
                 get_text="Hotspot",
                 get_size=13,
-                get_color=[25, 35, 30, 235],
+                get_color=[255, 255, 255, 255],
                 get_alignment_baseline="'center'",
+                font_settings={"sdf": True},
+                outline_width=4,
+                outline_color=[20, 28, 24, 255],
+                font_weight=600,
                 background=True,
-                get_background_color=[255, 255, 255, 190],
-                background_padding=[3, 1],
+                get_background_color=[20, 28, 24, 150],
+                background_padding=[5, 2],
             )
         )
     return out
 
 
-def _village_layers(village_risk: pd.DataFrame, emphasise: bool = False) -> list:
+def _village_layers(
+    village_risk: pd.DataFrame,
+    view_state: Optional[pdk.ViewState] = None,
+    emphasise: bool = False,
+) -> list:
     """Village markers coloured by tier, sized by conflict count."""
     frame = village_risk.dropna(subset=["Latitude", "Longitude"]).copy()
     if frame.empty:
@@ -362,32 +389,48 @@ def _village_layers(village_risk: pd.DataFrame, emphasise: bool = False) -> list
         )
     ]
 
-    labelled = _select_labels(frame)
-    if emphasise and not labelled.empty:
+    if not emphasise or view_state is None:
+        return layers
+
+    separation = _label_separation_km(view_state.zoom, view_state.latitude)
+    labelled = _select_labels(frame, separation)
+    if not labelled.empty:
         layers.append(
             pdk.Layer(
                 "TextLayer",
                 data=labelled[["Longitude", "Latitude", "Village"]],
                 get_position="[Longitude, Latitude]",
                 get_text="Village",
-                get_size=12,
-                get_color=[20, 30, 25, 240],
-                get_pixel_offset=[0, -16],
+                get_size=LABEL_FONT_SIZE,
+                get_color=[255, 255, 255, 255],
+                get_pixel_offset=[0, -18],
+                font_settings={"sdf": True},
+                outline_width=4,
+                outline_color=[20, 28, 24, 255],
+                font_weight=600,
                 background=True,
-                get_background_color=[255, 255, 255, 205],
-                background_padding=[3, 1],
+                get_background_color=[20, 28, 24, 140],
+                background_padding=[5, 2],
             )
         )
     return layers
 
 
-def _select_labels(frame: pd.DataFrame) -> pd.DataFrame:
-    """Pick labels that will not overprint each other.
+def _label_separation_km(zoom: float, latitude: float) -> float:
+    """Ground distance matching LABEL_SEPARATION_PX at the given zoom.
 
-    deck.gl's TextLayer has no collision handling, and these villages sit
-    close enough that labelling every Critical and High one produces an
-    illegible smear. Walk them worst-first and keep a label only where it
-    clears every label already kept.
+    Web-Mercator resolution: 156543 m/px at zoom 0 on the equator,
+    halving per zoom level and shrinking by cos(latitude).
+    """
+    metres_per_pixel = 156543.03 * math.cos(math.radians(latitude)) / (2**zoom)
+    return LABEL_SEPARATION_PX * metres_per_pixel / 1000
+
+
+def _select_labels(frame: pd.DataFrame, separation_km: float) -> pd.DataFrame:
+    """Pick labels that will not overprint at the map's starting zoom.
+
+    Walks villages worst-first and keeps a label only where it clears
+    every label already placed.
     """
     candidates = frame[frame["Tier"].isin(LABELLED_TIERS)].copy()
     if candidates.empty:
@@ -404,18 +447,13 @@ def _select_labels(frame: pd.DataFrame) -> pd.DataFrame:
         math.radians(float(candidates["Latitude"].mean()))
     )
 
-    kept_x: list = []
-    kept_y: list = []
+    kept: list = []
     keep_index = []
     for idx, row in candidates.iterrows():
         x = float(row["Longitude"]) * lon_scale
         y = float(row["Latitude"]) * lat_scale
-        if all(
-            math.hypot(x - kx, y - ky) >= LABEL_SEPARATION_KM
-            for kx, ky in zip(kept_x, kept_y)
-        ):
-            kept_x.append(x)
-            kept_y.append(y)
+        if all(math.hypot(x - kx, y - ky) >= separation_km for kx, ky in kept):
+            kept.append((x, y))
             keep_index.append(idx)
         if len(keep_index) >= MAX_LABELS:
             break

@@ -502,9 +502,8 @@ def hotspot_caveats(
 
     if hotspots.empty:
         notes.append(
-            "No density hotspots found at the current settings. Either the "
-            "sightings are spread too evenly to concentrate, or the neighbour "
-            "distance is too small for this reporting density -- try widening it."
+            "No density hotspots at these settings. Either sightings are spread "
+            "too evenly, or the neighbour distance is too small. Try widening it."
         )
         return notes
 
@@ -512,26 +511,23 @@ def hotspot_caveats(
     total = int(len(df))
     if total:
         notes.append(
-            f"{clustered:,} of {total:,} sightings ({clustered / total * 100:.0f}%) fall "
-            "inside a hotspot. The rest are too dispersed to cluster and are not "
-            "represented in this table."
+            f"{clustered:,} of {total:,} sightings ({clustered / total * 100:.0f}%) "
+            "fall inside a hotspot. The rest are too dispersed to cluster."
         )
 
     oversized = hotspots[hotspots["Radius (km)"] > MAX_SENSIBLE_RADIUS_KM]
     if len(oversized):
         names = ", ".join(oversized["Hotspot"].astype(str))
         notes.append(
-            f"{len(oversized)} hotspot(s) span more than {MAX_SENSIBLE_RADIUS_KM:.0f} km "
-            f"({names}). At that size the cluster has chained across a broad activity "
-            "belt rather than isolating a patrol target -- reduce the neighbour "
-            "distance to split it."
+            f"{len(oversized)} hotspot(s) span over {MAX_SENSIBLE_RADIUS_KM:.0f} km "
+            f"({names}) -- chained across an activity belt rather than isolating a "
+            "patrol target. Reduce the neighbour distance to split them."
         )
 
     if villages is None or villages.empty:
         notes.append(
             "No village centroids loaded, so hotspots cannot be named against "
-            "settlements. The sighting export carries no village field; supply a "
-            "centroids file (Village, Latitude, Longitude) to rank villages at risk."
+            "settlements."
         )
 
     return notes
@@ -555,20 +551,18 @@ def village_caveats(
     counted = float(village_risk["Human Deaths"].sum())
     if counted > actual_deaths:
         notes.append(
-            f"Casualty columns are per-village exposure and do not sum: the "
-            f"{radius_km:g} km radii overlap, so one incident is credited to every "
-            f"village near it. These rows total {counted:.0f} deaths against "
-            f"{actual_deaths:.0f} actually recorded. Read a row as 'this village is "
-            "exposed to a fatality', not as that village's own toll."
+            f"Casualty columns do not sum: the {radius_km:g} km radii overlap, so "
+            f"one incident counts for every village near it. These rows total "
+            f"{counted:.0f} deaths against {actual_deaths:.0f} recorded. A row means "
+            "the village is exposed, not that it lost that many people."
         )
 
     outside = village_risk[~village_risk["Inside Hotspot"].fillna(False).astype(bool)]
     critical_outside = outside[outside["Tier"] == TIER_CRITICAL]
     if len(critical_outside):
         notes.append(
-            f"{len(critical_outside)} of the Critical villages sit outside every "
-            "detected hotspot. Fatalities are not confined to where movement "
-            "concentrates, so hotspot patrols alone will not cover them."
+            f"{len(critical_outside)} Critical village(s) sit outside every "
+            "hotspot. Hotspot patrols alone will not cover them."
         )
 
     return notes

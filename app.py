@@ -82,8 +82,7 @@ inject_theme()
 
 st.title("Elephant Conflict Intelligence")
 st.caption(
-    "Sighting and conflict reporting turned into deployment decisions: "
-    "which beats, which shift, which villages."
+    "Which beats, which shift, which villages."
 )
 
 # A raw 0-300 severity slider is unusable once fatalities weigh 100.
@@ -159,9 +158,8 @@ st.success(f"Loaded {len(raw_df):,} valid rows.")
 # ---------------------------------------------------------------------------
 with st.sidebar.expander("Village centroids", expanded=False):
     st.caption(
-        "Centroids for the Shahdol-Anuppur landscape ship with the app and load "
-        "automatically. Upload a file here only to override them for a different "
-        "landscape. Needs columns: Village, Latitude, Longitude."
+        "Shahdol-Anuppur centroids ship with the app and load automatically. "
+        "Upload only to override them. Columns: Village, Latitude, Longitude."
     )
     centroid_upload = st.file_uploader(
         "Override centroids", type="csv", key="centroids_upload"
@@ -240,15 +238,14 @@ st.sidebar.subheader("Analysis settings")
 recent_days = st.sidebar.slider(
     "Escalation window (days)",
     min_value=30, max_value=180, value=DEFAULT_RECENT_DAYS, step=30,
-    help="Each beat's most recent N days are compared against the N days before "
-    "them. This does not affect the Critical tier, which uses a fixed "
-    f"{CRITICAL_CASUALTY_WINDOW_DAYS}-day casualty window.",
+    help="Compares each beat's recent N days against the N before. Does not "
+    f"affect Critical, which uses a fixed {CRITICAL_CASUALTY_WINDOW_DAYS}-day window.",
 )
 eps_km = st.sidebar.slider(
     "Hotspot neighbour distance (km)",
     min_value=0.5, max_value=3.0, value=DEFAULT_EPS_KM, step=0.25,
-    help="Larger values merge nearby activity. Push it too far and separate "
-    "concentrations chain into one broad region rather than a patrol target.",
+    help="Larger values merge nearby activity. Too large and separate "
+    "concentrations chain into one region.",
 )
 min_samples = st.sidebar.slider(
     "Minimum sightings per hotspot",
@@ -266,8 +263,7 @@ basemap = st.sidebar.selectbox(
     "Basemap",
     list(BASEMAP_STYLES),
     index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP),
-    help="MapTiler basemap. Terrain and imagery are more useful than street "
-    "cartography for reading elephant movement against the landscape.",
+    help="Terrain and imagery read better than street cartography here.",
 )
 layer_sightings = st.sidebar.checkbox("Layer: sightings", value=True)
 layer_hotspots = st.sidebar.checkbox("Layer: hotspot footprints", value=True)
@@ -333,9 +329,8 @@ with st.expander("How to read this", expanded=False):
 section(
     "target",
     "Beat priorities",
-    "Tier is set by fixed rules and means the same thing across periods and "
-    f"filters. Critical = a casualty in the last {CRITICAL_CASUALTY_WINDOW_DAYS} days. "
-    "The score only orders beats within a tier.",
+    f"Critical = a casualty in the last {CRITICAL_CASUALTY_WINDOW_DAYS} days. "
+    "Tiers are comparable across periods; the score only orders within a tier.",
 )
 
 beats_table = brief["beats"]
@@ -363,8 +358,8 @@ else:
             ),
             "Adj. Conflict Rate %": st.column_config.NumberColumn(
                 "Adj. rate", format="%.1f%%",
-                help="Conflict rate shrunk toward the landscape average, so beats "
-                "with very few reports cannot top the ranking on one incident.",
+                help="Shrunk toward the landscape average, so a beat with few "
+                "reports cannot top the ranking on one incident.",
             ),
             "Recent Deaths": st.column_config.NumberColumn(
                 "Killed (recent)", format="%.0f",
@@ -396,17 +391,16 @@ else:
 section(
     "hotspot",
     "Movement hotspots",
-    "Density clusters in the point data itself. A herd working a corridor along "
-    "a beat boundary reads as moderate pressure in two beats, but as one hotspot "
-    "here.",
+    "Density clusters in the point data. A herd working a beat boundary reads "
+    "as one hotspot here, not moderate pressure in two beats.",
 )
 
 hotspots = _hotspots(filtered, eps_km, min_samples, period_end)
 
 if hotspots.empty:
     st.info(
-        "No density hotspots at the current settings. Try increasing the neighbour "
-        "distance or lowering the minimum sightings per hotspot in the sidebar."
+        "No hotspots at these settings. Try a larger neighbour distance or "
+        "fewer minimum sightings."
     )
 else:
     notable = hotspots[hotspots["Tier"] != "Routine"]
@@ -437,8 +431,8 @@ for note in hotspot_caveats(hotspots, filtered, villages):
 section(
     "village",
     "Villages at risk",
-    f"Every conflict incident within {village_radius:g} km of each village, so a "
-    "settlement between two hotspots is credited with both.",
+    f"Conflict within {village_radius:g} km of each village, so a settlement "
+    "between two hotspots counts both.",
 )
 
 village_risk = villages_at_risk(
@@ -447,11 +441,9 @@ village_risk = villages_at_risk(
 
 if village_risk.empty:
     st.info(
-        "No village-level ranking available. This export contains no village field, "
-        "so villages can only be identified from a centroids file — upload one in "
-        "the sidebar (columns: Village, Latitude, Longitude). Sources include the "
-        "Census village directory, the state forest department's own village "
-        "layer, or OpenStreetMap place nodes."
+        "No village ranking. Sighting exports carry no village field, so this "
+        "needs a centroids file (Village, Latitude, Longitude) — the Census "
+        "village directory, a forest department layer, or OpenStreetMap places."
     )
 else:
     st.dataframe(
@@ -533,8 +525,8 @@ with time_col:
 section(
     "map",
     "Spatial view",
-    "Sightings coloured by what happened, hotspot footprints to scale, "
-    "villages by tier. Toggle layers in the sidebar.",
+    "Sightings by conflict type, hotspot footprints to scale, villages by "
+    "tier. Toggle layers in the sidebar.",
 )
 render_map(
     filtered,
@@ -638,9 +630,8 @@ st.download_button(
     mime="text/csv",
 )
 st.warning(
-    "Field exports of this kind carry victim and reporter names, often in the "
-    "free-text description. Check before sharing a download outside the "
-    "department — this app has no access control."
+    "Field exports carry victim and reporter names, often in the free-text "
+    "description. This app has no access control — check before sharing."
 )
 
 

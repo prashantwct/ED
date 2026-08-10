@@ -213,12 +213,17 @@ def test_basemap_style_url_is_built_from_the_configured_key(monkeypatch):
     assert map_engine.basemap_warning() is None
 
 
-def test_maps_degrade_without_a_key(monkeypatch):
-    """A missing key must not break the map -- it drops the basemap only."""
+def test_missing_key_falls_back_to_a_keyless_basemap(monkeypatch):
+    """Without a key the map must still show tiles. Points on a blank
+    background give a manager no geographic context at all."""
     from core import map_engine
 
     monkeypatch.setattr(map_engine, "maptiler_key", lambda: None)
-    assert map_engine.basemap_style("Satellite") is None
+    style = map_engine.basemap_style("Satellite")
+
+    assert style == map_engine._CARTO_FALLBACK_STYLE
+    assert style.startswith("https://")
+    assert "key=" not in style, "the fallback must not need an API key"
     assert "MAPTILER_KEY" in map_engine.basemap_warning()
 
 
@@ -256,11 +261,9 @@ def test_village_labels_do_not_overprint():
     data (36 labels in two tight clusters)."""
     import math
 
-    from core.map_engine import (
-        LABEL_SEPARATION_KM,
-        MAX_LABELS,
-        _select_labels,
-    )
+    from core.map_engine import MAX_LABELS, _select_labels
+
+    separation_km = 4.0
 
     # Ten villages 1 km apart -- far too close to all carry a label.
     rows = [{
@@ -268,7 +271,7 @@ def test_village_labels_do_not_overprint():
         "Latitude": 23.0 + i * (1 / 110.57), "Longitude": 81.0,
         "Human Deaths": 1, "Conflict Events": 10 - i,
     } for i in range(10)]
-    kept = _select_labels(pd.DataFrame(rows))
+    kept = _select_labels(pd.DataFrame(rows), separation_km)
 
     assert 0 < len(kept) < 10
     assert len(kept) <= MAX_LABELS
@@ -276,7 +279,7 @@ def test_village_labels_do_not_overprint():
         abs(a - b) * 110.57
         for i, a in enumerate(kept["Latitude"]) for b in kept["Latitude"][i + 1:]
     ]
-    assert all(s >= LABEL_SEPARATION_KM - 0.01 for s in separations)
+    assert all(s >= separation_km - 0.01 for s in separations)
 
 
 def test_labels_prefer_the_worst_village_in_a_cluster():
@@ -288,7 +291,7 @@ def test_labels_prefer_the_worst_village_in_a_cluster():
         {"Village": "Nearby", "Tier": "High", "Latitude": 23.002, "Longitude": 81.0,
          "Human Deaths": 0, "Conflict Events": 50},
     ]
-    kept = _select_labels(pd.DataFrame(rows))
+    kept = _select_labels(pd.DataFrame(rows), 4.0)
     assert list(kept["Village"]) == ["Fatal"]
 
 
@@ -297,4 +300,4 @@ def test_routine_villages_are_never_labelled():
 
     rows = [{"Village": "Quiet", "Tier": "Routine", "Latitude": 23.0,
              "Longitude": 81.0, "Human Deaths": 0, "Conflict Events": 1}]
-    assert _select_labels(pd.DataFrame(rows)).empty
+    assert _select_labels(pd.DataFrame(rows), 4.0).empty

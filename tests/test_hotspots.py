@@ -279,7 +279,7 @@ def test_critical_villages_outside_hotspots_are_called_out():
         df, _villages(Far=(LAT + 0.25, LON + 0.25)), hotspots, radius_km=3.0
     )
     notes = village_caveats(out, df, 3.0)
-    assert any("outside every detected hotspot" in n for n in notes)
+    assert any("outside every" in n and "hotspot" in n for n in notes)
 
 
 def test_no_caveats_for_an_empty_village_table():
