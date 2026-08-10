@@ -1,43 +1,27 @@
-"""Presentation layer: design tokens, icons, and reusable Streamlit blocks.
+"""Design tokens, icons and reusable Streamlit blocks.
 
-Kept separate from the analytics so that changing how something looks
-cannot change what it says.
+Separate from the analytics so changing how something looks cannot
+change what it says.
 
-The rules this module exists to enforce, in the order they matter for an
-operational tool that people make staffing decisions from:
+Rules this enforces:
 
-**Tier is never communicated by colour alone.** Every tier badge carries
-a shape, a glyph and a word. Roughly one in twelve men has a colour
-vision deficiency, and red/green is the common pair -- a red-vs-green
-ranking is unreadable to them, and unreadable in a photocopied printout
-besides.
-
-**No emoji as structural icons.** Emoji render differently on every
-platform and font, cannot be recoloured to match a token, and read as
-informal in a document that goes to a Chief Conservator. The icons here
-are inline SVG on a consistent 24px grid at 1.75 stroke.
-
-**Numbers in columns use tabular figures.** Proportional digits make
-columns of counts ragged and hard to scan down, which is the single
-most common thing a reader does with these tables.
-
-**Both themes are defined.** Streamlit follows the system theme, so
-hard-coding light-mode colours leaves half the users with grey-on-grey.
-Every token has a dark-mode value.
+* Tier is never colour alone. Every badge carries a shape, a glyph and a
+  word, so the ranking survives greyscale printing and colour vision
+  deficiency.
+* No emoji as structural icons. Icons are inline SVG on a 24px grid.
+* Data columns use tabular figures so counts line up when scanned.
+* Both light and dark themes are defined; Streamlit follows the system.
+* Anything drawn from the CSV is escaped before it reaches HTML.
 """
 
 from __future__ import annotations
 
+from html import escape
 from typing import Optional
 
 import streamlit as st
 
-# ---------------------------------------------------------------------------
-# Tier presentation
-# ---------------------------------------------------------------------------
 # Contrast checked against the badge background: all pairs clear 4.5:1.
-# Each tier also gets a distinct glyph so the ranking survives greyscale
-# printing and colour vision deficiency.
 TIER_STYLE = {
     "Critical": {
         "bg": "#8C1D18",
@@ -73,10 +57,8 @@ TIER_STYLE = {
     },
 }
 
-# Conflict categories, ordered by severity. Deliberately not a red-green
-# ramp: this is the Okabe-Ito colourblind-safe sequence, which stays
-# distinguishable under deuteranopia and protanopia. The map pairs it
-# with a size channel so colour is never the only cue.
+# Okabe-Ito colourblind-safe sequence, not a red-green ramp. The map
+# pairs it with a size channel so colour is never the only cue.
 CATEGORY_STYLE = {
     "Death": {"color": "#7A1E00", "label": "Human fatality"},
     "Injury": {"color": "#D55E00", "label": "Human injury"},
@@ -85,8 +67,7 @@ CATEGORY_STYLE = {
     "Presence": {"color": "#56B4E9", "label": "Presence only"},
 }
 
-# Lucide-style icons: 24px grid, 1.75 stroke, currentColor so they take
-# the surrounding text colour in both themes.
+# Lucide-style: 24px grid, 1.75 stroke, currentColor for theme adaptation.
 _ICON_PATHS = {
     "assessment": '<path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/>'
                   '<path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/>'
@@ -108,23 +89,11 @@ _ICON_PATHS = {
              '<path d="M9 10v10"/>',
     "report": '<path d="M15 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6z"/>'
               '<path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/>',
-    "alert": '<path d="M10.3 4 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4a2 2 0 0 0-3.4 0z"/>'
-             '<path d="M12 9v4"/><path d="M12 17h.01"/>',
-    "filter": '<path d="M3 5h18l-7 8v6l-4 2v-8z"/>',
-    "upload": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
-              '<path d="m7 9 5-5 5 5"/><path d="M12 4v12"/>',
 }
 
 
 def icon(name: str, size: int = 20, color: str = "currentColor") -> str:
-    """Return an inline SVG icon as an HTML string.
-
-    Args:
-        name: Key from the built-in icon set.
-        size: Rendered square size in pixels.
-        color: Stroke colour; defaults to inheriting the text colour so
-            the icon adapts to light and dark themes automatically.
-    """
+    """Inline SVG icon. Inherits text colour so it adapts to the theme."""
     path = _ICON_PATHS.get(name, _ICON_PATHS["assessment"])
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
@@ -135,7 +104,7 @@ def icon(name: str, size: int = 20, color: str = "currentColor") -> str:
 
 
 def inject_theme() -> None:
-    """Install the design tokens and component CSS. Call once, early."""
+    """Install design tokens and component CSS. Call once, early."""
     st.markdown(_THEME_CSS, unsafe_allow_html=True)
 
 
@@ -149,13 +118,11 @@ _THEME_CSS = """
   --ci-text-muted:  #5b6b62;
   --ci-brand:       #1f5f3f;
   --ci-brand-soft:  #eef4f0;
-
   --ci-space-1: 4px;
   --ci-space-2: 8px;
   --ci-space-3: 12px;
   --ci-space-4: 16px;
   --ci-space-5: 24px;
-
   --ci-radius:  10px;
 }
 
@@ -171,28 +138,20 @@ _THEME_CSS = """
   }
 }
 
-/* Tabular figures everywhere numbers line up in a column. Proportional
-   digits make counts ragged and defeat scanning down a ranking. */
+/* Tabular figures wherever numbers form a column. */
 .ci-num, [data-testid="stMetricValue"], .stDataFrame td {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
 }
 
 .ci-section {
-  display: flex;
-  align-items: center;
-  gap: var(--ci-space-3);
-  margin: var(--ci-space-5) 0 var(--ci-space-2) 0;
-  color: var(--ci-text);
+  display: flex; align-items: center; gap: var(--ci-space-3);
+  margin: var(--ci-space-5) 0 var(--ci-space-2) 0; color: var(--ci-text);
 }
 .ci-section__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px; height: 34px;
-  border-radius: var(--ci-radius);
-  background: var(--ci-brand-soft);
-  color: var(--ci-brand);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: var(--ci-radius);
+  background: var(--ci-brand-soft); color: var(--ci-brand);
 }
 .ci-section__title { font-size: 1.12rem; font-weight: 650; line-height: 1.25; }
 .ci-section__sub   { font-size: 0.8rem; color: var(--ci-text-muted); margin-top: 1px; }
@@ -201,8 +160,7 @@ _THEME_CSS = """
   display: inline-flex; align-items: center; gap: 6px;
   padding: 2px 9px; border-radius: 999px;
   font-size: 0.72rem; font-weight: 700;
-  letter-spacing: 0.03em; text-transform: uppercase;
-  white-space: nowrap;
+  letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap;
 }
 .ci-badge__glyph { font-size: 0.72rem; line-height: 1; }
 
@@ -222,12 +180,10 @@ _THEME_CSS = """
 }
 .ci-tiercard__value {
   font-size: 1.7rem; font-weight: 700; line-height: 1.1;
-  margin-top: 2px; color: var(--ci-text);
-  font-variant-numeric: tabular-nums;
+  margin-top: 2px; color: var(--ci-text); font-variant-numeric: tabular-nums;
 }
 .ci-tiercard__meaning {
-  font-size: 0.72rem; color: var(--ci-text-muted);
-  margin-top: 3px; line-height: 1.35;
+  font-size: 0.72rem; color: var(--ci-text-muted); margin-top: 3px; line-height: 1.35;
 }
 
 .ci-card {
@@ -283,19 +239,19 @@ _THEME_CSS = """
 
 
 def section(name: str, title: str, subtitle: Optional[str] = None) -> None:
-    """Render a section header with an SVG icon rather than an emoji."""
-    sub = f'<div class="ci-section__sub">{subtitle}</div>' if subtitle else ""
+    """Section header with an SVG icon."""
+    sub = f'<div class="ci-section__sub">{escape(subtitle)}</div>' if subtitle else ""
     st.markdown(
         f'<div class="ci-section">'
         f'  <span class="ci-section__icon">{icon(name, 19)}</span>'
-        f'  <div><div class="ci-section__title">{title}</div>{sub}</div>'
+        f'  <div><div class="ci-section__title">{escape(title)}</div>{sub}</div>'
         f"</div>",
         unsafe_allow_html=True,
     )
 
 
 def tier_badge(tier: str) -> str:
-    """Badge HTML carrying colour, glyph and word -- never colour alone."""
+    """Badge HTML carrying colour, glyph and word."""
     style = TIER_STYLE.get(tier, TIER_STYLE["Routine"])
     return (
         f'<span class="ci-badge" style="background:{style["bg"]};color:{style["fg"]};">'
@@ -305,7 +261,7 @@ def tier_badge(tier: str) -> str:
 
 
 def tier_summary(counts: dict) -> None:
-    """The four-tier count strip, each card explaining what its tier means."""
+    """Four-tier count strip, each card stating what its tier means."""
     cards = []
     for tier, style in TIER_STYLE.items():
         cards.append(
@@ -321,30 +277,29 @@ def tier_summary(counts: dict) -> None:
 
 
 def findings(lines) -> None:
-    """The assessment block at the top of the page."""
+    """Assessment block at the top of the page."""
     if not lines:
         return
-    items = "".join(f"<li>{line}</li>" for line in lines)
-    st.markdown(
-        f'<div class="ci-findings"><ul>{items}</ul></div>', unsafe_allow_html=True
-    )
+    items = "".join(f"<li>{escape(str(line))}</li>" for line in lines)
+    st.markdown(f'<div class="ci-findings"><ul>{items}</ul></div>', unsafe_allow_html=True)
 
 
 def _stat(label: str, value: str, alert: bool = False) -> str:
     cls = "ci-stat__value ci-stat__value--alert" if alert else "ci-stat__value"
     return (
-        f'<div><div class="ci-stat__label">{label}</div>'
-        f'<div class="{cls}">{value}</div></div>'
+        f'<div><div class="ci-stat__label">{escape(label)}</div>'
+        f'<div class="{cls}">{escape(value)}</div></div>'
     )
 
 
 def hotspot_card(row: dict) -> None:
-    """One hotspot rendered as a card.
+    """One hotspot as a card.
 
-    Cards rather than another table row: a hotspot has a location, a
-    footprint and a casualty count that belong together, and the reader
-    is choosing between a handful of them rather than scanning a
-    ranking of 157 beats.
+    Cards rather than table rows: a hotspot's location, footprint and
+    casualty count belong together, and the reader is choosing between a
+    handful rather than scanning 157 beats.
+
+    Beat and division names come from the CSV, so they are escaped.
     """
     style = TIER_STYLE.get(str(row["Tier"]), TIER_STYLE["Routine"])
     deaths = int(row["Human Deaths"])
@@ -366,8 +321,9 @@ def hotspot_card(row: dict) -> None:
         f'<div class="ci-card" style="--ci-tier-accent:{style["accent"]};">'
         f'  <div class="ci-card__head">'
         f"    <div>"
-        f'      <div class="ci-card__title">{row["Hotspot"]} &middot; {row["Divisions"]}</div>'
-        f'      <div class="ci-card__where">Beats: {row["Beats"]}</div>'
+        f'      <div class="ci-card__title">{escape(str(row["Hotspot"]))} &middot; '
+        f'{escape(str(row["Divisions"]))}</div>'
+        f'      <div class="ci-card__where">Beats: {escape(str(row["Beats"]))}</div>'
         f"    </div>"
         f"    {tier_badge(str(row['Tier']))}"
         f"  </div>"
@@ -387,9 +343,7 @@ def category_legend(counts: dict) -> None:
         items.append(
             f'<span class="ci-legend__item">'
             f'<span class="ci-legend__dot" style="background:{style["color"]};"></span>'
-            f'{style["label"]} ({count:,})</span>'
+            f'{escape(style["label"])} ({count:,})</span>'
         )
     if items:
-        st.markdown(
-            f'<div class="ci-legend">{"".join(items)}</div>', unsafe_allow_html=True
-        )
+        st.markdown(f'<div class="ci-legend">{"".join(items)}</div>', unsafe_allow_html=True)

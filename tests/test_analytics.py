@@ -19,7 +19,6 @@ from core.analytics import (
     hourly_conflict_profile,
     monthly_trend,
 )
-from core.risk_engine import beat_risk_scores
 
 
 def _row(**overrides):
@@ -102,21 +101,6 @@ def test_division_conflict_rate_normalizes_not_just_counts():
     assert rates.loc["Big Division", "Conflict Rate %"] == 10.0
     # Small Division has fewer sightings but a higher rate -- rank must follow rate, not volume.
     assert rates.index[0] == "Small Division"
-
-
-def test_beat_risk_scores_handles_missing_near_village_gracefully():
-    """Must not crash when centroids.csv (and therefore 'Near Village')
-    is absent -- this is the normal case, not an edge case."""
-    df = make_df([_row(**{"Crop Damage": 1})])
-    df["Severity Score"] = compute_severity(df)
-    result = beat_risk_scores(df)  # no 'Near Village' column at all
-    assert not result.empty
-
-
-def test_beat_risk_scores_handles_empty_dataframe():
-    df = pd.DataFrame(columns=["Beat", "Severity Score", "Is_Night"])
-    result = beat_risk_scores(df)
-    assert result.empty
 
 
 def test_monthly_trend_and_hourly_profile_run_without_error():

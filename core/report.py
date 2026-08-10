@@ -1,13 +1,8 @@
-"""HTML report generation for the Elephant Sighting & Conflict Dashboard.
+"""Self-contained HTML brief.
 
-Produces a single self-contained HTML file (inline CSS, no external
-assets) so it can be emailed or printed by forest-department staff
-without any dependency on the dashboard being online.
-
-The document is a *conservation intelligence brief*, not a dump of the
-dashboard: it leads with what needs deciding (which beats, which shift,
-which villages), keeps the evidence beside each claim, and closes with
-the limits of the underlying data.
+Inline CSS, no external assets, so it can be emailed or printed without
+the dashboard being online. Leads with what needs deciding, keeps the
+evidence beside each claim, and closes with the data's limits.
 """
 
 from __future__ import annotations
@@ -82,8 +77,7 @@ _TIER_CLASSES = {
     TIER_WATCH: "tier-watch",
 }
 
-# A glyph per tier so the ranking survives a black-and-white photocopy
-# and readers with a colour vision deficiency. These briefs get printed.
+# Glyphs so the ranking survives a greyscale photocopy.
 _TIER_GLYPHS = {
     TIER_CRITICAL: "▲",
     TIER_HIGH: "◆",
@@ -168,9 +162,6 @@ def generate_html_report(
 
     <h2>Timing <span class="sub">when to staff</span></h2>
     {_temporal_html(brief["temporal"])}
-
-    <h2>Village Exposure</h2>
-    {_village_html(brief["villages"])}
 
     <h2>Conflict Type Breakdown</h2>
     {_conflict_breakdown_table(df)}
@@ -346,8 +337,7 @@ def _village_risk_html(village_risk: Optional[pd.DataFrame], top_n: int = 15) ->
 
 
 def _tier_cell(tier: object) -> str:
-    """Tier badge carrying a glyph as well as colour, so it survives
-    greyscale printing and colour vision deficiency."""
+    """Tier badge carrying a glyph as well as colour."""
     label = str(tier)
     css = _TIER_CLASSES.get(label, "tier-routine")
     glyph = _TIER_GLYPHS.get(label, "○")
@@ -382,31 +372,6 @@ def _temporal_html(temporal: Dict[str, object]) -> str:
         )
     return "".join(parts)
 
-
-def _village_html(villages: pd.DataFrame) -> str:
-    if villages.empty:
-        return (
-            '<p class="empty-note">No village-centroid data applied, so village-level '
-            "exposure could not be computed. Upload a centroids file to enable it.</p>"
-        )
-    rows = "".join(
-        "<tr>"
-        f"<td>{escape(str(r['Village']))}</td>"
-        f"<td class='num'>{int(r['Conflict Events'])}</td>"
-        f"<td class='num'>{int(r['Human Deaths'])}</td>"
-        f"<td class='num'>{int(r['People Injured'])}</td>"
-        f"<td class='num'>{int(r['House Damage Events'])}</td>"
-        f"<td class='num'>{int(r['Crop Damage Events'])}</td>"
-        f"<td class='num'>{_km(r['Median Distance (km)'])}</td>"
-        "</tr>"
-        for r in villages.to_dict("records")
-    )
-    return (
-        "<table><thead><tr><th>Village</th><th class='num'>Conflicts</th>"
-        "<th class='num'>Killed</th><th class='num'>Injured</th><th class='num'>House</th>"
-        "<th class='num'>Crop</th><th class='num'>Median dist.</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>"
-    )
 
 
 def _division_html(rates: pd.DataFrame) -> str:
@@ -460,11 +425,10 @@ def _night_day_table_html(night_day: pd.DataFrame) -> str:
 
 
 def _conflict_breakdown_table(df: pd.DataFrame) -> str:
-    """Counts by conflict category.
+    """Counts by conflict category, one row per report.
 
-    Each report is counted once, under the most severe category that
-    applies, so the rows sum to the report total instead of
-    double-counting an incident that involved both a death and crop loss.
+    Counted under the most severe category that applies, so rows sum to
+    the report total.
     """
     if df.empty:
         return '<p class="empty-note">No incident data available for the current filters.</p>'
@@ -502,9 +466,8 @@ def _format_period(start_date: Optional[date], end_date: Optional[date]) -> str:
 def _casualty_cell(row: dict) -> str:
     """Recent killed/injured, with the period total when it is larger.
 
-    Both are shown because the Critical tier keys off the recent figure
-    alone: a reader who sees only "0 / 0" on a beat that killed someone
-    eight months ago would draw the wrong conclusion about it.
+    Critical keys off the recent figure alone, so a beat showing "0 / 0"
+    may still have killed someone earlier in the period.
     """
     recent = f"{int(row['Recent Deaths'])} / {int(row['Recent Injuries'])}"
     total_deaths = int(row["Human Deaths"])

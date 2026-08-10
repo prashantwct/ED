@@ -1,14 +1,10 @@
-"""CSV ingestion and validation for the Elephant Sighting & Conflict Dashboard.
+"""CSV ingestion and validation.
 
-The goal of this module is to turn an arbitrary, hand-maintained field CSV
-into a clean, typed DataFrame - or fail with a clear, specific message
-about *why* it failed. Nothing in here talks to Streamlit; it is pure
-pandas so it can be unit tested and reused (e.g. from a CLI or notebook).
-
-Anything this module cannot resolve confidently is returned as a warning
-string rather than silently coerced. For a dataset that records human
-fatalities, quietly dropping or reinterpreting a row is the worst
-available outcome.
+Turns a hand-maintained field export into a clean, typed DataFrame, or
+fails with a specific message about why. Anything that cannot be
+resolved confidently is returned as a warning rather than silently
+coerced: for a dataset recording human fatalities, quietly dropping or
+reinterpreting a row is the worst outcome available.
 """
 
 from __future__ import annotations
@@ -18,6 +14,7 @@ from typing import BinaryIO, List, Optional, Tuple, Union
 
 import pandas as pd
 
+from core.config import DATE_FORMATS, TIME_FORMATS, VALID_LAT_RANGE, VALID_LON_RANGE
 from core.csv_io import read_csv_resilient
 from core.exceptions import DataValidationError
 
@@ -48,23 +45,6 @@ DEATH_COUNT_COLUMNS = ["Male Death Count", "Female Death Count", "Children Death
 
 # Text columns that get normalised (title-cased, trimmed) if present.
 TEXT_COLUMNS = ["Division", "Range", "Beat"]
-
-VALID_LAT_RANGE = (-90.0, 90.0)
-VALID_LON_RANGE = (-180.0, 180.0)
-
-# Candidate date formats, most-likely first. These are field exports from
-# Indian forest divisions, so day-first is the working assumption; the
-# order here only breaks ties when several formats parse equally well.
-DATE_FORMATS = [
-    "%d/%m/%Y",
-    "%d-%m-%Y",
-    "%Y-%m-%d",
-    "%d/%m/%y",
-    "%d-%m-%y",
-    "%d %b %Y",
-    "%d %B %Y",
-    "%m/%d/%Y",
-]
 
 # Formats that are indistinguishable on a given file whenever every day
 # component happens to be <= 12. If both parse the whole column we have
@@ -105,10 +85,8 @@ def load_and_validate_csv(
 
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
-        # The two uploaders sit close together and the files are both
-        # called something-.csv, so putting the centroids file in the
-        # sightings slot is an easy slip. Listing four missing columns
-        # gives the user no clue that is what happened.
+        # Listing four missing columns gives no clue that the two
+        # uploaders were swapped, which is an easy slip.
         if _looks_like_centroids(df):
             raise DataValidationError(
                 "This looks like a village centroids file (Village, Latitude, "
@@ -165,14 +143,11 @@ def load_and_validate_csv(
 
     # --- Text / categorical columns ---------------------------------------
     #
-    # Nulls are filled *before* the string conversion, not after. On the
-    # Arrow-backed string dtype pandas now uses for CSV text columns,
-    # `astype(str)` leaves a missing value as NaN rather than turning it
-    # into the string "nan", so a trailing `.replace({"Nan": ...})` never
-    # sees it. The null then survives into Beat/Division/Range, and the
-    # first `sorted(df["Beat"].unique())` -- which is how the sidebar
-    # builds its filter options -- raises on comparing float to str.
-    # One blank beat in an export is enough to take the whole app down.
+    # Fill nulls before the string conversion: on the Arrow-backed string
+    # dtype, astype(str) leaves a missing value as NaN rather than "nan",
+    # so a trailing replace never sees it. The null then reaches
+    # sorted(df["Beat"].unique()) in the sidebar and raises on comparing
+    # float to str -- one blank beat takes the app down.
     for col in TEXT_COLUMNS:
         blank = df[col].isna()
         cleaned = (
@@ -230,22 +205,13 @@ def _looks_like_centroids(df: pd.DataFrame) -> bool:
 def _parse_dates(series: pd.Series) -> Tuple[pd.Series, List[str]]:
     """Parse a date column with an explicit, reported format choice.
 
-    Inferred parsing is not safe here. Given a day-first export, pandas
-    locks onto the format implied by the first value: a column starting
-    ``03/04/2026`` is read as March 4th, and every later value whose day
-    exceeds 12 (``21/04/2026``) fails outright and is dropped as
-    "unreadable". The result is a mix of wrong dates and missing rows,
-    with no error raised.
+    Inferred parsing is unsafe here: pandas locks onto the layout implied
+    by the first value, so a day-first column starting ``03/04/2026`` is
+    read as 4 March and every later value with a day above 12 is dropped
+    as unreadable -- wrong dates and missing rows, with no error.
 
-    So: try each candidate format against the whole column, keep the one
-    that parses the most values, and say which was used whenever the
-    choice was not obvious.
-
-    Args:
-        series: The raw ``Date`` column.
-
-    Returns:
-        ``(parsed_series, warnings)``.
+    Tries each candidate format against the whole column and keeps the
+    one parsing the most values.
     """
     warnings: List[str] = []
 
@@ -326,13 +292,10 @@ def _derive_hour(df: pd.DataFrame) -> List[str]:
         return warnings
 
     if "Time" in df.columns:
-        # Try the known field formats first. Gajrakshak exports use
-        # "HH:MM:SS"; older sheets use "HH:MM". Matching one of these
-        # avoids dateutil's per-element fallback, which parses every row
-        # individually and emits a "could not infer format" warning on a
-        # file that is in fact perfectly consistent.
+        # Match a known format first. Otherwise dateutil parses every row
+        # individually and warns about a file that is in fact consistent.
         parsed_time = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
-        for fmt in ("%H:%M:%S", "%H:%M"):
+        for fmt in TIME_FORMATS:
             missing = parsed_time.isna() & df["Time"].notna()
             if not missing.any():
                 break
@@ -364,15 +327,10 @@ def _derive_hour(df: pd.DataFrame) -> List[str]:
 def _check_death_field_consistency(df: pd.DataFrame) -> List[str]:
     """Flag rows where the death counts and the ``Death`` flag disagree.
 
-    Rows with a per-person death count filled in but ``Death`` not set
-    are *not* counted as fatalities downstream (see
-    ``analytics._people_count``): in the exports reviewed these matched a
-    same-day, same-beat report of a fatality already logged elsewhere,
-    so counting them would double-count a real death.
-
-    That is a judgement call about someone's death, so it gets named
-    explicitly here -- with row IDs where available -- rather than being
-    resolved silently in either direction.
+    Rows with a count but no flag are not counted as fatalities (see
+    ``analytics._people_count``). That is a judgement call about
+    someone's death, so it is named here with row IDs rather than
+    resolved silently.
     """
     warnings: List[str] = []
 

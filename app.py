@@ -1,17 +1,14 @@
-"""Elephant Conflict Intelligence.
+"""Elephant Conflict Intelligence -- Streamlit entry point.
 
-Streamlit entry point. All data logic lives in core/ - this file is
-responsible only for layout, widgets, and wiring user input to those
-pure functions.
-
-Page order follows the order a manager makes decisions in: what is the
-situation, which beats need people, where exactly, which villages, then
-the supporting evidence. Charts and raw data sit at the bottom because
-they support a decision rather than drive it.
+All data logic lives in core/; this file handles layout, widgets and
+wiring only. Page order follows the order a manager decides in:
+situation, which beats, where exactly, which villages, then evidence.
 """
 
 from __future__ import annotations
 
+import hashlib
+import io
 import logging
 
 import pandas as pd
@@ -28,6 +25,7 @@ from core.analytics import (
     night_day_comparison,
     severity_distribution,
 )
+from core.config import LOG_PATH
 from core.data_loader import load_and_validate_csv
 from core.exceptions import DataValidationError, SpatialEnrichmentError
 from core.hotspots import (
@@ -57,9 +55,17 @@ from core.ui import (
     hotspot_card,
     inject_theme,
     section,
+    tier_summary,
 )
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_PATH, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
 logger = logging.getLogger(__name__)
 
 st.set_page_config(
@@ -75,9 +81,7 @@ st.caption(
     "which beats, which shift, which villages."
 )
 
-# Severity thresholds behind the "minimum incident type" filter. Exposing
-# a raw 0-300 severity slider is unusable once fatalities are weighted at
-# 100 points -- these bands are what a manager actually filters by.
+# A raw 0-300 severity slider is unusable once fatalities weigh 100.
 SEVERITY_FILTERS = {
     "All reports": 0.0,
     "Conflict only (damage or worse)": 1.0,
@@ -93,20 +97,26 @@ BRAND = "#1f5f3f"
 BRAND_ALT = "#C2570C"
 
 
+def _frame_key(frame: pd.DataFrame) -> str:
+    """Cheap, stable cache key for a DataFrame.
+
+    Hashing the coordinates and row count is enough to identify the
+    filtered selection, and avoids pickling the whole frame on every
+    rerun just to build a key.
+    """
+    coords = frame[["Latitude", "Longitude"]].to_numpy().tobytes()
+    return hashlib.blake2b(coords, digest_size=16).hexdigest() + f":{len(frame)}"
+
+
 @st.cache_data(show_spinner="Loading and validating the export...")
 def _load(file_bytes: bytes, filename: str):
-    """Parse an uploaded CSV. Cached on content so filter changes don't re-parse."""
-    import io
-
+    """Parse an uploaded CSV. Cached on content, so filters don't re-parse."""
     return load_and_validate_csv(io.BytesIO(file_bytes))
 
 
-@st.cache_data(show_spinner="Finding movement hotspots...")
-def _hotspots(payload: bytes, eps_km: float, min_samples: int, as_of):
-    """Cached hotspot detection. Clustering is the slowest step on a rerun."""
-    import pickle
-
-    frame = pickle.loads(payload)
+@st.cache_data(show_spinner="Finding movement hotspots...", hash_funcs={pd.DataFrame: _frame_key})
+def _hotspots(frame: pd.DataFrame, eps_km: float, min_samples: int, as_of):
+    """Cached hotspot detection -- the slowest step on a rerun."""
     return detect_hotspots(frame, eps_km=eps_km, min_samples=min_samples, as_of=as_of)
 
 
@@ -176,9 +186,8 @@ df["Is_Night"] = compute_is_night(df)
 st.sidebar.header("Filters")
 
 if st.sidebar.button("Reset filters"):
-    # Clearing the widget keys is what actually resets them; a bare
-    # st.rerun() re-runs the script with every selection still in
-    # session state, so the button appears to do nothing.
+    # Clearing the widget keys is what resets them; a bare st.rerun()
+    # re-runs with every selection still in session state.
     for key in FILTER_KEYS:
         st.session_state.pop(key, None)
     st.rerun()
@@ -197,10 +206,9 @@ if isinstance(date_range, tuple) and len(date_range) != 2:
 division_options = sorted(df["Division"].unique())
 divisions = st.sidebar.multiselect("Division", division_options, key="flt_divisions")
 
-# Cascading filters need their stale selections pruned *before* the
-# dependent widget is created. Widening Division back out otherwise
-# leaves Range holding values that are no longer offered, silently
-# excluding rows while the UI looks reset.
+# Prune stale selections before creating the dependent widget. Widening
+# Division back out otherwise leaves Range holding values no longer
+# offered, silently excluding rows while the UI looks reset.
 range_pool = df[df["Division"].isin(divisions)] if divisions else df
 range_options = sorted(range_pool["Range"].unique())
 st.session_state["flt_ranges"] = [
@@ -283,11 +291,8 @@ if filtered.empty:
     st.warning("No rows match the current filters. Adjust the filters in the sidebar.")
     st.stop()
 
-# Anchor casualty recency to the end of the selected date range, not to
-# whatever the current Division/Beat selection happens to end at. Without
-# this, selecting a beat whose reporting stopped months ago would measure
-# its window from its own last report and flip an old fatality back to
-# Critical.
+# Anchor casualty recency to the selected period's end, not to whatever
+# the current Division/Beat selection happens to end at.
 period_end = pd.Timestamp(date_range[1]) if len(date_range) == 2 else df["Date"].max()
 
 brief = management_brief(filtered, recent_days=recent_days, as_of=period_end)
@@ -319,8 +324,6 @@ beats_table = brief["beats"]
 if beats_table.empty:
     st.info("Not enough data to rank beats.")
 else:
-    from core.ui import tier_summary
-
     tier_summary(beats_table["Priority Tier"].value_counts().to_dict())
 
     display_cols = [
@@ -380,11 +383,7 @@ section(
     "here.",
 )
 
-import pickle  # noqa: E402 - local to the cached call below
-
-hotspots = _hotspots(
-    pickle.dumps(filtered), eps_km, min_samples, period_end
-)
+hotspots = _hotspots(filtered, eps_km, min_samples, period_end)
 
 if hotspots.empty:
     st.info(

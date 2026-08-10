@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from core import spatial
 from core.exceptions import SpatialEnrichmentError
 from core.spatial import (
     NEAR_VILLAGE_THRESHOLD_KM,
@@ -95,8 +96,28 @@ def test_enrichment_is_a_no_op_without_centroids():
     assert warnings == []
 
 
-def test_missing_default_centroids_file_returns_none(tmp_path, monkeypatch):
+def test_bundled_centroids_load_by_default_from_any_directory(tmp_path, monkeypatch):
+    """Centroids are constant reference data shipped in the repo, so they
+    must resolve from a repo-relative path rather than the cwd -- the app
+    is not always launched from the repo root."""
     monkeypatch.chdir(tmp_path)
+    villages, _ = load_village_centroids(None)
+
+    assert villages is not None
+    assert len(villages) > 9000
+    assert set(villages.columns) >= {"Village", "Latitude", "Longitude"}
+
+
+def test_bundled_centroids_are_valid_utf8_and_in_range():
+    villages, warnings = load_village_centroids(None)
+
+    assert not any("not valid UTF-8" in w for w in warnings)
+    assert villages["Latitude"].between(-90, 90).all()
+    assert villages["Longitude"].between(-180, 180).all()
+
+
+def test_absent_bundled_file_is_a_silent_no_op(tmp_path, monkeypatch):
+    monkeypatch.setattr(spatial, "DEFAULT_CENTROIDS_PATH", tmp_path / "nope.csv")
     villages, warnings = load_village_centroids(None)
     assert villages is None
     assert warnings == []

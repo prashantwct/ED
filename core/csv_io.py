@@ -1,15 +1,4 @@
-"""Resilient CSV reading shared by every loader in the app.
-
-Field data arrives from spreadsheets, GIS exports and hand-edited sheets
-that pass through Windows editors, so a file is routinely *almost* UTF-8:
-thousands of clean ASCII rows with a handful of stray bytes in a place
-name. Refusing the whole file over one byte is the wrong trade -- a real
-9,230-village centroid file was rejected because a single ``0xbb`` sat in
-one village name, taking 9,229 usable villages down with it.
-
-So: try UTF-8, then the Windows/Latin-1 encodings those tools actually
-emit, and report which one worked rather than silently guessing.
-"""
+"""Resilient CSV reading shared by the loaders."""
 
 from __future__ import annotations
 
@@ -18,19 +7,9 @@ from typing import BinaryIO, Callable, List, Optional, Tuple, Union
 
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+from core.config import FALLBACK_ENCODINGS
 
-# Tried in order. cp1252 before latin-1 because it is what Excel on
-# Windows produces, and it decodes the 0x80-0x9F range that latin-1 maps
-# to unusable control characters.
-#
-# Note that ISO-8859-1 maps all 256 byte values, so once it is in the
-# chain decoding never fails on bytes. Binary junk therefore arrives as
-# nonsense *text* and is rejected further on for not having the expected
-# columns -- which is the better error to show a user anyway. The final
-# raise below is a safety net for a future change to this list, not a
-# path a real file reaches.
-FALLBACK_ENCODINGS = ["utf-8", "cp1252", "ISO-8859-1"]
+logger = logging.getLogger(__name__)
 
 Source = Union[str, "BinaryIO"]
 
@@ -39,23 +18,20 @@ def read_csv_resilient(
     source: Source,
     on_error: Optional[Callable[[str], Exception]] = None,
 ) -> Tuple[pd.DataFrame, List[str]]:
-    """Read a CSV, falling back through known field-export encodings.
+    """Read a CSV, falling back through the encodings field exports use.
+
+    Files are routinely almost-UTF-8: thousands of clean ASCII rows with a
+    stray byte in one place name. Rejecting the whole file over one byte
+    is the wrong trade.
 
     Args:
-        source: Path or file-like object (rewound between attempts when
-            it supports ``seek``).
-        on_error: Builds the exception raised when the file cannot be
-            read at all. Defaults to ``ValueError``, so callers can map
-            failures onto their own error type.
+        source: Path or file-like object, rewound between attempts.
+        on_error: Builds the exception raised on failure, so callers get
+            their own error type. Defaults to ``ValueError``.
 
     Returns:
-        ``(dataframe, warnings)``. ``warnings`` names the encoding used
-        whenever it was not UTF-8, since a fallback means the file has
-        characters that may not have survived intact.
-
-    Raises:
-        Whatever ``on_error`` builds, if no encoding works or the file is
-        not parseable as CSV.
+        ``(dataframe, warnings)``. A warning names the encoding whenever
+        it was not UTF-8.
     """
     make_error = on_error or (lambda message: ValueError(message))
     warnings: List[str] = []
@@ -81,12 +57,13 @@ def read_csv_resilient(
         if encoding != "utf-8":
             warnings.append(
                 f"File is not valid UTF-8; read it as {encoding} instead. A few "
-                "characters in names may not be exactly as intended -- worth a "
-                "glance if any place name looks wrong."
+                "characters in names may not be exactly as intended."
             )
             logger.info("CSV decoded with fallback encoding %s.", encoding)
         return frame, warnings
 
+    # ISO-8859-1 maps all 256 byte values, so this is unreachable while it
+    # is in FALLBACK_ENCODINGS. Kept as a guard against that list changing.
     raise make_error(
         "Could not decode the file as text in UTF-8, Windows-1252 or Latin-1. "
         f"Please re-export it as UTF-8 CSV. ({last_decode_error})"

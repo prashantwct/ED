@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
 
-from core.analytics import CONFLICT_CATEGORIES, classify_conflict
+from core.analytics import classify_conflict
+from core.config import (
+    MAX_RADIUS_M,
+    MIN_RADIUS_M,
+    RADIUS_MAX_PIXELS,
+    RADIUS_MIN_PIXELS,
+)
 from core.ui import CATEGORY_STYLE, category_legend
 
 
@@ -18,30 +24,15 @@ def _hex_to_rgb(value: str) -> Tuple[int, int, int]:
     return tuple(int(value[i : i + 2], 16) for i in (0, 2, 4))
 
 
-# Colour by *what happened*, not by a normalised severity ramp. With a
-# fatality weighted at 100 and a crop raid at 3, a continuous ramp
-# anchored on the maximum renders every non-fatal incident the same shade
-# -- precisely the distinction a manager needs to see.
-#
-# Palette comes from core.ui so the map, the legend and the report cannot
-# drift apart, and it is the colourblind-safe sequence rather than a
-# red-to-green ramp. Size carries the same signal in parallel, so the
-# categories stay separable without colour at all.
+# Colour by what happened, not by a severity ramp: anchored on a
+# fatality at 100, a ramp renders every non-fatal incident the same
+# shade. Palette lives in core.ui so map, legend and report agree, and is
+# colourblind-safe. Size carries the same signal in parallel.
 CATEGORY_COLORS: Dict[str, Tuple[int, int, int]] = {
     key: _hex_to_rgb(style["color"]) for key, style in CATEGORY_STYLE.items()
 }
-
 CATEGORY_LABELS = {key: style["label"] for key, style in CATEGORY_STYLE.items()}
 
-# Radii are given in metres, but Deck.GL is told to clamp them to a pixel
-# range. This landscape spans roughly 150 km, which the adaptive view
-# fits at about zoom 7 -- close to 1 km per pixel. A 60 m radius is
-# 0.06 px there, i.e. invisible: without a pixel floor the map renders
-# empty at exactly the zoom level a division-wide review uses.
-MIN_RADIUS_M = 60
-MAX_RADIUS_M = 500
-RADIUS_MIN_PIXELS = 3
-RADIUS_MAX_PIXELS = 14
 
 # Categories that get drawn larger regardless of severity arithmetic.
 EMPHASIS_CATEGORIES = ("Death", "Injury")
@@ -85,12 +76,9 @@ def render_map(df: pd.DataFrame) -> None:
         else "N/A"
     )
 
-    # Send only what the layer and tooltip use. The whole frame is
-    # serialised to JSON and shipped to the browser, so the unused
-    # columns are pure payload -- and datetime/nullable-boolean columns
-    # do not survive that round trip cleanly anyway (a Timestamp
-    # serialises to an empty object), which is why the tooltip reads the
-    # pre-formatted `_date` string instead of `Date`.
+    # Only what the layer and tooltip use: the frame is serialised to
+    # JSON and shipped to the browser. Timestamps do not survive that
+    # round trip, hence the pre-formatted `_date` string.
     layer_df = plot_df[
         [
             "Longitude", "Latitude", "_radius", "_r", "_g", "_b",
@@ -140,12 +128,10 @@ def render_map(df: pd.DataFrame) -> None:
 
 
 def _severity_to_radius(df: pd.DataFrame) -> pd.Series:
-    """Scale severity into a metre radius, with casualties given a floor.
+    """Scale severity into a metre radius, casualties at full size.
 
-    Severity is log-scaled rather than linear. A fatality scores ~200x a
-    presence sighting, so linear scaling collapses everything that is not
-    a death onto the minimum radius and throws away every distinction
-    among the property-damage incidents that make up most of the data.
+    Log-scaled: a fatality scores ~200x a presence sighting, so linear
+    scaling collapses every non-fatal incident onto the minimum radius.
     """
     scores = pd.to_numeric(df.get("Severity Score"), errors="coerce").fillna(0.0)
 
@@ -162,19 +148,17 @@ def _severity_to_radius(df: pd.DataFrame) -> pd.Series:
 
 
 def _adaptive_view_state(df: pd.DataFrame) -> pdk.ViewState:
-    """Pick a centre and zoom level that fits all points, with sane bounds."""
+    """Centre and zoom that fit all points, within sane bounds."""
     lat_min, lat_max = df["Latitude"].min(), df["Latitude"].max()
     lon_min, lon_max = df["Longitude"].min(), df["Longitude"].max()
 
     lat_span = max(lat_max - lat_min, 0.01)
-    # Longitude degrees are shorter than latitude degrees; compare the
-    # two spans in comparable units before picking the limiting one.
+    # Compare spans in comparable units before picking the limiting one.
     mean_lat = float((lat_min + lat_max) / 2)
     lon_span = max((lon_max - lon_min) * math.cos(math.radians(mean_lat)), 0.01)
     span = max(lat_span, lon_span)
 
-    # Rough heuristic: drop one zoom level per doubling of angular span,
-    # anchored so a ~0.05 degree spread (a couple of km) reads as zoom 12.
+    # One zoom level per doubling of span, anchored so ~0.05 deg is z12.
     zoom = 12 - math.log2(max(span / 0.05, 1))
     zoom = min(max(zoom, 5), 14)
 

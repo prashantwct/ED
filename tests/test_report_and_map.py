@@ -72,7 +72,7 @@ def test_report_includes_casualty_and_priority_sections():
     df = _df()
     html = generate_html_report(df, df["Date"].min(), df["Date"].max())
     for section in ["Assessment", "Priority Beats", "Timing", "People Killed",
-                    "Village Exposure", "How to read this"]:
+                    "Villages at Risk", "Movement Hotspots", "How to read this"]:
         assert section in html
 
 
@@ -157,3 +157,43 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# UI escaping
+# ---------------------------------------------------------------------------
+def test_ui_escapes_names_taken_from_the_csv(monkeypatch):
+    """core.ui renders through unsafe_allow_html. Beat and division names
+    come from an uploaded file, so they must never reach the DOM raw."""
+    from core import ui
+
+    captured = []
+    monkeypatch.setattr(ui.st, "markdown", lambda html, **kw: captured.append(html))
+
+    ui.hotspot_card({
+        "Hotspot": "H1",
+        "Tier": "High",
+        "Divisions": "<script>alert(1)</script>",
+        "Beats": "<img src=x onerror=alert(2)>",
+        "Sightings": 10, "Conflict Events": 3, "Conflict Share %": 30.0,
+        "Human Deaths": 0, "People Injured": 0, "Night Share %": 50.0,
+        "Radius (km)": 1.2,
+    })
+
+    html = "".join(captured)
+    # Escaping neutralises the angle brackets rather than stripping the
+    # text, so assert no tag can form -- not that the words are absent.
+    assert "<script" not in html
+    assert "<img" not in html
+    assert "&lt;script&gt;" in html
+    assert "&lt;img" in html
+
+
+def test_ui_escapes_section_subtitles(monkeypatch):
+    from core import ui
+
+    captured = []
+    monkeypatch.setattr(ui.st, "markdown", lambda html, **kw: captured.append(html))
+    ui.section("target", "Title", "<b>not bold</b>")
+
+    assert "<b>not bold</b>" not in "".join(captured)
