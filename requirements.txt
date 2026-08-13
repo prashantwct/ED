@@ -4,4 +4,5 @@ numpy==2.4.6
 pydeck==0.9.3
 plotly==6.9.0
 scipy==1.17.1
+pillow==12.3.0
 python-dateutil==2.9.0.post0
