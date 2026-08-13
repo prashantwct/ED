@@ -35,8 +35,8 @@ and flagged. Non-UTF-8 files fall back to cp1252 then Latin-1.
 
 **MapTiler key (optional).** Set `MAPTILER_KEY` in `.streamlit/secrets.toml`
 locally, or under Manage app → Settings → Secrets on Streamlit Cloud. See
-`.streamlit/secrets.toml.example`. Without it the maps still render, on a blank
-background.
+`.streamlit/secrets.toml.example`. Without it the maps fall back to a keyless
+Carto basemap, and the brief's embedded maps drop to a plain background.
 
 The key is fetched by the browser to load tiles, so it is visible to anyone
 using the app and cannot be kept secret. Restrict it by origin in the MapTiler
@@ -78,7 +78,9 @@ selectable (terrain, satellite, hybrid, topographic, streets, minimal).
 
 **A brief.** One structured object renders both the in-app panel and the
 downloadable HTML, so the numbers on screen and in the forwarded document
-cannot drift apart.
+cannot drift apart. The brief names the divisions it covers in its header and
+embeds both maps as inline SVG over a static basemap, so it stays a single
+self-contained file that prints.
 
 ## Design rules
 
@@ -120,11 +122,12 @@ core/analytics.py    Severity, conflict classification, KPIs, filters
 core/intelligence.py Beat priorities, escalation, timing, the brief
 core/hotspots.py     DBSCAN clustering and village risk
 core/spatial.py      Centroid loading and nearest-village enrichment
-core/map_engine.py   pydeck map
+core/map_engine.py   Interactive pydeck maps
+core/map_export.py   Static SVG maps embedded in the brief
 core/report.py       Self-contained HTML brief
 core/ui.py           Design tokens, SVG icons, shared components
 data/centroids.csv   Bundled village centroids
-tests/               114 tests
+tests/               141 tests
 ```
 
 All tunables live in `core/config.py`. They encode domain judgement, not fact,
@@ -139,8 +142,8 @@ uploads at 10 MB and disables usage stats.
 **Logging.** Writes to `app.log` beside the app and to stdout. Set `ED_LOG_PATH`
 to relocate it on a read-only container.
 
-**No secrets.** The app makes no outbound calls and needs no API keys. If that
-changes, use Streamlit secrets — never commit them.
+**Secrets.** Only `MAPTILER_KEY`, and only for basemaps. Set it via Streamlit
+secrets; never commit it. The app works without it.
 
 ## Known limits
 
@@ -148,11 +151,13 @@ changes, use Streamlit secrets — never commit them.
   description and named reporters, and the filtered-data download exposes both.
   Put the app behind auth or keep it private before sharing a link. This is the
   most important item on this list.
-- **Basemap needs network.** Tiles come from MapTiler, so an air-gapped
-  deployment gets points on a blank background. Everything else still works.
-- **Map labels are thinned.** deck.gl has no label collision handling, so at
-  most 14 village labels are drawn, and only where they clear 4 km of each
-  other. Unlabelled villages are still plotted and still have tooltips.
+- **Basemap needs network.** Tiles come from MapTiler (or the keyless Carto
+  fallback), so an air-gapped deployment gets points on a plain background. The
+  brief says so in the figure rather than leaving it ambiguous.
+- **Map labels are thinned.** deck.gl has no label collision handling, so
+  labels are kept only where they clear 70 px of each other at the starting
+  zoom, capped at 8. On a landscape-wide view that is often only three or four.
+  Unlabelled villages are still plotted and still have tooltips.
 - **Hotspot clustering is unweighted.** Every sighting counts the same, so a
   hotspot marks where reporting concentrates. The conflict-share and casualty
   columns are what separate a busy patrol route from a dangerous place.

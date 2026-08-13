@@ -638,7 +638,11 @@ st.warning(
 # ---------------------------------------------------------------------------
 # 12. Report generation
 # ---------------------------------------------------------------------------
-section("report", "Intelligence brief", "Self-contained HTML for printing or email")
+section(
+    "report",
+    "Intelligence brief",
+    "Self-contained HTML with the maps embedded, for printing or email",
+)
 
 if st.button("Generate brief", type="primary"):
     try:
@@ -649,6 +653,13 @@ if st.button("Generate brief", type="primary"):
             recent_days=recent_days,
             hotspots=hotspots,
             village_risk=village_risk,
+            filters={
+                "divisions": divisions,
+                "ranges": ranges,
+                "beats": beats,
+                "severity": severity_choice,
+            },
+            basemap_style_name=basemap,
         )
     except Exception as exc:  # noqa: BLE001 - report generation must never 500
         logger.exception("Report generation failed")

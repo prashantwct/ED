@@ -19,6 +19,11 @@ from core.analytics import (
     night_day_comparison,
     severity_distribution,
 )
+from core.map_export import (
+    filter_summary,
+    sightings_map_svg,
+    village_map_svg,
+)
 from core.intelligence import (
     TIER_CRITICAL,
     TIER_HIGH,
@@ -26,6 +31,7 @@ from core.intelligence import (
     format_window,
     management_brief,
 )
+from core.map_engine import DEFAULT_BASEMAP
 
 _CSS = """
     body { font-family: 'Segoe UI', Arial, sans-serif; color: #222; margin: 0; background: #f4f6f5; }
@@ -69,6 +75,10 @@ _CSS = """
     .action { font-size: 12.5px; color: #33413a; }
     .footer { text-align: center; color: #99a; font-size: 11px; margin-top: 24px; }
     .empty-note { color: #789; font-style: italic; }
+    .header .scope { margin-top: 6px; font-size: 13px; opacity: 0.95; }
+    .map-figure { margin: 12px 0 20px 0; border: 1px solid #dce8e0; border-radius: 8px;
+                  overflow: hidden; background: #fff; }
+    .map-figure svg { display: block; width: 100%; height: auto; }
 """
 
 _TIER_CLASSES = {
@@ -93,6 +103,8 @@ def generate_html_report(
     recent_days: int = 90,
     hotspots: Optional[pd.DataFrame] = None,
     village_risk: Optional[pd.DataFrame] = None,
+    filters: Optional[Dict[str, object]] = None,
+    basemap_style_name: str = DEFAULT_BASEMAP,
 ) -> str:
     """Build a complete, styled conservation intelligence brief.
 
@@ -106,6 +118,9 @@ def generate_html_report(
         hotspots: Output of :func:`core.hotspots.detect_hotspots`.
             Omitted from the document when None.
         village_risk: Output of :func:`core.hotspots.villages_at_risk`.
+        filters: Active sidebar filters, named in the header so the
+            reader knows which divisions the figures cover.
+        basemap_style_name: Basemap for the embedded static maps.
 
     Returns:
         A complete HTML document as a string.
@@ -134,6 +149,7 @@ def generate_html_report(
   <div class="header">
     <h1>Elephant Conflict Intelligence Brief</h1>
     <p>Period covered: {escape(period_str)} &nbsp;|&nbsp; Generated: {datetime.now():%d %b %Y, %H:%M}</p>
+    <p class="scope">{filter_summary(filters)}</p>
   </div>
   <div class="content">
 
@@ -151,10 +167,14 @@ def generate_html_report(
     <h2>Priority Beats <span class="sub">tier set by fixed rules; score orders within tier</span></h2>
     {_beat_table_html(brief["beats"])}
 
+    <h2>Spatial View <span class="sub">sightings by conflict type, hotspot footprints to scale</span></h2>
+    {sightings_map_svg(df, hotspots, basemap_style_name)}
+
     <h2>Movement Hotspots <span class="sub">density clusters in the point data</span></h2>
     {_hotspot_html(hotspots)}
 
     <h2>Villages at Risk</h2>
+    {village_map_svg(village_risk, hotspots, basemap_style_name)}
     {_village_risk_html(village_risk)}
 
     <h2>Escalating Beats <span class="sub">last {brief['coverage']['recent_days']} days vs the window before</span></h2>
