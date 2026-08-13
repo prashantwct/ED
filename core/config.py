@@ -72,11 +72,12 @@ EVENTS_FOR_ESCALATION_HIGH = 10
 
 # Priority score weights. Only orders beats within a tier.
 SCORE_WEIGHTS = {
-    "casualty": 0.40,
+    "casualty": 0.35,
     "burden": 0.20,
     "intensity": 0.20,
     "exposure": 0.10,
-    "trend": 0.10,
+    "trend": 0.05,
+    "composition": 0.10,
 }
 CASUALTY_POINTS_PER_DEATH = 60.0
 CASUALTY_POINTS_PER_INJURY = 25.0
@@ -90,6 +91,19 @@ PRIOR_STRENGTH_BOUNDS = (1.0, 200.0)
 # --- Recommended actions ----------------------------------------------------
 NIGHT_SHARE_FOR_PATROL_SHIFT = 60.0
 VILLAGE_SHARE_FOR_EARLY_WARNING = 50.0
+
+# Group composition. Bulls range alone or in small parties and raid;
+# breeding herds with calves keep away from settlements. In the export
+# these tunables were fitted against, an all-male party carried a 30.1%
+# damage rate against 3.1% where calves were present, and bull-type
+# groups accounted for every human death. Only bulls carry tusks in this
+# species, so "Male Count" is the tusker count.
+SOLITARY_MAX_GROUP = 3
+# Above this share of a beat's conflict, the response is a bull problem
+# and should be written as one.
+BULL_SHARE_FOR_ALERT = 60.0
+# Below this many conflict events the share is too noisy to act on.
+MIN_CONFLICTS_FOR_COMPOSITION = 3
 
 
 # --- Temporal ---------------------------------------------------------------

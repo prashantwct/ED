@@ -343,8 +343,8 @@ else:
         "Beat", "Division", "Range", "Priority Tier", "Priority Score", "Confidence",
         "Reports", "Conflict Events", "Adj. Conflict Rate %",
         "Recent Deaths", "Recent Injuries", "Human Deaths", "People Injured",
-        "Night Conflict %", "Near Village %", "Trend", "Recent vs Prior",
-        "Recommended Action",
+        "Night Conflict %", "Near Village %", "Bull-Type Conflict %",
+        "Trend", "Recent vs Prior", "Recommended Action",
     ]
     st.dataframe(
         beats_table[display_cols],
@@ -374,6 +374,13 @@ else:
             "People Injured": st.column_config.NumberColumn("Injured (period)", format="%.0f"),
             "Night Conflict %": st.column_config.NumberColumn("Night", format="%.0f%%"),
             "Near Village %": st.column_config.NumberColumn("Near village", format="%.0f%%"),
+            "Bull-Type Conflict %": st.column_config.NumberColumn(
+                "Bull-driven", format="%.0f%%",
+                help="Share of this beat's conflict from lone bulls or small "
+                "all-male parties. Bulls raid and occasionally kill; breeding "
+                "herds with calves keep away from settlements, and the two take "
+                "opposite handling.",
+            ),
             "Recommended Action": st.column_config.TextColumn(width="large"),
         },
     )
@@ -382,6 +389,49 @@ else:
         beats_table.to_csv(index=False).encode("utf-8"),
         "beat_priorities.csv",
         mime="text/csv",
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5b. Who is causing it
+# ---------------------------------------------------------------------------
+composition = brief["composition"]
+if not composition.empty and composition["Conflict Events"].sum() > 0:
+    section(
+        "target",
+        "Which animals",
+        "Damage rate by the kind of group seen",
+    )
+    comp_col, note_col = st.columns([3, 2])
+    with comp_col:
+        st.dataframe(
+            composition,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Damage Rate %": st.column_config.NumberColumn(
+                    "Damage rate", format="%.1f%%",
+                    help="Share of that group's sightings that involved damage, "
+                    "injury or death.",
+                ),
+                "Human Deaths": st.column_config.NumberColumn(
+                    "Killed", format="%.0f"
+                ),
+            },
+        )
+    with note_col:
+        st.markdown(
+            "Only bulls carry tusks in this species, so **Male Count** is the "
+            "tusker count. A lone bull or a small all-male party raids and "
+            "occasionally kills. A breeding herd with calves is trying to avoid "
+            "people.\n\n"
+            "The two need opposite handling — a bull is tracked and deterred, a "
+            "herd is given passage and not driven — so the beat table carries "
+            "the split as **Bull-driven %**."
+        )
+    st.caption(
+        "Groups with no composition recorded are shown as Unrecorded rather "
+        "than folded into a class they may not belong to."
     )
 
 
