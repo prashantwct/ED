@@ -224,3 +224,34 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_filter_summary_escapes_csv_derived_names():
+    """Division, Range and Beat names come from the uploaded CSV and land
+    in a file that gets forwarded and opened elsewhere. The separator is
+    markup, so escaping happens inside filter_summary."""
+    summary = filter_summary({
+        "divisions": ["<script>alert(1)</script>"],
+        "ranges": ["<img src=x onerror=alert(2)>"],
+        "beats": [],
+        "severity": "<b>x</b>",
+    })
+
+    assert "<script" not in summary
+    assert "<img" not in summary
+    assert "<b>" not in summary
+    assert "&lt;script&gt;" in summary
+    # The separator must survive as markup.
+    assert "&nbsp;|&nbsp;" in summary
+
+
+def test_report_header_does_not_carry_raw_html_from_filters():
+    """End to end: a hostile division name must not reach the document."""
+    from core.report import generate_html_report
+
+    html = generate_html_report(
+        pd.DataFrame(), None, None,
+        filters={"divisions": ["<script>alert(1)</script>"]},
+    )
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html

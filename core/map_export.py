@@ -371,7 +371,13 @@ def _empty_note(message: str) -> str:
 
 
 def filter_summary(filters: Optional[Dict[str, object]]) -> str:
-    """One-line description of the filters behind the figures."""
+    """One-line description of the filters behind the figures.
+
+    Returns HTML: the separator is markup, so the values it wraps are
+    escaped here rather than at the call site. Division, Range and Beat
+    names come from the uploaded CSV, and the brief is a file that gets
+    forwarded and opened elsewhere.
+    """
     if not filters:
         return "All divisions"
 
@@ -379,13 +385,13 @@ def filter_summary(filters: Optional[Dict[str, object]]) -> str:
     for label, key in (("Division", "divisions"), ("Range", "ranges"), ("Beat", "beats")):
         values = filters.get(key) or []
         if values:
-            shown = ", ".join(str(v) for v in list(values)[:4])
+            shown = ", ".join(escape(str(v)) for v in list(values)[:4])
             if len(values) > 4:
                 shown += f", +{len(values) - 4} more"
             parts.append(f"{label}: {shown}")
 
     severity = filters.get("severity")
     if severity and severity != "All reports":
-        parts.append(f"Filter: {severity}")
+        parts.append(f"Filter: {escape(str(severity))}")
 
     return " &nbsp;|&nbsp; ".join(parts) if parts else "All divisions"
