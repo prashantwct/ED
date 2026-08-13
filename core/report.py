@@ -75,6 +75,7 @@ _CSS = """
     .action { font-size: 12.5px; color: #33413a; }
     .footer { text-align: center; color: #99a; font-size: 11px; margin-top: 24px; }
     .empty-note { color: #789; font-style: italic; }
+    .table-note { font-size: 12px; color: #5a6b62; margin: 6px 0 0 0; line-height: 1.5; }
     .header .scope { margin-top: 6px; font-size: 13px; opacity: 0.95; }
     .map-figure { margin: 12px 0 20px 0; border: 1px solid #dce8e0; border-radius: 8px;
                   overflow: hidden; background: #fff; }
@@ -166,6 +167,9 @@ def generate_html_report(
 
     <h2>Priority Beats <span class="sub">tier set by fixed rules; score orders within tier</span></h2>
     {_beat_table_html(brief["beats"])}
+
+    <h2>Which Animals <span class="sub">damage rate by the kind of group seen</span></h2>
+    {_composition_html(brief.get("composition"))}
 
     <h2>Spatial View <span class="sub">sightings by conflict type, hotspot footprints to scale</span></h2>
     {sightings_map_svg(df, hotspots, basemap_style_name)}
@@ -259,6 +263,35 @@ def _beat_table_html(beats: pd.DataFrame, top_n: int = 15) -> str:
         "<th class='num'>Night</th>"
         "<th>Trend</th><th>Confidence</th><th>Recommended action</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )
+
+
+def _composition_html(composition: Optional[pd.DataFrame]) -> str:
+    """Bull against breeding herd, which decides how a response is run."""
+    if composition is None or composition.empty:
+        return '<p class="empty-note">No group composition recorded.</p>'
+
+    rows = []
+    for row in composition.to_dict("records"):
+        rows.append(
+            "<tr>"
+            f"<td><b>{escape(str(row['Group Type']))}</b></td>"
+            f"<td class='num'>{int(row['Sightings']):,}</td>"
+            f"<td class='num'>{int(row['Conflict Events']):,}</td>"
+            f"<td class='num'>{_pct(row['Damage Rate %'])}</td>"
+            f"<td class='num'>{row['Human Deaths']:.0f}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr><th>Group</th><th class='num'>Sightings</th>"
+        "<th class='num'>Conflicts</th><th class='num'>Damage rate</th>"
+        "<th class='num'>Killed</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+        "<p class='table-note'>Only bulls carry tusks in this species, so the male "
+        "count is the tusker count. A bull raids and occasionally kills; a "
+        "breeding herd with calves is avoiding people. The two take opposite "
+        "handling, and the beat table carries the split per beat.</p>"
     )
 
 

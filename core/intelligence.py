@@ -39,8 +39,10 @@ from core.config import (
     HOUSE_EVENTS_FOR_HIGH,
     INJURIES_FOR_CRITICAL,
     MAX_PEAK_MONTHS,
+    MIN_CONFLICTS_FOR_COMPOSITION,
     MIN_EVENTS_FOR_TREND,
     MIN_WINDOW_DAYS,
+    BULL_SHARE_FOR_ALERT,
     NIGHT_SHARE_FOR_PATROL_SHIFT,
     PRIOR_STRENGTH_BOUNDS,
     RATE_MULTIPLE_FOR_HIGH,
@@ -49,7 +51,10 @@ from core.config import (
     VILLAGE_SHARE_FOR_EARLY_WARNING,
 )
 from core.analytics import (
+    BULL_TYPE_GROUPS,
     classify_conflict,
+    composition_summary,
+    is_bull_type,
     compute_kpis,
     conflict_mask,
     human_deaths,
@@ -224,6 +229,7 @@ def beat_intelligence(
     working["_injuries"] = human_injuries(working)
     working["_property"] = property_severity(working)
     working["_category"] = classify_conflict(working)
+    working["_bull"] = is_bull_type(working)
 
     key_cols = [c for c in BEAT_KEY_COLUMNS if c in working.columns]
     if "Beat" not in key_cols:
@@ -253,6 +259,14 @@ def beat_intelligence(
     )
     table["Crop Damage Events"] = (
         grouped["_category"].apply(lambda s: int((s == "Crop").sum())).to_numpy()
+    )
+
+    # Which kind of animal is causing this beat's conflict. A bull raids
+    # and occasionally kills; a breeding herd is avoiding people. The two
+    # take different interventions, so the share is carried alongside the
+    # count rather than left implicit.
+    table["Bull-Type Conflict %"] = _share_by_group(
+        working, key_cols, "_bull", conflict_only=True
     )
 
     table["Conflict Rate %"] = (
@@ -326,6 +340,7 @@ def _beat_columns() -> List[str]:
         "Damage Burden",
         "Night Conflict %",
         "Near Village %",
+        "Bull-Type Conflict %",
         "Trend",
         "Recent vs Prior",
         "Recommended Action",
@@ -504,6 +519,13 @@ def _priority_score(table: pd.DataFrame) -> pd.Series:
     village = table["Near Village %"]
     exposure = np.where(village.notna(), (night + village.fillna(0)) / 2, night)
 
+    # Bull-type share, from the beats with enough conflict for it to
+    # mean anything. Thin beats sit at the neutral midpoint rather than
+    # being rewarded or punished for one report.
+    composition = table["Bull-Type Conflict %"].fillna(50.0).where(
+        table["Conflict Events"] >= MIN_CONFLICTS_FOR_COMPOSITION, 50.0
+    )
+
     trend = table["Trend"].map(
         {
             TREND_ESCALATING: 100.0,
@@ -519,6 +541,7 @@ def _priority_score(table: pd.DataFrame) -> pd.Series:
         + intensity * SCORE_WEIGHTS["intensity"]
         + exposure * SCORE_WEIGHTS["exposure"]
         + trend * SCORE_WEIGHTS["trend"]
+        + composition * SCORE_WEIGHTS["composition"]
     )
     return score.round(1)
 
@@ -596,6 +619,27 @@ def _recommended_actions(table: pd.DataFrame, max_actions: int = 3) -> pd.Series
             )
         elif row["People Injured"] > 0:
             items.append("Past injury, none recent: confirm early-warning coverage")
+
+        # Which animal, before which measure. A bull and a breeding herd
+        # take opposite handling, and getting it backwards is dangerous:
+        # driving a herd is how crowds and calves end up in the same
+        # place.
+        bulls = row["Bull-Type Conflict %"]
+        if (
+            pd.notna(bulls)
+            and row["Conflict Events"] >= MIN_CONFLICTS_FOR_COMPOSITION
+            and room()
+        ):
+            if bulls >= BULL_SHARE_FOR_ALERT:
+                items.append(
+                    f"Bull-driven ({bulls:.0f}% of conflict): identify the animal, "
+                    "target night watch on its approach routes"
+                )
+            elif bulls <= 100 - BULL_SHARE_FOR_ALERT:
+                items.append(
+                    "Herd movement: keep passage open and control crowds; "
+                    "do not drive the herd"
+                )
 
         night = row["Night Conflict %"]
         if pd.notna(night) and night >= NIGHT_SHARE_FOR_PATROL_SHIFT and room():
@@ -900,8 +944,10 @@ def management_brief(
         "escalating": escalating,
         "temporal": temporal,
         "villages": villages,
+        "composition": composition_summary(df),
         "headlines": _headlines(
-            kpis, beats, priority, escalating, temporal, critical_window_days
+            kpis, beats, priority, escalating, temporal, critical_window_days,
+            composition_summary(df),
         ),
         "caveats": _caveats(df, kpis, beats, villages, critical_window_days),
     }
@@ -914,6 +960,7 @@ def _headlines(
     escalating: pd.DataFrame,
     temporal: Dict[str, object],
     critical_window_days: int = CRITICAL_CASUALTY_WINDOW_DAYS,
+    composition: Optional[pd.DataFrame] = None,
 ) -> List[str]:
     """The handful of sentences worth putting at the top of the brief."""
     lines: List[str] = []
@@ -954,12 +1001,53 @@ def _headlines(
     if window:
         lines.append(f"Conflict concentrates in {format_window(window)}.")
 
+    lines.extend(_composition_headline(composition))
+
     months = temporal.get("peak_months") or []
     if months:
         lines.append(f"Seasonal peak: {', '.join(months)}.")
     elif not temporal.get("monthly", pd.Series(dtype=int)).empty:
         lines.append("No marked seasonal peak -- conflict is spread through the year.")
 
+    return lines
+
+
+def _composition_headline(composition: Optional[pd.DataFrame]) -> List[str]:
+    """State the bull/herd split, which decides how a response is run.
+
+    Quiet when composition was not recorded often enough to say
+    anything: a share computed from a handful of rows is not a finding.
+    """
+    if composition is None or composition.empty:
+        return []
+
+    known = composition[composition["Group Type"] != "Unrecorded"]
+    conflicts = known["Conflict Events"].sum()
+    if conflicts < MIN_CONFLICTS_FOR_COMPOSITION:
+        return []
+
+    bulls = known[known["Group Type"].isin(BULL_TYPE_GROUPS)]
+    if bulls.empty:
+        return []
+
+    share = bulls["Conflict Events"].sum() / conflicts * 100
+    deaths = bulls["Human Deaths"].sum()
+    total_deaths = known["Human Deaths"].sum()
+
+    herds = known[known["Group Type"] == "Family herd"]
+    line = f"{share:.0f}% of conflict came from lone bulls or bull parties"
+    if not herds.empty and herds["Sightings"].iloc[0] > 0:
+        line += (
+            f", which carry a {bulls['Damage Rate %'].max():.0f}% damage rate "
+            f"against {herds['Damage Rate %'].iloc[0]:.0f}% for herds with calves"
+        )
+    lines = [line + "."]
+
+    if total_deaths > 0:
+        lines.append(
+            f"{deaths:.0f} of {total_deaths:.0f} human fatality(ies) involved a "
+            "bull-type group."
+        )
     return lines
 
 

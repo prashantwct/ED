@@ -16,6 +16,7 @@ import pandas as pd
 
 from core.config import (
     DEATH_WEIGHT_PER_PERSON,
+    SOLITARY_MAX_GROUP,
     NIGHT_HOUR_END,
     NIGHT_HOUR_START,
     SEVERITY_BAND_EDGES,
@@ -130,6 +131,89 @@ def classify_conflict(df: pd.DataFrame) -> pd.Series:
         np.select(conditions, ["Death", "Injury", "House", "Crop"], default="Presence"),
         index=df.index,
         name="Conflict Category",
+    )
+
+
+def classify_group(df: pd.DataFrame) -> pd.Series:
+    """Label each sighting with the kind of group that was seen.
+
+    The distinction that matters operationally is bull against breeding
+    herd. A bull raids and occasionally kills; a herd with calves is
+    avoiding people and needs safe passage, not deterrence. Only bulls
+    carry tusks in this species, so ``Male Count`` is the tusker count.
+
+    Rows with no composition recorded return "Unrecorded" rather than
+    being folded into a group they might not belong to.
+    """
+    if df.empty:
+        return pd.Series(dtype=object, index=df.index, name="Group Type")
+
+    male = _numeric(df, "Male Count")
+    female = _numeric(df, "Female Count")
+    calves = _numeric(df, "Calf Count")
+    total = _numeric(df, "Total Count")
+
+    recorded = (male + female + calves + _numeric(df, "Unknown Count")) > 0
+    conditions = [
+        ~recorded,
+        (calves > 0) | (female > 0),
+        (male > 0) & (total <= 1),
+        (male > 0) & (total <= SOLITARY_MAX_GROUP),
+    ]
+    return pd.Series(
+        np.select(
+            conditions,
+            ["Unrecorded", "Family herd", "Lone bull", "Bull party"],
+            default="Mixed / unsexed",
+        ),
+        index=df.index,
+        name="Group Type",
+    )
+
+
+BULL_TYPE_GROUPS = ("Lone bull", "Bull party")
+
+
+def is_bull_type(df: pd.DataFrame) -> pd.Series:
+    """Whether each sighting is a lone bull or a small all-male party."""
+    return classify_group(df).isin(BULL_TYPE_GROUPS)
+
+
+def composition_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Damage rate by group type, which is the evidence for the split."""
+    if df.empty:
+        return pd.DataFrame(
+            columns=["Group Type", "Sightings", "Conflict Events",
+                     "Damage Rate %", "Human Deaths"]
+        )
+
+    working = df.assign(
+        _group=classify_group(df),
+        _conflict=conflict_mask(df).astype(int),
+        _deaths=human_deaths(df),
+    )
+    summary = (
+        working.groupby("_group", observed=True)
+        .agg(Sightings=("_conflict", "size"),
+             **{"Conflict Events": ("_conflict", "sum"),
+                "Human Deaths": ("_deaths", "sum")})
+        .reset_index()
+        .rename(columns={"_group": "Group Type"})
+    )
+    summary["Damage Rate %"] = (
+        summary["Conflict Events"] / summary["Sightings"] * 100
+    ).round(1)
+    order = ["Lone bull", "Bull party", "Family herd", "Mixed / unsexed", "Unrecorded"]
+    summary["_order"] = summary["Group Type"].map(
+        {name: i for i, name in enumerate(order)}
+    ).fillna(len(order))
+    return (
+        summary.sort_values("_order")
+        .drop(columns="_order")
+        .reset_index(drop=True)[
+            ["Group Type", "Sightings", "Conflict Events", "Damage Rate %",
+             "Human Deaths"]
+        ]
     )
 
 

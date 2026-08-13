@@ -59,7 +59,15 @@ victim names.
 **Beat priorities.** Every beat gets a decision tier — Critical, High, Watch,
 Routine — with the evidence behind it: reports, conflict events, adjusted
 conflict rate, casualties recent and total, night share, village proximity,
-trend, and a recommended action.
+which animals are causing it, trend, and a recommended action.
+
+**Which animals.** Damage rate split by the kind of group seen. Only bulls
+carry tusks in this species, so the male count is the tusker count. In the
+export this was built against, a lone bull carried a 28% damage rate and a
+small all-male party 36%, against 3% for a breeding herd with calves. Each
+beat carries the share of its conflict driven by bull-type groups, because the
+two need opposite handling — a bull is identified and deterred, a herd is given
+passage and not driven.
 
 **Movement hotspots.** Density clusters in the point data rather than the
 administrative grid, so a herd working a corridor along a beat boundary reads
@@ -86,6 +94,12 @@ generation time and inlined as a JPEG, so it stays a single self-contained file
 that prints.
 
 ## Design rules
+
+**Composition informs the score, never the tier.** Tiers record harm that has
+already happened; group composition predicts harm that has not. Letting a tier
+move on composition alone would break the guarantee below. It changes the
+ordering within a tier and the recommended action, and there is a test holding
+that line.
 
 **Tier decides, score only orders.** Tiers come from fixed rules, so "Critical"
 means the same thing in April as in October and in one division as the next.
@@ -175,3 +189,10 @@ secrets; never commit it. The app works without it.
 - **Night is a fixed 18:00–06:00 window**, not sunset-to-sunrise, which shifts
   by over an hour across the year in central India.
 - **`Movement Direction` is unused** — inconsistently cased and mostly blank.
+- **Group composition is often unrecorded.** Reports with no male/female/calf
+  breakdown are labelled Unrecorded rather than guessed at, so the bull share
+  is computed only from what was actually counted. Beats with fewer than three
+  conflict events get no composition claim at all.
+- **Composition is not individual identification.** A lone bull seen twice may
+  be two bulls. `research/herds.py` chains sightings into movement units, but
+  those are inferred from time, place and group size — not identified animals.
