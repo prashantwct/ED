@@ -10,8 +10,13 @@ the app. Nothing here changes what a manager currently sees.
 
 ```bash
 pip install -r requirements-dev.txt
-python -m research.evaluate path/to/sightings.csv
+python -m research.evaluate path/to/sightings.csv            # history features
+python -m research.evaluate_landcover path/to/sightings.csv  # + ESA WorldCover
 ```
+
+The land-cover run downloads about 450 MB of raster on first use and
+caches it in `.data_cache/` (gitignored). Village statistics are cached
+too, so only the first run is slow.
 
 ## Two models, because there are two questions
 
@@ -82,6 +87,24 @@ top 20%** — against 45% for the last-quarter rule and 14% for no ranking at al
 Ranked for July, the top 15 of 260 villages carried a **60% hit rate against 7%
 for the rest**.
 
+### Rolling origin — the number to quote
+
+The table above holds out Jun–Jul. On seven months that is one arbitrary
+window, and it happens to be the *low* season for crop damage. Training on
+every month before the test month and stepping forward pools 1,300 rows and
+179 events, and gives a soberer figure:
+
+| Feature set | ROC-AUC | PR-AUC | recall@20% |
+|---|---|---|---|
+| Base rate | 0.500 | 0.138 | 0.200 |
+| History only | **0.650** | **0.243** | **0.352** |
+| + interface block (5 land-cover) | 0.643 | 0.226 | 0.318 |
+| + all land cover (24) | 0.613 | 0.214 | 0.346 |
+| + land cover + cropping (29) | 0.601 | 0.205 | 0.341 |
+
+**0.650 is the honest headline, not 0.732.** The single split was the
+favourable window.
+
 ### Transfer to a landscape never seen in training
 
 Hold out an entire division:
@@ -113,6 +136,82 @@ generated.
 
 Removing those features costs 0.09 PR-AUC. **The 0.317 row is the honest one.**
 
+## Land cover and cropping
+
+Acquired: **ESA WorldCover v200**, 10 m global land cover for 2021, CC-BY 4.0,
+four 3° tiles (N21/N24 × E078/E081) from the public S3 bucket, mosaicked to the
+study window — 17,889 × 15,210 pixels. Geolocation checks out: built-up
+fraction correlates +0.54 with village-centroid density and tree cover −0.71
+with built-up.
+
+Landscape composition: 38.1% cropland, 33.8% tree cover, 23.0% grassland, 2.8%
+water, 0.7% built-up.
+
+Cropping *season* is not observed — WorldCover says where cropland is, not what
+is standing in it, and no Sentinel-2 archive was reachable. The calendar in
+`landcover.py` encodes the Madhya Pradesh cropping year as documented domain
+knowledge, and is labelled as such.
+
+### It refines the field hypothesis rather than confirming it
+
+Comparing the 129 villages that saw conflict against the 116 that did not:
+
+| Metric within 2 km | Conflict | Quiet | Ratio | p |
+|---|---|---|---|---|
+| Crop–forest interface | 0.0790 | 0.0494 | **1.60** | <0.0001 |
+| Cropland fraction | 0.4095 | 0.2883 | 1.42 | <0.0001 |
+| Built-up fraction | 0.0095 | 0.0070 | 1.36 | 0.0004 |
+| **Tree cover** | 0.3500 | 0.4342 | **0.81** | 0.031 |
+| Forest edge density | 0.0912 | 0.0847 | 1.08 | 0.10 |
+| Distance to forest | 0.0537 | 0.0602 | 0.89 | 0.96 |
+
+Share of villages ever in conflict, by tree cover within 2 km:
+
+| Q1 low | Q2 | Q3 | Q4 | Q5 high |
+|---|---|---|---|---|
+| 53.1% | 61.2% | 57.1% | 55.1% | **36.7%** |
+
+…and by crop–forest interface:
+
+| Q1 low | Q2 | Q3 | Q4 | Q5 high |
+|---|---|---|---|---|
+| 30.6% | 42.9% | 42.9% | **77.6%** | 69.4% |
+
+**"Villages surrounded by forest are more prone to conflict" is not what the
+land cover says.** Villages deepest in forest are the *safest* — the top
+tree-cover quintile has the lowest conflict rate of all. What carries risk is
+cropland with forest beside it: the interface quintiles run 30.6% to 77.6%.
+The mechanism is a field a bull can feed in with cover to retreat into, and it
+is a sharper target than "forest" for deciding where fencing and crop-guarding
+go.
+
+The cropping calendar tracks observed crop damage directionally — Spearman
++0.67 over seven months, p=0.10, peaking in February (28.5% of reports) and
+bottoming in May (4.9%) — but seven points cannot carry more than a direction.
+
+### It does not improve the forecast
+
+Every land-cover variant scores below history alone, on rolling origin and on
+the single split alike. The interface block costs −0.018 PR-AUC, 95% CI
+[−0.044, +0.007]. Not a significant loss, but no gain either, and adding all 24
+is clearly worse.
+
+Land cover alone, with no history at all, reaches PR-AUC 0.222 against a 0.123
+base rate — so the signal is real. It is simply **redundant**: the village
+density it was meant to replace already measures the same settlement–forest
+gradient (−0.50 with tree cover, +0.54 with built-up), and for *recorded*
+conflict it measures it better, because centroid density also tracks how many
+people are present to file a report.
+
+### Cold start stays unsolved
+
+The hope was that land cover would flag villages with no conflict history —
+exactly what history-based forecasting is blind to. It does not. On 798
+village-months with no prior recorded conflict, history-only scores PR-AUC
+0.137 and adding the interface block gives 0.129, against a 0.109 base rate.
+**Neither model can predict a village's first conflict.** Where history exists,
+both do markedly better (0.319 and 0.285 against a 0.183 base).
+
 ## Known limits
 
 - **Casualties are not modellable here.** Five deaths and four injuries in
@@ -124,10 +223,9 @@ Removing those features costs 0.09 PR-AUC. **The 0.317 row is the honest one.**
   carries more conflict than the Feb–May it trained on. **Use it as a ranking,
   not as a probability.** Fix with isotonic recalibration on a rolling window
   once there are more months.
-- **The forest interface is a proxy.** There is no landcover layer, so
-  `villages_5km` and `nearest_village_km` stand in for it — sparse settlement
-  implies a forest matrix. It is the top feature, which is precisely why real
-  landcover should replace it.
+- **Land cover is a 2021 snapshot** scored against 2026 conflict. Cropland
+  boundaries move. It is also a single epoch, so it cannot express the thing
+  that most likely matters — a field that was forest five years ago.
 - **Seven months.** One season. Nothing here can speak to inter-annual
   variation, and `month_of_year` is fitted on a single pass through the crop
   calendar.
@@ -140,22 +238,31 @@ Removing those features costs 0.09 PR-AUC. **The 0.317 row is the honest one.**
 
 ## What would move the needle
 
-In descending order of expected value per unit of effort:
+Land cover was the previous top recommendation. It has now been acquired and
+tested, and it did not pay off in forecast accuracy — so the list is reordered
+around what the land-cover result actually taught: **the binding constraint is
+sample size and reporting consistency, not feature richness.** Adding more
+covariates to 179 events makes things worse, however good the covariate.
 
-1. **Landcover.** Forest cover fraction, edge density, and distance to forest
-   boundary within 2 km of each village. The settlement-density proxy is the
-   single most important feature; replacing it with the real thing is the
-   biggest available gain.
-2. **More months.** Seven is enough to detect signal, not enough to trust the
-   seasonal term. Two full years would allow proper rolling-origin validation.
-3. **Crop calendar by village.** Sowing and harvest dates for the dominant
-   crop. Damage risk is a function of what is standing in the field.
-4. **Tusker identity.** If bulls are individually identified — many are, in
-   practice — a repeat-offender feature would likely dominate. A handful of
-   animals usually drive most raiding.
-5. **Record the flags consistently.** 555 blank rows is the largest single
-   quality loss in the dataset, and it costs more than any modelling choice.
-6. **Water and terrain.** Distance to perennial water, slope, ridge lines.
+1. **More months.** Seven is enough to detect signal, not to fit it. Every
+   negative result here is on 179 events, and the intervals show it. Two full
+   years is the single change that would let any of the rest matter.
+2. **Record the flags consistently.** 555 reports with all five damage flags
+   blank is the largest quality loss in the dataset, and it costs more than any
+   modelling choice.
+3. **Tusker identity.** If bulls are individually identified — many are, in
+   practice — a repeat-offender feature would likely dominate everything above.
+   A handful of animals usually drive most raiding, and unlike land cover this
+   is not redundant with anything already measured.
+4. **Observed crop phenology** rather than an assumed calendar. Sentinel-2 NDVI
+   per village per month would replace a 12-number constant with what was
+   actually standing. The calendar tracks damage at rho +0.67; measuring it
+   would settle whether the residual matters.
+5. **Where patrols went.** Every rate here conflates elephants with observers,
+   and effort data would separate them. This is what village-centroid density
+   is quietly standing in for.
+6. **Multi-date land cover.** A single epoch cannot express recent conversion
+   of forest to field, which is the mechanism the interface result implies.
 
 ## Recommendation
 
@@ -165,6 +272,14 @@ explain a posting decision from it.
 Add the village forecast alongside it, as a **ranked watch list** — deciles,
 not probabilities — with the tier still shown. It earns its place on the
 recall@20% result and it transfers across divisions, which is the harder test.
+Build it from the **history features only**; land cover costs accuracy and 450
+MB of raster for nothing.
+
+Use the land cover differently, and outside the model: the crop–forest
+interface metric is a **static siting layer**, not a forecast input. It says
+where fencing, trenches and crop-guarding are worth putting, on a map that does
+not change month to month. That it fails as a covariate does not make it
+useless — it makes it a different kind of product.
 
 Before that ships it needs: recalibration on a rolling window, a monthly
 backtest that re-scores last month's list against what actually happened, and

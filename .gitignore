@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 app.log
 .streamlit/secrets.toml
+
+# Downloaded rasters and derived caches: 450 MB, refetchable
+.data_cache/
