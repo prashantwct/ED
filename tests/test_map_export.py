@@ -5,8 +5,11 @@ printed, so the maps must render without any external asset and must
 never be able to fail the whole document.
 """
 
+import io
+
 import pandas as pd
 import pytest
+from PIL import Image
 
 from core import map_export
 from core.map_export import (
@@ -19,6 +22,16 @@ from core.map_export import (
     sightings_map_svg,
     village_map_svg,
 )
+
+# Captured before the autouse fixture stubs it out, for the one test that
+# needs the real fetch path.
+_REAL_FETCH_TILE = map_export._fetch_tile
+
+
+def _png(colour=(198, 214, 199), size=(256, 256)):
+    buffer = io.BytesIO()
+    Image.new("RGB", size, colour).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def _sightings(n=12):
@@ -66,8 +79,15 @@ def _villages():
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch):
-    """Never reach for a basemap in tests."""
+    """Never reach for a basemap in tests.
+
+    The keyless fallback means clearing the key is no longer enough to
+    keep the suite offline; the fetch itself has to be stubbed.
+    """
     monkeypatch.setattr(map_export, "maptiler_key", lambda: None)
+    monkeypatch.setattr(map_export, "_fetch_tile", lambda url: None)
+    map_export._TILE_CACHE.clear()
+    map_export._SOURCE_MEMO.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +198,7 @@ def test_hotspots_without_geometry_columns_are_skipped():
 def test_basemap_failure_does_not_raise(monkeypatch):
     """A network error while fetching tiles must not fail the brief."""
     monkeypatch.setattr(map_export, "maptiler_key", lambda: "KEY")
+    monkeypatch.setattr(map_export, "_fetch_tile", _REAL_FETCH_TILE)
 
     def boom(*args, **kwargs):
         raise OSError("network down")
@@ -186,6 +207,171 @@ def test_basemap_failure_does_not_raise(monkeypatch):
     svg = sightings_map_svg(_sightings())
     assert "<svg" in svg
     assert "Basemap unavailable" in svg
+
+
+def test_a_non_image_response_is_not_treated_as_a_tile(monkeypatch):
+    """A rejected key can come back as JSON with a 200."""
+    monkeypatch.setattr(map_export, "_fetch_tile", _REAL_FETCH_TILE)
+
+    class _Response:
+        status = 200
+
+        def read(self):
+            return b'{"message":"Key is invalid"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(map_export.urllib.request, "urlopen", lambda *a, **k: _Response())
+    assert map_export._fetch_tile("https://example.invalid/1/2/3.png") is None
+
+
+# ---------------------------------------------------------------------------
+# Basemap tiles
+# ---------------------------------------------------------------------------
+def test_tile_placement_matches_the_point_projection():
+    """The invariant the whole mosaic rests on.
+
+    Tiles are stitched at integer zoom and scaled to the frame, while
+    points are projected at fractional zoom. If the two disagree, every
+    sighting sits off its own terrain.
+    """
+    centre_lat, centre_lon, zoom = 23.05, 81.05, 8.5
+    tile_zoom, scale, left, top, _ = map_export._tile_grid(
+        centre_lat, centre_lon, zoom, MAP_WIDTH, MAP_HEIGHT
+    )
+    project = _projector(centre_lat, centre_lon, zoom, MAP_WIDTH, MAP_HEIGHT)
+
+    for lat, lon in [(23.05, 81.05), (23.0, 81.0), (23.2, 81.3)]:
+        world_x, world_y = _world_xy(lat, lon, tile_zoom)
+        mosaic = ((world_x - left) * scale, (world_y - top) * scale)
+        assert mosaic == pytest.approx(project(lat, lon))
+
+
+def test_tile_grid_spans_the_whole_frame():
+    tile_zoom, scale, left, top, tiles = map_export._tile_grid(
+        23.0, 81.0, 8.0, MAP_WIDTH, MAP_HEIGHT
+    )
+    assert tile_zoom == 8 and scale == pytest.approx(1.0)
+
+    xs = [x for x, _ in tiles]
+    ys = [y for _, y in tiles]
+    assert min(xs) * 256 <= left
+    assert (max(xs) + 1) * 256 >= left + MAP_WIDTH
+    assert min(ys) * 256 <= top
+    assert (max(ys) + 1) * 256 >= top + MAP_HEIGHT
+    assert len(tiles) <= map_export.MAX_TILES
+
+
+def test_basemap_is_embedded_when_tiles_are_reachable(monkeypatch):
+    monkeypatch.setattr(map_export, "_fetch_tile", lambda url: _png())
+    svg = sightings_map_svg(_sightings())
+    assert 'href="data:image/jpeg;base64,' in svg
+    assert "Basemap unavailable" not in svg
+
+
+def test_a_keyless_deployment_still_gets_a_basemap(monkeypatch):
+    """The whole point of the fallback: no key, still terrain."""
+    seen = []
+    monkeypatch.setattr(
+        map_export, "_fetch_tile", lambda url: seen.append(url) or _png()
+    )
+    svg = village_map_svg(_villages())
+
+    assert seen
+    assert all("basemaps.cartocdn.com" in url for url in seen)
+    assert not any("api.maptiler.com" in url for url in seen)
+    assert 'href="data:image/jpeg;base64,' in svg
+
+
+def test_maptiler_tiles_are_preferred_when_a_key_is_set(monkeypatch):
+    monkeypatch.setattr(map_export, "maptiler_key", lambda: "KEY")
+    seen = []
+    monkeypatch.setattr(
+        map_export, "_fetch_tile", lambda url: seen.append(url) or _png()
+    )
+    sightings_map_svg(_sightings())
+
+    assert seen
+    assert all("api.maptiler.com" in url for url in seen)
+    assert all("key=KEY" in url for url in seen)
+
+
+def test_an_unusable_key_falls_through_to_the_keyless_source(monkeypatch):
+    monkeypatch.setattr(map_export, "maptiler_key", lambda: "REVOKED")
+    monkeypatch.setattr(
+        map_export,
+        "_fetch_tile",
+        lambda url: None if "maptiler" in url else _png(),
+    )
+    svg = sightings_map_svg(_sightings())
+
+    assert 'href="data:image/jpeg;base64,' in svg
+    assert "Basemap unavailable" not in svg
+
+
+def test_a_missing_tile_does_not_lose_the_whole_basemap(monkeypatch):
+    state = {"probe": None, "dropped": 0}
+
+    def fetch(url):
+        if state["probe"] is None:
+            state["probe"] = url
+            return _png()
+        if url != state["probe"] and state["dropped"] == 0:
+            state["dropped"] = 1
+            return None
+        return _png()
+
+    monkeypatch.setattr(map_export, "_fetch_tile", fetch)
+    svg = sightings_map_svg(_sightings())
+
+    assert state["dropped"] == 1
+    assert 'href="data:image/jpeg;base64,' in svg
+
+
+def test_oversized_tiles_are_normalised(monkeypatch):
+    """Some styles serve 512 px tiles for the same z/x/y address."""
+    monkeypatch.setattr(map_export, "_fetch_tile", lambda url: _png(size=(512, 512)))
+    svg = sightings_map_svg(_sightings())
+    assert 'href="data:image/jpeg;base64,' in svg
+
+
+def test_tiles_are_credited(monkeypatch):
+    """MapTiler, Carto and OpenStreetMap all require attribution."""
+    monkeypatch.setattr(map_export, "_fetch_tile", lambda url: _png())
+    svg = sightings_map_svg(_sightings())
+    assert "OpenStreetMap contributors" in svg
+
+
+def test_an_unreachable_network_is_probed_once_not_once_per_map(monkeypatch):
+    """A brief renders two maps. A dead network must not cost two rounds
+    of connection timeouts before either of them gives up."""
+    monkeypatch.setattr(map_export, "maptiler_key", lambda: "KEY")
+    calls = []
+    monkeypatch.setattr(
+        map_export, "_fetch_tile", lambda url: calls.append(url) or None
+    )
+
+    sightings_map_svg(_sightings())
+    assert len(calls) == 2, "expected one probe per source, no grid fetch"
+
+    village_map_svg(_villages())
+    assert len(calls) == 2, "second map re-probed a source already known dead"
+
+
+def test_tiles_are_fetched_once_across_maps(monkeypatch):
+    """A brief renders two maps over one landscape, often the same tiles."""
+    calls = []
+    monkeypatch.setattr(
+        map_export, "_fetch_tile", lambda url: calls.append(url) or _png()
+    )
+    sightings_map_svg(_sightings())
+    first = len(calls)
+    sightings_map_svg(_sightings())
+    assert len(calls) == first, "second render refetched tiles instead of caching"
 
 
 # ---------------------------------------------------------------------------
