@@ -1,2 +1,5 @@
 -r requirements.txt
 pytest==9.1.1
+
+# research/ only -- the app itself does not import scikit-learn
+scikit-learn==1.9.0
