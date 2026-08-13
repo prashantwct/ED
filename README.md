@@ -130,7 +130,7 @@ core/map_export.py   Static SVG maps embedded in the brief
 core/report.py       Self-contained HTML brief
 core/ui.py           Design tokens, SVG icons, shared components
 data/centroids.csv   Bundled village centroids
-tests/               154 tests
+tests/               Unit tests, run with `pytest -q`
 ```
 
 All tunables live in `core/config.py`. They encode domain judgement, not fact,
