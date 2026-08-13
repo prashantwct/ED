@@ -74,10 +74,13 @@ reproduce.
 | **Gradient boosting** | **0.732** | **0.403** | **0.531** |
 
 95% CI on the held-out months: ROC-AUC [0.652, 0.810], PR-AUC [0.292, 0.531],
-recall@20% [0.420, 0.648]. Against the best simple rule the model gains
-**+0.069 PR-AUC, 95% CI [+0.008, +0.140]**, ahead in 98.9% of resamples.
+recall@20% [0.420, 0.648]. On this split the model gains +0.069 PR-AUC over the
+best simple rule.
 
-Real but modest. The interval nearly touches zero, on 64 test events.
+**That gain does not survive a better protocol.** See the rolling-origin table
+below: pooled over every month, the rule wins. The +0.069 was a property of
+which two months were held out, which is exactly the hazard a single split
+carries on seven months of data.
 
 `recall@20%` is the operational metric: a range officer cannot visit every
 village, so what counts is how much conflict falls in the fraction they can
@@ -94,16 +97,22 @@ window, and it happens to be the *low* season for crop damage. Training on
 every month before the test month and stepping forward pools 1,300 rows and
 179 events, and gives a soberer figure:
 
-| Feature set | ROC-AUC | PR-AUC | recall@20% |
+| Model | ROC-AUC | PR-AUC | recall@20% |
 |---|---|---|---|
 | Base rate | 0.500 | 0.138 | 0.200 |
-| History only | **0.650** | **0.243** | **0.352** |
+| Gradient boosting, history features | 0.650 | 0.243 | 0.352 |
+| **Rule: conflicts last quarter** | 0.613 | **0.290** | 0.385 |
+| **Rule: conflicts all time** | 0.620 | 0.281 | **0.419** |
 | + interface block (5 land-cover) | 0.643 | 0.226 | 0.318 |
 | + all land cover (24) | 0.613 | 0.214 | 0.346 |
 | + land cover + cropping (29) | 0.601 | 0.205 | 0.341 |
 
-**0.650 is the honest headline, not 0.732.** The single split was the
-favourable window.
+Two corrections to earlier versions of this file. **0.650 is the honest
+headline, not 0.732** — the single split was the favourable window. And **the
+simple rule beats the model** on the metrics that decide a watch list: the
+gradient booster is behind by 0.044 PR-AUC, 95% CI [−0.091, +0.005], ahead in
+only 3.6% of resamples. It leads on ROC-AUC, which on a 13.8% base rate is
+dominated by easy negatives and is the wrong metric for ranking.
 
 ### Transfer to a landscape never seen in training
 
@@ -212,6 +221,55 @@ village-months with no prior recorded conflict, history-only scores PR-AUC
 **Neither model can predict a village's first conflict.** Where history exists,
 both do markedly better (0.319 and 0.285 against a 0.183 base).
 
+## Movement units
+
+`herds.py` chains sightings into tracks the way radar tracks aircraft: a report
+joins the best-matching open track if it is close enough in space given the
+elapsed time, and if the group composition is compatible. Composition is what
+stops single-linkage chaining the whole landscape into one blob — a party of
+bulls does not become a breeding herd with calves overnight.
+
+`python -m research.herd_map <csv>` draws the ranges over land cover.
+
+**These are movement units, not identified animals.** No collars, no ear-notch
+photographs, no DNA — only a time, a place and a rough count. Two bulls working
+the same valley on alternating days are one track here, and there is a test
+asserting exactly that so it cannot be quietly forgotten.
+
+### What is stable, and what is not
+
+The **unit count is an artefact of the thresholds** — 147 to 484 depending on
+the speed and gap settings. Do not quote it as a population estimate.
+
+What does not move, at any setting tried:
+
+| Setting | Units | Top 10 share | Bull-type share | Deaths from bull-type |
+|---|---|---|---|---|
+| 10 km/day, 2-day gap | 484 | 43% | **94%** | 6 / 6 |
+| 15 km/day, 4-day gap | 287 | 55% | **94%** | 6 / 6 |
+| 20 km/day, 7-day gap | 167 | 72% | **94%** | 6 / 6 |
+| 30 km/day, 7-day gap | 147 | 75% | **94%** | 6 / 6 |
+
+**Lone bulls and bull parties account for 94% of conflict events and every one
+of the six human deaths**, however the tracker is tuned. Family herds, at the
+default setting, produced 10 conflict events across 94 units and no deaths.
+
+Conflict is also concentrated: at the default setting the top 10 units of 287
+carry 55% of all conflict events and the top 20 carry 75%. The exact figure
+moves with the thresholds, but the shape does not.
+
+### Does the movement look like an elephant?
+
+For the 117 units seen three or more times: median 3.8 km/day, 90th percentile
+8.3, maximum 25.2. Median longest single step 9.5 km. Median observed range
+22 km², rising to 380 km² at the 90th percentile. Those are plausible figures
+for Asian elephants in central India, which is a check on the tracker rather
+than a finding.
+
+Ranges are the area covered **within the observation window** — median span
+8 days — not annual home ranges. Only 18 of 287 units cross a division
+boundary, so most are one division's problem to manage.
+
 ## Known limits
 
 - **Casualties are not modellable here.** Five deaths and four injuries in
@@ -266,22 +324,35 @@ covariates to 179 events makes things worse, however good the covariate.
 
 ## Recommendation
 
-Do **not** replace the tier system. It is legible, stable, and a manager can
-explain a posting decision from it.
+**Do not adopt the machine-learning model.** Under rolling-origin validation it
+is beaten by counting conflicts at each village over the last quarter — a rule
+a range officer can compute by hand, that needs no scikit-learn, no retraining
+and no monitoring. The model is ahead in 3.6% of resamples. Complexity has to
+earn its place and this does not.
 
-Add the village forecast alongside it, as a **ranked watch list** — deciles,
-not probabilities — with the tier still shown. It earns its place on the
-recall@20% result and it transfers across divisions, which is the harder test.
-Build it from the **history features only**; land cover costs accuracy and 450
-MB of raster for nothing.
+Adopt instead, in order of confidence:
 
-Use the land cover differently, and outside the model: the crop–forest
-interface metric is a **static siting layer**, not a forecast input. It says
-where fencing, trenches and crop-guarding are worth putting, on a map that does
-not change month to month. That it fails as a covariate does not make it
-useless — it makes it a different kind of product.
+1. **The counting rule as the watch list.** Rank villages by conflict in the
+   last quarter, show the tier beside it, publish deciles rather than
+   probabilities. It puts 38.5% of next month's conflict in the top 20% of
+   villages against 20% for no ranking. The app's existing village tier is
+   already close to this; the change is to make it a forward-looking list and
+   backtest it monthly.
+2. **The bull/herd distinction, everywhere.** 94% of conflict and every human
+   death came from lone bulls and bull parties, and the finding holds at every
+   tracker setting. Nothing else in this work is that robust, and the app's
+   scoring currently ignores group composition entirely. A report of a lone
+   bull near a village deserves a different response from a breeding herd with
+   calves, and right now it gets the same one.
+3. **The crop-forest interface as a siting layer.** Not a forecast input --
+   it made the model worse -- but a static map of where cropland meets cover.
+   Interface quintiles run 30.6% to 77.6% for conflict. That is where fencing
+   and crop-guarding belong.
+4. **Movement units for narrative, not for numbers.** Useful for asking "which
+   animal is doing this and where does it go", and for briefing field staff.
+   Never as a population estimate.
 
-Before that ships it needs: recalibration on a rolling window, a monthly
-backtest that re-scores last month's list against what actually happened, and
-a plain statement in the UI that the ranking reflects where *reporting* and
-conflict have concentrated, not where elephants certainly are.
+Revisit the model when there are two years of data. Every negative result here
+rests on 179 events, and the intervals show it. The honest summary is that at
+this sample size the simple thing wins, and the useful findings came from
+looking at the data rather than from fitting it.
