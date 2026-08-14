@@ -69,6 +69,20 @@ this file. The free-text description is not mined for them: it is inconsistent
 (in a 1,761-row export, 5 rows used "निवासी" and 29 used "ग्राम") and carries
 victim names.
 
+## Landing page
+
+The pre-upload screen carries the project identity: a MOVE-MP masthead over a
+field photograph, the partner marks, what the tool does, and what to upload.
+Once an export is loaded it collapses to a one-line bar so the screen belongs
+to the data.
+
+Assets live in `assets/`. `hero-elephant.jpg` and `logo-wct.png` are taken from
+the project's own progress report. **`logo-mpfd.png` is not supplied** — an
+official state emblem is not something to approximate, so the Forest Department
+currently renders as a wordmark. Drop the official file in under that name and
+it is picked up automatically; the same applies to any partner added to
+`PARTNERS` in `core/landing.py`.
+
 ## What it produces
 
 **Beat priorities.** Every beat gets a decision tier — Critical, High, Watch,
@@ -178,10 +192,12 @@ core/intelligence.py Beat priorities, escalation, timing, the brief
 core/hotspots.py     DBSCAN clustering and village risk
 core/spatial.py      Centroid loading and nearest-village enrichment
 core/boundaries.py   Vendored forest boundary layers
+core/landing.py      Pre-upload masthead and the loaded-state identity bar
 core/map_engine.py   Interactive pydeck maps and tooltips
 core/map_export.py   Static SVG maps embedded in the brief
 core/report.py       Self-contained HTML brief
 core/ui.py           Design tokens, SVG icons, shared components
+assets/              Hero photograph and partner logos
 data/boundaries/     Division, range, beat and reserve outlines
 data/centroids.csv   Bundled village centroids
 tools/               Build-time data preparation, not imported by the app
