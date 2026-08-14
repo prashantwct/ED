@@ -211,3 +211,34 @@ def test_view_bounds_are_centred_on_the_view():
     )
     assert (west + east) / 2 == pytest.approx(81.0)
     assert (south + north) / 2 == pytest.approx(23.0)
+
+
+# ---------------------------------------------------------------------------
+# A failing map must not take the page with it
+# ---------------------------------------------------------------------------
+def test_a_map_failure_is_contained_to_its_own_section(monkeypatch):
+    """The beat table and the brief are what the manager came for."""
+    import streamlit as st
+
+    from core import map_engine
+
+    shown = []
+    monkeypatch.setattr(st, "error", lambda msg: shown.append(msg))
+
+    @map_engine._never_breaks_the_page
+    def boom():
+        raise TypeError("unexpected keyword argument")
+
+    assert boom() is None
+    assert shown and "TypeError" in shown[0]
+
+
+def test_the_guard_returns_the_map_when_nothing_goes_wrong():
+    from core import map_engine
+
+    @map_engine._never_breaks_the_page
+    def fine(value):
+        return value * 2
+
+    assert fine(21) == 42
+    assert fine.__name__ == "fine"

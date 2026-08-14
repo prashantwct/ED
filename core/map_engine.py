@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+from functools import wraps
 from html import escape
 from typing import Dict, List, Optional, Tuple
 
@@ -241,6 +242,37 @@ def basemap_warning() -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Operational map
 # ---------------------------------------------------------------------------
+def _never_breaks_the_page(render):
+    """Contain a map failure to its own section.
+
+    The maps sit in the middle of a long page. A crash in one takes the
+    beat table, the brief and the download with it, which is a bad trade
+    for a layer that failed to draw -- the numbers are what the manager
+    came for. Report it where the map would have been and carry on.
+
+    This also covers the deployment case where the entry point has been
+    reloaded but an imported module has not, so a freshly added argument
+    hits an older function.
+    """
+
+    @wraps(render)
+    def guarded(*args, **kwargs):
+        try:
+            return render(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - the page must survive
+            logger.exception("%s failed", render.__name__)
+            st.error(
+                f"The map could not be drawn: {type(exc).__name__}. Everything "
+                "else on this page is unaffected. If this followed an update, "
+                "reboot the app rather than rerunning it -- a rerun reloads "
+                "the page script but keeps the old modules in memory."
+            )
+            return None
+
+    return guarded
+
+
+@_never_breaks_the_page
 def render_map(
     df: pd.DataFrame,
     hotspots: Optional[pd.DataFrame] = None,
@@ -290,6 +322,7 @@ def render_map(
     _basemap_note()
 
 
+@_never_breaks_the_page
 def render_village_map(
     village_risk: pd.DataFrame,
     hotspots: Optional[pd.DataFrame] = None,
