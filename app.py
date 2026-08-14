@@ -26,18 +26,7 @@ from core.analytics import (
     severity_distribution,
 )
 from core import boundaries, landing
-from core.config import LOG_PATH, MIN_EWS_CONTACTS
-from core.coverage import (
-    coverage_caveats,
-    coverage_gaps,
-    coverage_headlines,
-    division_labels,
-    division_staffing,
-    enrolment_by_division,
-    load_ews_registry,
-    load_staff_roster,
-    village_coverage,
-)
+from core.config import LOG_PATH
 from core.data_loader import load_and_validate_csv
 from core.exceptions import DataValidationError, SpatialEnrichmentError
 from core.hotspots import (
@@ -125,15 +114,28 @@ def _load(file_bytes: bytes, filename: str):
     return load_and_validate_csv(io.BytesIO(file_bytes))
 
 
+def _ews():
+    """The early-warning coverage subsystem, imported on first use.
+
+    Nothing in it runs until a registry is uploaded and most sessions
+    never upload one, so it is not a top-level import. A dashboard that
+    cannot rank beats because an optional module failed to load is worse
+    than one without the optional module.
+    """
+    from core import coverage
+
+    return coverage
+
+
 @st.cache_data(show_spinner="Reading the early-warning registry...")
 def _registry(file_bytes: bytes, filename: str):
     """De-identify the registry once per upload, not once per rerun."""
-    return load_ews_registry(io.BytesIO(file_bytes))
+    return _ews().load_ews_registry(io.BytesIO(file_bytes))
 
 
 @st.cache_data(show_spinner="Reading the registered user list...")
 def _roster(file_bytes: bytes, filename: str):
-    return load_staff_roster(io.BytesIO(file_bytes))
+    return _ews().load_staff_roster(io.BytesIO(file_bytes))
 
 
 @st.cache_data(show_spinner="Finding movement hotspots...", hash_funcs={pd.DataFrame: _frame_key})
@@ -238,6 +240,16 @@ for source, loader, label in (
     except DataValidationError as exc:
         st.sidebar.warning(f"Could not read the {label}: {exc}")
         continue
+    except ImportError:
+        # Stale interpreter after a deploy: the entry point has been
+        # reloaded from disk but an already-imported module has not.
+        logger.exception("Coverage subsystem failed to import")
+        st.sidebar.error(
+            "Early-warning coverage could not load. If the app was updated "
+            "just now, reboot it so the running process picks up the new "
+            "modules. Everything else on this page is unaffected."
+        )
+        break
     for note in load_notes:
         st.sidebar.caption(note)
     if label == "registry":
@@ -613,7 +625,7 @@ coverage_table = pd.DataFrame()
 coverage_stats: dict = {}
 
 if registry is not None:
-    coverage_table, coverage_stats = village_coverage(
+    coverage_table, coverage_stats = _ews().village_coverage(
         village_risk, villages, registry
     )
 
@@ -624,7 +636,9 @@ if not coverage_table.empty:
         "The villages the ranking says are exposed, against the people "
         "registered to be warned there.",
     )
-    findings(coverage_headlines(coverage_table, coverage_stats))
+    ews = _ews()
+    min_contacts = int(coverage_stats["min_contacts"])
+    findings(ews.coverage_headlines(coverage_table, coverage_stats))
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Registrations placed", f"{coverage_stats['matched']:,}")
@@ -642,7 +656,7 @@ if not coverage_table.empty:
         delta_color="off",
     )
 
-    gaps = coverage_gaps(coverage_table)
+    gaps = ews.coverage_gaps(coverage_table)
     gap_cols = [
         "Village", "Tier", "Registered Contacts", "Coverage", "Conflict Events",
         "Human Deaths", "People Injured", "Nearest Hotspot",
@@ -656,7 +670,7 @@ if not coverage_table.empty:
         ),
         "Coverage": st.column_config.TextColumn(
             width="small",
-            help=f"Thin means fewer than {MIN_EWS_CONTACTS} registrations — one "
+            help=f"Thin means fewer than {min_contacts} registrations — one "
             "handset that is off overnight leaves the village unwarned.",
         ),
     }
@@ -664,7 +678,7 @@ if not coverage_table.empty:
     if gaps.empty:
         st.success(
             "Every Critical and High village has at least "
-            f"{MIN_EWS_CONTACTS} registered contacts."
+            f"{min_contacts} registered contacts."
         )
     else:
         st.markdown("**Enrolment queue** — worst tier and thinnest cover first")
@@ -689,11 +703,11 @@ if not coverage_table.empty:
         )
 
     enrol_col, staff_col = st.columns(2)
-    labels = division_labels(filtered)
+    labels = ews.division_labels(filtered)
 
     with enrol_col:
         st.markdown("**Enrolment by division**")
-        enrolment = enrolment_by_division(registry, labels)
+        enrolment = ews.enrolment_by_division(registry, labels)
         st.dataframe(enrolment, width="stretch", hide_index=True)
         st.caption(
             "Whole registry, not the filtered period — enrolment is a standing "
@@ -708,7 +722,7 @@ if not coverage_table.empty:
                 "reporting volume against the staff enrolled in each division."
             )
         else:
-            staffing = division_staffing(filtered, roster)
+            staffing = ews.division_staffing(filtered, roster)
             st.dataframe(
                 staffing,
                 width="stretch",
@@ -727,7 +741,7 @@ if not coverage_table.empty:
                 "likely to mean accounts created and unused as a quiet division."
             )
 
-    for note in coverage_caveats(coverage_stats):
+    for note in ews.coverage_caveats(coverage_stats):
         st.caption(note)
 
 elif registry is not None and not village_risk.empty:
