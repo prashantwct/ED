@@ -451,6 +451,50 @@ def test_the_original_risk_columns_are_preserved():
     assert list(table.columns)[-2:] == ["Registered Contacts", "Coverage"]
 
 
+# ---------------------------------------------------------------------------
+# Wiring into the entry point
+# ---------------------------------------------------------------------------
+def test_the_entry_point_does_not_import_coverage_at_module_scope():
+    """An optional subsystem must not be able to take the dashboard down.
+
+    Streamlit re-executes app.py on every rerun but leaves already-imported
+    modules in sys.modules, so after a deploy the entry point can be new
+    while core.config is still the previous one. A top-level import of a
+    module needing new constants then raises ImportError before a single
+    beat is ranked -- which is exactly what happened. Coverage is reached
+    only through an optional upload, so it is imported there.
+    """
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse((Path(__file__).resolve().parent.parent / "app.py").read_text())
+    offenders = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            offenders += [a.name for a in node.names if a.name.startswith("core.coverage")]
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "core.coverage":
+                offenders.append(node.module)
+            elif node.module == "core":
+                offenders += [a.name for a in node.names if a.name == "coverage"]
+    assert not offenders, f"app.py imports the optional subsystem eagerly: {offenders}"
+
+
+def test_the_summary_carries_every_key_the_dashboard_reads():
+    """A missing key here is a KeyError on a page nobody can retry past."""
+    villages = _villages(("A", LAT, LON))
+    registry = pd.DataFrame(
+        {"Latitude": [LAT], "Longitude": [LON], "Village": ["A"]}
+    )
+    risk = _risk(("A", LAT, LON, "Critical", 3, 1))
+    _, summary = village_coverage(risk, villages, registry)
+    for key in (
+        "matched", "villages_reached", "no_contact", "exposed", "urgent",
+        "at_risk", "radius_km", "min_contacts",
+    ):
+        assert key in summary, key
+
+
 def test_the_caveats_name_the_registrants_nobody_could_place():
     summary = {"registrants": 100, "unmatched": 7, "radius_km": 2.0, "by_name": 3}
     joined = " ".join(coverage_caveats(summary))

@@ -255,6 +255,15 @@ and were set against a 1,761-row Anuppur/Bandhavgarh export.
 `runtime.txt` fixes the Python version, and `.streamlit/config.toml` caps
 uploads at 10 MB and disables usage stats.
 
+**Reboot after adding a constant to `core/config.py`.** Streamlit re-executes
+`app.py` on every rerun but leaves already-imported modules in `sys.modules`,
+so a deploy can leave a new entry point running against the previous
+`core.config`. A `from core.config import NEW_NAME` then raises ImportError
+before anything renders. Manage app → Reboot restarts the interpreter and
+clears it. The entry point imports only long-standing names from `core.config`
+and reaches optional subsystems lazily, so the dashboard survives the window
+even when an optional feature does not — there is a test holding that line.
+
 **Logging.** Writes to `app.log` beside the app and to stdout. Set `ED_LOG_PATH`
 to relocate it on a read-only container.
 
