@@ -171,9 +171,10 @@ def test_tooltip_drops_rows_with_nothing_in_them():
 
 
 def test_blank_values_render_as_a_dash_not_the_word_nan():
-    assert _clean(float("nan")) == "—"
-    assert _clean(None) == "—"
-    assert _clean("Unknown") == "—"
+    """A plain hyphen: an em dash reads as a stray mark at tooltip size."""
+    assert _clean(float("nan")) == "-"
+    assert _clean(None) == "-"
+    assert _clean("Unknown") == "-"
     assert _clean("Cholna") == "Cholna"
 
 

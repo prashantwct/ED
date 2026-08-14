@@ -126,18 +126,39 @@ def _pct(value: object) -> Optional[str]:
     return f"{float(value):.0f}%"
 
 
+# Plain ASCII throughout. Em dashes and middots rendered as stray marks
+# in a hover the reader has about a second for, and a slash reads the
+# same in every font the field offices have.
+_DASH = "-"
+_SEP = " / "
+
+
 def _trail(*parts: object) -> str:
     """Breadcrumb of whatever is actually known."""
     known = [_clean(p, "") for p in parts]
-    return " · ".join(p for p in known if p)
+    return _SEP.join(p for p in known if p)
 
 
-def _clean(value: object, dash: str = "—") -> str:
+def _clean(value: object, dash: str = _DASH) -> str:
     """Blank-safe display value."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return dash
     text = str(value).strip()
     return text if text and text.lower() not in ("nan", "none", "unknown") else dash
+
+
+def _count(value: object) -> Optional[str]:
+    """A count worth a row, or nothing.
+
+    Most villages killed nobody and most hotspots damaged no houses. A
+    card that lists five zeros to reach the one number that matters
+    reads as a wall of text, so a zero drops the row entirely and the
+    absence carries the same meaning in less space.
+    """
+    if value is None or pd.isna(value):
+        return None
+    number = int(float(value))
+    return f"{number:,}" if number else None
 
 
 def _seen_between(row: dict) -> str:
@@ -487,7 +508,7 @@ def _boundary_tooltip(level: str, properties: dict) -> str:
     if properties.get("Conflict Events") is not None:
         rows.append(("Conflicts", f"{int(properties['Conflict Events']):,}"))
     if properties.get("Human Deaths"):
-        rows.append(("Killed", int(properties["Human Deaths"])))
+        rows.append(("Killed", _count(properties.get("Human Deaths"))))
     if properties.get("Priority Tier"):
         rows.append(("Tier", properties["Priority Tier"]))
 
@@ -541,7 +562,7 @@ def _sighting_tooltips(plot_df: pd.DataFrame) -> List[str]:
         when = _clean(date.iloc[i], "")
         clock = hour.iloc[i]
         if pd.notna(clock):
-            when = f"{when} · {int(clock):02d}:00" if when else f"{int(clock):02d}:00"
+            when = f"{when}, {int(clock):02d}:00" if when else f"{int(clock):02d}:00"
 
         total = row.get("Total Count")
         group = _clean(row.get("_group"))
@@ -564,8 +585,8 @@ def _sighting_tooltips(plot_df: pd.DataFrame) -> List[str]:
 
         village = _clean(row.get("Nearest Village"))
         distance = row.get("Distance to Village (km)")
-        if village != "—" and pd.notna(distance):
-            village = f"{village} · {float(distance):.1f} km"
+        if village != _DASH and pd.notna(distance):
+            village = f"{village}, {float(distance):.1f} km"
         rows.append(("Nearest village", village))
 
         tooltips.append(_card(
@@ -610,18 +631,21 @@ def _hotspot_layers(hotspots: pd.DataFrame, labels: bool = True) -> list:
     frame[["_r", "_g", "_b"]] = pd.DataFrame(colors.tolist(), index=frame.index)
     frame["_tooltip"] = [
         _card(
-            f"{_clean(row.get('Hotspot'), 'Hotspot')} · {_clean(row.get('Tier'))}",
+            _clean(row.get("Hotspot"), "Hotspot"),
             TIER_COLORS.get(str(row.get("Tier")), (107, 133, 120)),
             [
                 ("Sightings", f"{int(row.get('Sightings') or 0):,}"),
                 ("Conflicts", f"{int(row.get('Conflict Events') or 0):,} "
                               f"({float(row.get('Conflict Share %') or 0):.0f}%)"),
-                ("Killed", int(row.get("Human Deaths") or 0)),
-                ("Injured", int(row.get("People Injured") or 0)),
-                ("At night", _pct(row.get("Night Share %"))),
-                ("Radius", f"{float(row.get('Radius (km)') or 0):.1f} km"),
+                ("Killed", _count(row.get("Human Deaths"))),
+                ("Injured", _count(row.get("People Injured"))),
+                # No radius row: the footprint is drawn at true scale,
+                # so the ring on the map already states it.
+                ("Night", _pct(row.get("Night Share %"))),
             ],
-            subtitle=_seen_between(row),
+            # Tier in words as well as in the header colour, and the
+            # date range folded in beside it rather than taking a row.
+            subtitle=_trail(f"{_clean(row.get('Tier'))} hotspot", _seen_between(row)),
             footer=_trail(row.get("Beats"), row.get("Divisions")),
         )
         for row in frame.to_dict("records")
@@ -695,12 +719,12 @@ def _village_layers(
             _clean(row.get("Village"), "Village"),
             TIER_COLORS.get(str(row.get("Tier")), (107, 133, 120)),
             [
-                ("Conflict events", f"{int(row.get('Conflict Events') or 0):,}"),
-                ("Killed", int(row.get("Human Deaths") or 0)),
-                ("Injured", int(row.get("People Injured") or 0)),
-                ("House damage", int(row.get("House Damage Events") or 0)),
-                ("Crop damage", int(row.get("Crop Damage Events") or 0)),
-                ("At night", _pct(row.get("Night Share %"))),
+                ("Conflicts", f"{int(row.get('Conflict Events') or 0):,}"),
+                ("Killed", _count(row.get("Human Deaths"))),
+                ("Injured", _count(row.get("People Injured"))),
+                ("House", _count(row.get("House Damage Events"))),
+                ("Crop", _count(row.get("Crop Damage Events"))),
+                ("Night", _pct(row.get("Night Share %"))),
             ],
             subtitle=f"{_clean(row.get('Tier'))} tier",
             footer=_hotspot_relation(row),
