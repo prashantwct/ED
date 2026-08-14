@@ -271,7 +271,12 @@ layer_hotspots = st.sidebar.checkbox("Layer: hotspot footprints", value=True)
 layer_villages = st.sidebar.checkbox("Layer: villages at risk", value=True)
 
 if boundaries.available():
-    layer_boundaries = st.sidebar.checkbox("Layer: forest boundaries", value=True)
+    # Off by default. Boundary geometry is the heaviest thing the map
+    # sends, and an oversized deck spec is what stopped the maps loading
+    # on Streamlit Cloud once already. The payload is a third of what it
+    # was, but the safe default for a field deployment is the map that
+    # was already working.
+    layer_boundaries = st.sidebar.checkbox("Layer: forest boundaries", value=False)
     boundary_choice = st.sidebar.selectbox(
         "Boundary level",
         ["Auto (by zoom)"] + [boundaries.LEVEL_LABELS[k] for k in boundaries.LEVELS],

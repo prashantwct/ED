@@ -45,10 +45,13 @@ ZOOM_TO_BEAT = 10.8
 
 # Outline colours, from the same muted family as the rest of the map so
 # boundaries never compete with the data drawn on top of them.
+# Admin levels are drawn as a single line, so the colour has to hold up
+# on pale terrain and on satellite imagery alike. A mid-tone amber does;
+# the muted greens these started as vanished into both.
 LEVEL_STYLE = {
-    DIVISION: {"color": [64, 84, 74], "width": 2.4},
-    RANGE: {"color": [82, 104, 92], "width": 1.6},
-    BEAT: {"color": [104, 124, 112], "width": 0.9},
+    DIVISION: {"color": [196, 132, 42], "width": 2.4},
+    RANGE: {"color": [186, 140, 70], "width": 1.6},
+    BEAT: {"color": [176, 148, 96], "width": 1.0},
     RESERVE: {"color": [31, 95, 63], "width": 3.0},
 }
 

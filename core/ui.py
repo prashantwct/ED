@@ -186,6 +186,24 @@ _THEME_CSS = """
   font-size: 0.72rem; color: var(--ci-text-muted); margin-top: 3px; line-height: 1.35;
 }
 
+/* Map tooltips. Defined once here rather than inline on every feature:
+   the deck spec carries one copy of each tooltip's markup per row, and
+   at 1,761 sightings inline styling added two megabytes to what gets
+   pushed over the websocket on every rerun. Streamlit renders pydeck as
+   a native element, not an iframe, so page CSS reaches the tooltip. */
+.mt { background:#12211a; color:#eaf2ec; border-radius:9px; overflow:hidden;
+      box-shadow:0 6px 18px rgba(0,0,0,.35); min-width:190px; max-width:290px;
+      font-family:"Segoe UI",Arial,sans-serif; }
+.mt-h { padding:7px 11px 6px 11px; font-weight:650; font-size:12.5px; line-height:1.25; }
+.mt-s { font-weight:400; opacity:.78; font-size:11px; margin-top:1px; }
+.mt-b { padding:7px 11px 8px 11px; font-size:11.5px; line-height:1.55; }
+.mt-r { display:flex; justify-content:space-between; gap:14px; align-items:baseline; }
+.mt-l { opacity:.68; white-space:nowrap; }
+.mt-v { font-weight:650; font-variant-numeric:tabular-nums; text-align:right; }
+.mt-f { padding:6px 11px; background:rgba(255,255,255,.06); font-size:10.5px;
+        opacity:.8; line-height:1.4; }
+.mt-dark { color:#14201a; }
+
 .ci-card {
   background: var(--ci-bg-raised);
   border: 1px solid var(--ci-border);
