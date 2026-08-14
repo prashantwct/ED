@@ -200,6 +200,11 @@ _THEME_CSS = """
 .mt-f { padding:6px 11px; background:rgba(255,255,255,.06); font-size:10.5px;
         opacity:.8; line-height:1.4; }
 .mt-dark { color:#14201a; }
+/* The card is one fixed template Streamlit fills per feature, so a slot
+   with nothing to report is switched off here rather than left out of
+   the markup. A row of two empty spans is not :empty, so the class is
+   what finds it. */
+.mt-off { display:none; }
 
 .ci-card {
   background: var(--ci-bg-raised);
