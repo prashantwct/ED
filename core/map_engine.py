@@ -12,6 +12,7 @@ keyless Carto basemap.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -67,6 +68,9 @@ _MAP_PROVIDER = "maplibre"
 # deck.gl writes the tooltip with innerHTML, so every value drawn from
 # the uploaded CSV is escaped before it gets there. Beat and village
 # names come straight from a field export.
+# Only the accent colour varies per feature, so it is the one thing that
+# stays inline. Everything else lives in core.ui as a stylesheet injected
+# once -- see the note there on payload size.
 _TOOLTIP_STYLE = {
     "backgroundColor": "transparent",
     "color": "inherit",
@@ -75,24 +79,9 @@ _TOOLTIP_STYLE = {
     "boxShadow": "none",
     "fontSize": "12px",
 }
-
-_CARD = (
-    "background:#12211a;color:#eaf2ec;border-radius:9px;overflow:hidden;"
-    "box-shadow:0 6px 18px rgba(0,0,0,.35);font-family:Segoe UI,Arial,sans-serif;"
-    "min-width:190px;max-width:290px;"
-)
-_HEAD = "padding:7px 11px 6px 11px;font-weight:650;font-size:12.5px;line-height:1.25;"
-_SUB = "font-weight:400;opacity:.78;font-size:11px;margin-top:1px;"
-_BODY = "padding:7px 11px 8px 11px;font-size:11.5px;line-height:1.55;"
-# Flex rather than a float: a long value like "Laharpur - 0.6 km" runs
-# straight through a floated label instead of pushing it aside.
-_ROW = "display:flex;justify-content:space-between;gap:14px;align-items:baseline;"
-_LABEL = "opacity:.68;white-space:nowrap;"
-_VALUE = "font-weight:650;font-variant-numeric:tabular-nums;text-align:right;"
-_FOOT = (
-    "padding:6px 11px;background:rgba(255,255,255,.06);font-size:10.5px;"
-    "opacity:.8;line-height:1.4;"
-)
+# Above this the header takes dark ink. The crop category is pale yellow
+# and white on it is unreadable.
+_LIGHT_HEADER_LUMINANCE = 150
 
 
 def _card(
@@ -108,23 +97,21 @@ def _card(
     about a second, and a column of label/value pairs survives that
     where prose does not.
     """
-    # Dark text on a pale header. The crop category is a light yellow,
-    # and white on it is unreadable.
-    luminance = (0.299 * accent[0] + 0.587 * accent[1] + 0.114 * accent[2])
-    ink = "#14201a" if luminance > 150 else "#f2f7f3"
-    head = f"background:rgb({accent[0]},{accent[1]},{accent[2]});color:{ink};"
+    luminance = 0.299 * accent[0] + 0.587 * accent[1] + 0.114 * accent[2]
+    ink = " mt-dark" if luminance > _LIGHT_HEADER_LUMINANCE else ""
     body = "".join(
-        f'<div style="{_ROW}"><span style="{_LABEL}">{escape(str(label))}</span>'
-        f'<span style="{_VALUE}">{escape(str(value))}</span></div>'
+        f'<div class="mt-r"><span class="mt-l">{escape(str(label))}</span>'
+        f'<span class="mt-v">{escape(str(value))}</span></div>'
         for label, value in rows
         if value not in (None, "")
     )
-    sub = f'<div style="{_SUB}">{escape(subtitle)}</div>' if subtitle else ""
-    foot = f'<div style="{_FOOT}">{escape(footer)}</div>' if footer else ""
+    sub = f'<div class="mt-s">{escape(subtitle)}</div>' if subtitle else ""
+    foot = f'<div class="mt-f">{escape(footer)}</div>' if footer else ""
     return (
-        f'<div style="{_CARD}">'
-        f'<div style="{_HEAD}{head}">{escape(title)}{sub}</div>'
-        f'<div style="{_BODY}">{body}</div>{foot}</div>'
+        f'<div class="mt">'
+        f'<div class="mt-h{ink}" style="background:rgb({accent[0]},{accent[1]},'
+        f'{accent[2]})">{escape(title)}{sub}</div>'
+        f'<div class="mt-b">{body}</div>{foot}</div>'
     )
 
 
@@ -370,6 +357,19 @@ def _basemap_note() -> None:
         st.caption(warning)
 
 
+def _compact(deck: pdk.Deck) -> pdk.Deck:
+    """Strip the pretty-printing out of the deck spec.
+
+    pydeck serialises with ``indent=2`` and Streamlit puts exactly that
+    string on the wire. Across 1,761 sightings and a boundary layer the
+    whitespace is about two thirds of the payload, which is a lot to
+    push through a websocket on every rerun for something no one reads.
+    """
+    spec = json.loads(deck.to_json())
+    deck.to_json = lambda: json.dumps(spec, separators=(",", ":"))
+    return deck
+
+
 def _render_deck(layers, view_state, style_name: str) -> None:
     deck = pdk.Deck(
         layers=layers,
@@ -378,7 +378,7 @@ def _render_deck(layers, view_state, style_name: str) -> None:
         map_provider=_MAP_PROVIDER,
         tooltip={"html": "{_tooltip}", "style": _TOOLTIP_STYLE},
     )
-    st.pydeck_chart(deck, width="stretch")
+    st.pydeck_chart(_compact(deck), width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +440,11 @@ def _outline_layers(level: str, features: list) -> List[pdk.Layer]:
         return []
     style = boundaries.LEVEL_STYLE[level]
     collection = {"type": "FeatureCollection", "features": features}
+    # The casing doubles the payload, because deck.gl serialises the
+    # geometry once per layer. Worth it for a dozen reserve outlines,
+    # not for 1,274 beats -- the admin levels take a single line and a
+    # colour picked to survive both a pale and a dark basemap.
+    cased = level == boundaries.RESERVE
 
     def layer(suffix: str, colour: list, width: float, pickable: bool) -> pdk.Layer:
         return pdk.Layer(
@@ -463,10 +468,11 @@ def _outline_layers(level: str, features: list) -> List[pdk.Layer]:
     for feature in features:
         feature["_tooltip"] = _boundary_tooltip(level, feature["properties"])
 
-    return [
-        layer("casing", [255, 255, 255, 150], style["width"] + 2.2, False),
-        layer("line", style["color"] + [230], style["width"], True),
-    ]
+    drawn = []
+    if cased:
+        drawn.append(layer("casing", [255, 255, 255, 150], style["width"] + 2.2, False))
+    drawn.append(layer("line", style["color"] + [230], style["width"], True))
+    return drawn
 
 
 def _boundary_tooltip(level: str, properties: dict) -> str:
@@ -505,7 +511,7 @@ def _prepare_sightings(df: pd.DataFrame) -> pd.DataFrame:
         colors.notna(), pd.Series([(120, 120, 120)] * len(plot_df), index=plot_df.index)
     )
     plot_df[["_r", "_g", "_b"]] = pd.DataFrame(colors.tolist(), index=plot_df.index)
-    plot_df["_radius"] = _severity_to_radius(plot_df)
+    plot_df["_radius"] = _severity_to_radius(plot_df).round(1)
 
     for col in ["Division", "Range", "Beat", "Nearest Village"]:
         if col not in plot_df.columns:
@@ -677,7 +683,7 @@ def _village_layers(
     events = frame["Conflict Events"].astype(float).clip(lower=0)
     max_events = float(events.max()) or 1.0
     base = 260 if emphasise else 180
-    frame["_radius_m"] = base + (events / max_events) ** 0.5 * (base * 3)
+    frame["_radius_m"] = (base + (events / max_events) ** 0.5 * (base * 3)).round(1)
 
     frame["_tooltip"] = [
         _card(

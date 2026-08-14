@@ -242,3 +242,54 @@ def test_the_guard_returns_the_map_when_nothing_goes_wrong():
 
     assert fine(21) == 42
     assert fine.__name__ == "fine"
+
+
+# ---------------------------------------------------------------------------
+# Payload size
+# ---------------------------------------------------------------------------
+def test_the_deck_spec_is_not_pretty_printed():
+    """pydeck serialises with indent=2 and Streamlit sends that string.
+
+    On this landscape the whitespace was two thirds of the payload, and
+    an oversized spec is what stopped the maps loading once already.
+    """
+    import pydeck as pdk
+
+    from core.map_engine import _compact
+
+    deck = pdk.Deck(
+        layers=[pdk.Layer("ScatterplotLayer",
+                          data=[{"lon": 81.0, "lat": 23.0} for _ in range(200)])],
+        initial_view_state=pdk.ViewState(latitude=23.0, longitude=81.0, zoom=8),
+    )
+    pretty = len(deck.to_json())
+    compact = len(_compact(deck).to_json())
+    assert compact < pretty * 0.6
+    assert "\n" not in _compact(deck).to_json()
+
+
+def test_compacting_preserves_the_spec():
+    import json
+
+    import pydeck as pdk
+
+    from core.map_engine import _compact
+
+    deck = pdk.Deck(
+        layers=[pdk.Layer("ScatterplotLayer", data=[{"lon": 81.0, "lat": 23.0}])],
+        initial_view_state=pdk.ViewState(latitude=23.0, longitude=81.0, zoom=8),
+    )
+    before = json.loads(deck.to_json())
+    assert json.loads(_compact(deck).to_json()) == before
+
+
+def test_only_reserves_carry_a_casing_layer():
+    """The casing doubles the geometry payload, which 1,274 beats cannot
+    afford; a dozen reserve outlines can."""
+    from core.map_engine import _outline_layers
+
+    feature = _feature(81.0, 23.0, 81.2, 23.2, "X")
+    admin = _outline_layers(boundaries.BEAT, boundaries.annotate([feature]))
+    reserve = _outline_layers(boundaries.RESERVE, boundaries.annotate([feature]))
+    assert len(admin) == 1
+    assert len(reserve) == 2

@@ -95,8 +95,15 @@ village, so a settlement between two hotspots is credited with both.
 conflict, reported with how concentrated it actually is. Seasonality likewise,
 and silent when there is none.
 
-**Forest boundaries.** Division, range and beat outlines, drawn as a pale
-casing under a dark line so they read on pale terrain and on satellite alike.
+**Forest boundaries** (off by default). Division, range and beat outlines in
+amber, chosen to hold up against both pale terrain and satellite; reserve
+outlines get a pale casing under the line, which the administrative levels
+cannot afford because it doubles their geometry payload.
+
+They ship switched off. Boundary geometry is the heaviest thing the map sends,
+and an oversized deck spec is what stopped the maps loading on Streamlit Cloud
+once already. Turn them on in the sidebar.
+
 Which level shows follows the zoom — divisions across a landscape, beats once
 the view is tight enough to read them. Streamlit's map reports clicks but not
 viewport changes, so that follows the view the filters produce rather than live
@@ -144,6 +151,13 @@ differ, and every beat carries a confidence label.
 **Counts measure patrol effort as much as elephants.** More reports can mean
 more staff walking the beat. Rates sit alongside volumes rather than replacing
 them, and the brief says so every time.
+
+**Watch what the map ships.** Streamlit serialises the whole deck spec into
+the page on every rerun, so anything attached per-row is multiplied by the row
+count. Tooltip styling lives in one stylesheet rather than inline on 1,761
+features, the spec is minified because pydeck pretty-prints by default, and
+boundary geometry is filtered to the viewport. Together that is the difference
+between 5.8 MB and 1.6 MB, and between a map that loads and one that does not.
 
 **Colour is never the only signal.** Tier badges carry a shape, a glyph and a
 word, so rankings survive greyscale printing and colour vision deficiency. Map
