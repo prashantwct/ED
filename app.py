@@ -26,7 +26,18 @@ from core.analytics import (
     severity_distribution,
 )
 from core import boundaries, landing
-from core.config import LOG_PATH
+from core.config import LOG_PATH, MIN_EWS_CONTACTS
+from core.coverage import (
+    coverage_caveats,
+    coverage_gaps,
+    coverage_headlines,
+    division_labels,
+    division_staffing,
+    enrolment_by_division,
+    load_ews_registry,
+    load_staff_roster,
+    village_coverage,
+)
 from core.data_loader import load_and_validate_csv
 from core.exceptions import DataValidationError, SpatialEnrichmentError
 from core.hotspots import (
@@ -114,6 +125,17 @@ def _load(file_bytes: bytes, filename: str):
     return load_and_validate_csv(io.BytesIO(file_bytes))
 
 
+@st.cache_data(show_spinner="Reading the early-warning registry...")
+def _registry(file_bytes: bytes, filename: str):
+    """De-identify the registry once per upload, not once per rerun."""
+    return load_ews_registry(io.BytesIO(file_bytes))
+
+
+@st.cache_data(show_spinner="Reading the registered user list...")
+def _roster(file_bytes: bytes, filename: str):
+    return load_staff_roster(io.BytesIO(file_bytes))
+
+
 @st.cache_data(show_spinner="Finding movement hotspots...", hash_funcs={pd.DataFrame: _frame_key})
 def _hotspots(frame: pd.DataFrame, eps_km: float, min_samples: int, as_of):
     """Cached hotspot detection -- the slowest step on a rerun."""
@@ -166,6 +188,27 @@ with st.sidebar.expander("Village centroids", expanded=False):
         "Override centroids", type="csv", key="centroids_upload"
     )
 
+with st.sidebar.expander("Early-warning coverage", expanded=False):
+    st.caption(
+        "Optional. Upload the early-warning villager registry to see which "
+        "exposed villages have nobody enrolled, and the app-user list to see "
+        "reporting effort against registered staff."
+    )
+    registry_upload = st.file_uploader(
+        "Villager registry (CSV)", type="csv", key="registry_upload",
+        help="Columns: Latitude, Longitude, and ideally Village and Division.",
+    )
+    roster_upload = st.file_uploader(
+        "Registered app users (CSV)", type="csv", key="roster_upload",
+        help="Columns: Division, and ideally Latitude and Longitude.",
+    )
+    st.caption(
+        "Both files carry personal data. Names, mobile numbers and email "
+        "addresses are discarded as the file is read and coordinates are "
+        "rounded to about 100 m, so only per-village counts reach the page or "
+        "any download. Neither file is stored."
+    )
+
 try:
     villages, centroid_warnings = load_village_centroids(
         centroid_upload if centroid_upload else None
@@ -182,6 +225,27 @@ for warning in spatial_warnings:
     st.warning(warning)
 if villages is not None:
     st.sidebar.success(f"Enriched with {len(villages):,} village centroids.")
+
+registry = roster = None
+for source, loader, label in (
+    (registry_upload, _registry, "registry"),
+    (roster_upload, _roster, "user list"),
+):
+    if source is None:
+        continue
+    try:
+        loaded, load_notes = loader(source.getvalue(), source.name)
+    except DataValidationError as exc:
+        st.sidebar.warning(f"Could not read the {label}: {exc}")
+        continue
+    for note in load_notes:
+        st.sidebar.caption(note)
+    if label == "registry":
+        registry = loaded
+        st.sidebar.success(f"{len(registry):,} registrations read.")
+    else:
+        roster = loaded
+        st.sidebar.success(f"{len(roster):,} registered users read.")
 
 df = df.copy()
 df["Severity Score"] = compute_severity(df)
@@ -543,6 +607,138 @@ else:
 
 
 # ---------------------------------------------------------------------------
+# 7b. Early-warning coverage
+# ---------------------------------------------------------------------------
+coverage_table = pd.DataFrame()
+coverage_stats: dict = {}
+
+if registry is not None:
+    coverage_table, coverage_stats = village_coverage(
+        village_risk, villages, registry
+    )
+
+if not coverage_table.empty:
+    section(
+        "broadcast",
+        "Early-warning coverage",
+        "The villages the ranking says are exposed, against the people "
+        "registered to be warned there.",
+    )
+    findings(coverage_headlines(coverage_table, coverage_stats))
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Registrations placed", f"{coverage_stats['matched']:,}")
+    m2.metric("Villages reached", f"{coverage_stats['villages_reached']:,}")
+    m3.metric(
+        "Exposed, no contact",
+        f"{coverage_stats['no_contact']:,}",
+        delta=f"of {coverage_stats['exposed']:,} exposed villages",
+        delta_color="off",
+    )
+    m4.metric(
+        "Critical / High short of contacts",
+        f"{coverage_stats['urgent']:,}",
+        delta=f"of {coverage_stats['at_risk']:,} in those tiers",
+        delta_color="off",
+    )
+
+    gaps = coverage_gaps(coverage_table)
+    gap_cols = [
+        "Village", "Tier", "Registered Contacts", "Coverage", "Conflict Events",
+        "Human Deaths", "People Injured", "Nearest Hotspot",
+    ]
+    coverage_config = {
+        "Tier": st.column_config.TextColumn(width="small"),
+        "Registered Contacts": st.column_config.NumberColumn(
+            "Registered", format="%d",
+            help="People enrolled for early warning within "
+            f"{coverage_stats['radius_km']:g} km of the village centroid.",
+        ),
+        "Coverage": st.column_config.TextColumn(
+            width="small",
+            help=f"Thin means fewer than {MIN_EWS_CONTACTS} registrations — one "
+            "handset that is off overnight leaves the village unwarned.",
+        ),
+    }
+
+    if gaps.empty:
+        st.success(
+            "Every Critical and High village has at least "
+            f"{MIN_EWS_CONTACTS} registered contacts."
+        )
+    else:
+        st.markdown("**Enrolment queue** — worst tier and thinnest cover first")
+        st.dataframe(
+            gaps[[c for c in gap_cols if c in gaps.columns]],
+            width="stretch", hide_index=True, column_config=coverage_config,
+        )
+        st.download_button(
+            "Download enrolment queue (CSV)",
+            gaps.to_csv(index=False).encode("utf-8"),
+            "ews_enrolment_queue.csv",
+            mime="text/csv",
+        )
+
+    with st.expander(
+        f"All {len(coverage_table)} exposed villages with their coverage",
+        expanded=False,
+    ):
+        st.dataframe(
+            coverage_table[[c for c in gap_cols if c in coverage_table.columns]],
+            width="stretch", hide_index=True, column_config=coverage_config,
+        )
+
+    enrol_col, staff_col = st.columns(2)
+    labels = division_labels(filtered)
+
+    with enrol_col:
+        st.markdown("**Enrolment by division**")
+        enrolment = enrolment_by_division(registry, labels)
+        st.dataframe(enrolment, width="stretch", hide_index=True)
+        st.caption(
+            "Whole registry, not the filtered period — enrolment is a standing "
+            "figure, and the divisions it is thinnest in are the ones to work on."
+        )
+
+    with staff_col:
+        st.markdown("**Reporting against registered users**")
+        if roster is None:
+            st.info(
+                "Upload the registered app-user list in the sidebar to compare "
+                "reporting volume against the staff enrolled in each division."
+            )
+        else:
+            staffing = division_staffing(filtered, roster)
+            st.dataframe(
+                staffing,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Reports per User": st.column_config.NumberColumn(
+                        "Reports / user", format="%.1f",
+                        help="Blank where reports arrived from a division with "
+                        "no registered user.",
+                    ),
+                },
+            )
+            st.caption(
+                "Division only: Range was a placeholder for almost every user "
+                "in this export, and Beat for all of them. A low figure is as "
+                "likely to mean accounts created and unused as a quiet division."
+            )
+
+    for note in coverage_caveats(coverage_stats):
+        st.caption(note)
+
+elif registry is not None and not village_risk.empty:
+    st.info(
+        "The registry loaded but nobody could be placed against the exposed "
+        "villages. Check that its coordinates cover the same landscape as the "
+        "centroids file."
+    )
+
+
+# ---------------------------------------------------------------------------
 # 8. Escalation & timing
 # ---------------------------------------------------------------------------
 esc_col, time_col = st.columns([1, 1])
@@ -733,6 +929,8 @@ if st.button("Generate brief", type="primary"):
                 "severity": severity_choice,
             },
             basemap_style_name=basemap,
+            coverage=coverage_table,
+            coverage_stats=coverage_stats,
         )
     except Exception as exc:  # noqa: BLE001 - report generation must never 500
         logger.exception("Report generation failed")

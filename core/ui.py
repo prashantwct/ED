@@ -83,6 +83,10 @@ _ICON_PATHS = {
            '<path d="M15 6v15"/>',
     "hotspot": '<path d="M12 21s7-5.6 7-11a7 7 0 1 0-14 0c0 5.4 7 11 7 11z"/>'
                '<circle cx="12" cy="10" r="2.5"/>',
+    "broadcast": '<circle cx="12" cy="12" r="2"/>'
+                 '<path d="M8.5 8.5a5 5 0 0 0 0 7"/><path d="M15.5 15.5a5 5 0 0 0 0-7"/>'
+                 '<path d="M5.7 5.7a9 9 0 0 0 0 12.6"/>'
+                 '<path d="M18.3 18.3a9 9 0 0 0 0-12.6"/>',
     "chart": '<path d="M3 3v18h18"/><path d="M7 15v-4"/><path d="M12 15V7"/>'
              '<path d="M17 15v-7"/>',
     "table": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/>'

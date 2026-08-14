@@ -6,3 +6,12 @@ app.log
 
 # Downloaded rasters and derived caches: 450 MB, refetchable
 .data_cache/
+
+# Personal data. The early-warning registry and the app-user list carry
+# names, mobile numbers and home coordinates; sighting exports carry
+# victim names in the free-text description. None of it belongs in a
+# repository, so the file shapes they arrive in are excluded by name.
+villagers*.csv
+*user_stats*.csv
+*_registry.csv
+*sightings*.csv
