@@ -15,13 +15,15 @@ from __future__ import annotations
 import logging
 import math
 import os
-from typing import Dict, Optional, Tuple
+from html import escape
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
 
-from core.analytics import classify_conflict
+from core import boundaries
+from core.analytics import classify_conflict, classify_group
 from core.config import (
     KM_PER_DEG_LAT,
     MAX_RADIUS_M,
@@ -56,6 +58,119 @@ _CARTO_FALLBACK_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/styl
 # 'carto' default asks the frontend to treat a MapTiler URL as a Carto
 # basemap.
 _MAP_PROVIDER = "maplibre"
+
+
+# ---------------------------------------------------------------------------
+# Tooltips
+# ---------------------------------------------------------------------------
+# deck.gl writes the tooltip with innerHTML, so every value drawn from
+# the uploaded CSV is escaped before it gets there. Beat and village
+# names come straight from a field export.
+_TOOLTIP_STYLE = {
+    "backgroundColor": "transparent",
+    "color": "inherit",
+    "padding": "0",
+    "margin": "0",
+    "boxShadow": "none",
+    "fontSize": "12px",
+}
+
+_CARD = (
+    "background:#12211a;color:#eaf2ec;border-radius:9px;overflow:hidden;"
+    "box-shadow:0 6px 18px rgba(0,0,0,.35);font-family:Segoe UI,Arial,sans-serif;"
+    "min-width:190px;max-width:290px;"
+)
+_HEAD = "padding:7px 11px 6px 11px;font-weight:650;font-size:12.5px;line-height:1.25;"
+_SUB = "font-weight:400;opacity:.78;font-size:11px;margin-top:1px;"
+_BODY = "padding:7px 11px 8px 11px;font-size:11.5px;line-height:1.55;"
+# Flex rather than a float: a long value like "Laharpur - 0.6 km" runs
+# straight through a floated label instead of pushing it aside.
+_ROW = "display:flex;justify-content:space-between;gap:14px;align-items:baseline;"
+_LABEL = "opacity:.68;white-space:nowrap;"
+_VALUE = "font-weight:650;font-variant-numeric:tabular-nums;text-align:right;"
+_FOOT = (
+    "padding:6px 11px;background:rgba(255,255,255,.06);font-size:10.5px;"
+    "opacity:.8;line-height:1.4;"
+)
+
+
+def _card(
+    title: str,
+    accent: Tuple[int, int, int],
+    rows: List[Tuple[str, object]],
+    subtitle: str = "",
+    footer: str = "",
+) -> str:
+    """One tooltip, as a small card with a coloured header.
+
+    Labelled rows rather than a run-on sentence: a hover is read in
+    about a second, and a column of label/value pairs survives that
+    where prose does not.
+    """
+    # Dark text on a pale header. The crop category is a light yellow,
+    # and white on it is unreadable.
+    luminance = (0.299 * accent[0] + 0.587 * accent[1] + 0.114 * accent[2])
+    ink = "#14201a" if luminance > 150 else "#f2f7f3"
+    head = f"background:rgb({accent[0]},{accent[1]},{accent[2]});color:{ink};"
+    body = "".join(
+        f'<div style="{_ROW}"><span style="{_LABEL}">{escape(str(label))}</span>'
+        f'<span style="{_VALUE}">{escape(str(value))}</span></div>'
+        for label, value in rows
+        if value not in (None, "")
+    )
+    sub = f'<div style="{_SUB}">{escape(subtitle)}</div>' if subtitle else ""
+    foot = f'<div style="{_FOOT}">{escape(footer)}</div>' if footer else ""
+    return (
+        f'<div style="{_CARD}">'
+        f'<div style="{_HEAD}{head}">{escape(title)}{sub}</div>'
+        f'<div style="{_BODY}">{body}</div>{foot}</div>'
+    )
+
+
+def _pct(value: object) -> Optional[str]:
+    """Percentage, or nothing at all when it was never measured.
+
+    ``float(x or 0)`` does not help here: NaN is truthy, so a missing
+    night share sailed through and rendered as "nan%".
+    """
+    if value is None or pd.isna(value):
+        return None
+    return f"{float(value):.0f}%"
+
+
+def _trail(*parts: object) -> str:
+    """Breadcrumb of whatever is actually known."""
+    known = [_clean(p, "") for p in parts]
+    return " · ".join(p for p in known if p)
+
+
+def _clean(value: object, dash: str = "—") -> str:
+    """Blank-safe display value."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return dash
+    text = str(value).strip()
+    return text if text and text.lower() not in ("nan", "none", "unknown") else dash
+
+
+def _seen_between(row: dict) -> str:
+    """First-to-last-seen line for a hotspot."""
+    first, last = row.get("First Seen"), row.get("Last Seen")
+    if pd.isna(first) or pd.isna(last):
+        return ""
+    return f"{pd.Timestamp(first):%d %b} to {pd.Timestamp(last):%d %b %Y}"
+
+
+def _hotspot_relation(row: dict) -> str:
+    """Where a village sits relative to the nearest hotspot."""
+    name = _clean(row.get("Nearest Hotspot"), "")
+    if not name:
+        return ""
+    if row.get("Inside Hotspot"):
+        return f"Inside hotspot {name}"
+    distance = row.get("Distance to Hotspot (km)")
+    if pd.notna(distance):
+        return f"{float(distance):.1f} km from hotspot {name}"
+    return f"Nearest hotspot {name}"
 
 
 def _hex_to_rgb(value: str) -> Tuple[int, int, int]:
@@ -134,6 +249,9 @@ def render_map(
     show_sightings: bool = True,
     show_hotspots: bool = True,
     show_villages: bool = True,
+    show_boundaries: bool = True,
+    boundary_level: Optional[str] = None,
+    beat_stats: Optional[pd.DataFrame] = None,
 ) -> None:
     """Render the operational map with the requested layers."""
     if df.empty:
@@ -147,6 +265,9 @@ def render_map(
     view_state = _adaptive_view_state(plot_df)
 
     layers = []
+    layers.extend(boundary_layers(
+        view_state, boundary_level, beat_stats, show_reserves=show_boundaries
+    ) if show_boundaries else [])
     if show_hotspots and hotspots is not None and not hotspots.empty:
         layers.extend(_hotspot_layers(hotspots))
     if show_sightings:
@@ -160,6 +281,8 @@ def render_map(
 
     _render_deck(layers, view_state, style_name)
 
+    if show_boundaries:
+        _boundary_note(view_state, boundary_level)
     if show_sightings:
         category_legend(plot_df["_category"].value_counts().to_dict())
     if show_villages and villages is not None and not villages.empty:
@@ -171,6 +294,8 @@ def render_village_map(
     village_risk: pd.DataFrame,
     hotspots: Optional[pd.DataFrame] = None,
     style_name: str = DEFAULT_BASEMAP,
+    show_boundaries: bool = True,
+    boundary_level: Optional[str] = None,
 ) -> None:
     """Render the village-risk map: settlements over hotspot footprints."""
     if village_risk is None or village_risk.empty:
@@ -181,7 +306,7 @@ def render_village_map(
 
     view_state = _adaptive_view_state(village_risk)
 
-    layers = []
+    layers = list(boundary_layers(view_state, boundary_level)) if show_boundaries else []
     if hotspots is not None and not hotspots.empty:
         layers.extend(_hotspot_layers(hotspots, labels=False))
     layers.extend(_village_layers(village_risk, view_state, emphasise=True))
@@ -196,6 +321,16 @@ def render_village_map(
     _basemap_note()
 
 
+def _boundary_note(view_state: pdk.ViewState, level: Optional[str]) -> None:
+    """Say which level is drawn and why, so it is not a surprise."""
+    chosen = level or boundaries.level_for_zoom(float(view_state.zoom))
+    how = "pinned" if level else "chosen for this zoom"
+    note = f"{boundaries.LEVEL_LABELS[chosen]} boundaries ({how})."
+    if chosen == boundaries.BEAT:
+        note += " " + boundaries.BEAT_COVERAGE_NOTE
+    st.caption(note)
+
+
 def _basemap_note() -> None:
     warning = basemap_warning()
     if warning:
@@ -208,13 +343,118 @@ def _render_deck(layers, view_state, style_name: str) -> None:
         initial_view_state=view_state,
         map_style=basemap_style(style_name),
         map_provider=_MAP_PROVIDER,
-        tooltip={
-            "html": "{_tooltip}",
-            "style": {"backgroundColor": "#1f5f3f", "color": "white",
-                      "fontSize": "12px"},
-        },
+        tooltip={"html": "{_tooltip}", "style": _TOOLTIP_STYLE},
     )
     st.pydeck_chart(deck, width="stretch")
+
+
+# ---------------------------------------------------------------------------
+# Administrative boundaries
+# ---------------------------------------------------------------------------
+def boundary_layers(
+    view_state: pdk.ViewState,
+    level: Optional[str] = None,
+    beat_stats: Optional[pd.DataFrame] = None,
+    show_reserves: bool = True,
+) -> list:
+    """Outline layers for the current view.
+
+    ``level`` of None picks one from the zoom: divisions across a
+    landscape, beats once the view is tight enough for them to read.
+    """
+    if not boundaries.available():
+        return []
+
+    chosen = level or boundaries.level_for_zoom(float(view_state.zoom))
+    layers = []
+
+    if show_reserves:
+        layers.extend(_outline_layers(
+            boundaries.RESERVE,
+            boundaries.annotate(boundaries.load(boundaries.RESERVE)["features"]),
+        ))
+
+    features = boundaries.load(chosen)["features"]
+    features = boundaries.in_view(features, *_view_bounds(view_state))
+    stats = boundaries.stats_by_name(
+        beat_stats, "Beat",
+        ["Priority Tier", "Reports", "Conflict Events", "Human Deaths"],
+    ) if chosen == boundaries.BEAT else {}
+    layers.extend(_outline_layers(chosen, boundaries.annotate(features, stats)))
+    return layers
+
+
+def _view_bounds(view_state: pdk.ViewState) -> Tuple[float, float, float, float]:
+    """Rough lon/lat box for the viewport, generous at the edges.
+
+    Half a degree of slack at the widest zoom keeps polygons that only
+    just intrude on the frame from popping in and out.
+    """
+    span = max(0.35, 42.0 / (2 ** float(view_state.zoom)) * 8)
+    lat, lon = float(view_state.latitude), float(view_state.longitude)
+    return (lon - span, lat - span, lon + span, lat + span)
+
+
+def _outline_layers(level: str, features: list) -> List[pdk.Layer]:
+    """A boundary drawn as a light casing under a dark line.
+
+    The basemap is selectable and runs from pale terrain to satellite
+    imagery, so a single-colour outline is invisible against one or the
+    other. A pale wide line beneath a narrow dark one reads on both, and
+    is what a paper forest map does with a boundary anyway.
+    """
+    if not features:
+        return []
+    style = boundaries.LEVEL_STYLE[level]
+    collection = {"type": "FeatureCollection", "features": features}
+
+    def layer(suffix: str, colour: list, width: float, pickable: bool) -> pdk.Layer:
+        return pdk.Layer(
+            "GeoJsonLayer",
+            data=collection,
+            id=f"boundary-{level}-{suffix}",
+            stroked=True,
+            filled=False,
+            get_line_color=colour,
+            get_line_width=width,
+            line_width_units="pixels",
+            line_width_min_pixels=width,
+            line_joint_rounded=True,
+            pickable=pickable,
+            auto_highlight=pickable,
+            # Default highlight floods the whole polygon; a division
+            # filling the screen on hover buries the data on top of it.
+            highlight_color=[255, 255, 255, 30],
+        )
+
+    for feature in features:
+        feature["_tooltip"] = _boundary_tooltip(level, feature["properties"])
+
+    return [
+        layer("casing", [255, 255, 255, 150], style["width"] + 2.2, False),
+        layer("line", style["color"] + [230], style["width"], True),
+    ]
+
+
+def _boundary_tooltip(level: str, properties: dict) -> str:
+    rows: List[Tuple[str, object]] = []
+    if properties.get("Reports"):
+        rows.append(("Reports", f"{int(properties['Reports']):,}"))
+    if properties.get("Conflict Events") is not None:
+        rows.append(("Conflicts", f"{int(properties['Conflict Events']):,}"))
+    if properties.get("Human Deaths"):
+        rows.append(("Killed", int(properties["Human Deaths"])))
+    if properties.get("Priority Tier"):
+        rows.append(("Tier", properties["Priority Tier"]))
+
+    parent = _trail(properties.get("parent"), properties.get("grandparent"))
+    return _card(
+        _clean(properties.get("name"), boundaries.LEVEL_LABELS[level]),
+        tuple(boundaries.LEVEL_STYLE[level]["color"]),
+        rows,
+        subtitle=boundaries.LEVEL_LABELS[level],
+        footer=parent,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -238,20 +478,60 @@ def _prepare_sightings(df: pd.DataFrame) -> pd.DataFrame:
         if col not in plot_df.columns:
             plot_df[col] = "N/A"
 
+    plot_df["_group"] = classify_group(plot_df)
+    plot_df["_tooltip"] = _sighting_tooltips(plot_df)
+    return plot_df
+
+
+def _sighting_tooltips(plot_df: pd.DataFrame) -> List[str]:
+    """What a manager needs off one hover: what, when, who, where."""
     date = (
         plot_df["Date"].dt.strftime("%d %b %Y")
         if "Date" in plot_df.columns
-        else pd.Series("N/A", index=plot_df.index)
+        else pd.Series("", index=plot_df.index)
     )
-    plot_df["_tooltip"] = (
-        "<b>" + plot_df["_category_label"].astype(str) + "</b><br/>"
-        + date.astype(str) + "<br/>"
-        + plot_df["Beat"].astype(str) + " &middot; "
-        + plot_df["Range"].astype(str) + " &middot; "
-        + plot_df["Division"].astype(str) + "<br/>"
-        + "Nearest village: " + plot_df["Nearest Village"].astype(str)
-    )
-    return plot_df
+    hour = plot_df["Hour"] if "Hour" in plot_df.columns else pd.Series(pd.NA, index=plot_df.index)
+
+    tooltips = []
+    for i, row in enumerate(plot_df.to_dict("records")):
+        when = _clean(date.iloc[i], "")
+        clock = hour.iloc[i]
+        if pd.notna(clock):
+            when = f"{when} · {int(clock):02d}:00" if when else f"{int(clock):02d}:00"
+
+        total = row.get("Total Count")
+        group = _clean(row.get("_group"))
+        if pd.notna(total) and float(total) > 0:
+            group = f"{group} ({int(float(total))})"
+
+        rows: List[Tuple[str, object]] = [("Group", group)]
+        damage = [
+            name for name, column in (
+                ("crop", "Crop Damage"), ("grain", "Grain Damage"),
+                ("house", "House Damage"),
+            )
+            if float(row.get(column) or 0) > 0
+        ]
+        if damage:
+            rows.append(("Damage", ", ".join(damage)))
+        for label, column in (("Killed", "Death"), ("Injured", "Injury")):
+            if float(row.get(column) or 0) > 0:
+                rows.append((label, "yes"))
+
+        village = _clean(row.get("Nearest Village"))
+        distance = row.get("Distance to Village (km)")
+        if village != "—" and pd.notna(distance):
+            village = f"{village} · {float(distance):.1f} km"
+        rows.append(("Nearest village", village))
+
+        tooltips.append(_card(
+            _clean(row.get("_category_label"), "Sighting"),
+            CATEGORY_COLORS.get(row.get("_category"), (120, 120, 120)),
+            rows,
+            subtitle=when,
+            footer=_trail(*(row.get(c) for c in ("Beat", "Range", "Division"))),
+        ))
+    return tooltips
 
 
 def _sighting_layer(plot_df: pd.DataFrame) -> pdk.Layer:
@@ -284,17 +564,24 @@ def _hotspot_layers(hotspots: pd.DataFrame, labels: bool = True) -> list:
         colors.notna(), pd.Series([(107, 133, 120)] * len(frame), index=frame.index)
     )
     frame[["_r", "_g", "_b"]] = pd.DataFrame(colors.tolist(), index=frame.index)
-    frame["_tooltip"] = (
-        "<b>" + frame["Hotspot"].astype(str) + " &middot; "
-        + frame["Tier"].astype(str) + "</b><br/>"
-        + frame["Divisions"].astype(str) + "<br/>"
-        + frame["Sightings"].astype(int).astype(str) + " sightings, "
-        + frame["Conflict Events"].astype(int).astype(str) + " conflicts ("
-        + frame["Conflict Share %"].round(0).astype(int).astype(str) + "%)<br/>"
-        + frame["Human Deaths"].astype(int).astype(str) + " killed, "
-        + frame["People Injured"].astype(int).astype(str) + " injured<br/>"
-        + "Radius " + frame["Radius (km)"].round(1).astype(str) + " km"
-    )
+    frame["_tooltip"] = [
+        _card(
+            f"{_clean(row.get('Hotspot'), 'Hotspot')} · {_clean(row.get('Tier'))}",
+            TIER_COLORS.get(str(row.get("Tier")), (107, 133, 120)),
+            [
+                ("Sightings", f"{int(row.get('Sightings') or 0):,}"),
+                ("Conflicts", f"{int(row.get('Conflict Events') or 0):,} "
+                              f"({float(row.get('Conflict Share %') or 0):.0f}%)"),
+                ("Killed", int(row.get("Human Deaths") or 0)),
+                ("Injured", int(row.get("People Injured") or 0)),
+                ("At night", _pct(row.get("Night Share %"))),
+                ("Radius", f"{float(row.get('Radius (km)') or 0):.1f} km"),
+            ],
+            subtitle=_seen_between(row),
+            footer=_trail(row.get("Beats"), row.get("Divisions")),
+        )
+        for row in frame.to_dict("records")
+    ]
 
     columns = [
         "Centre Longitude", "Centre Latitude", "_radius_m",
@@ -359,16 +646,23 @@ def _village_layers(
     base = 260 if emphasise else 180
     frame["_radius_m"] = base + (events / max_events) ** 0.5 * (base * 3)
 
-    frame["_tooltip"] = (
-        "<b>" + frame["Village"].astype(str) + " &middot; "
-        + frame["Tier"].astype(str) + "</b><br/>"
-        + frame["Conflict Events"].astype(int).astype(str) + " conflict events<br/>"
-        + frame["Human Deaths"].astype(int).astype(str) + " killed, "
-        + frame["People Injured"].astype(int).astype(str) + " injured<br/>"
-        + "House " + frame["House Damage Events"].astype(int).astype(str)
-        + " &middot; crop " + frame["Crop Damage Events"].astype(int).astype(str)
-        + "<br/>Nearest hotspot: " + frame["Nearest Hotspot"].astype(str)
-    )
+    frame["_tooltip"] = [
+        _card(
+            _clean(row.get("Village"), "Village"),
+            TIER_COLORS.get(str(row.get("Tier")), (107, 133, 120)),
+            [
+                ("Conflict events", f"{int(row.get('Conflict Events') or 0):,}"),
+                ("Killed", int(row.get("Human Deaths") or 0)),
+                ("Injured", int(row.get("People Injured") or 0)),
+                ("House damage", int(row.get("House Damage Events") or 0)),
+                ("Crop damage", int(row.get("Crop Damage Events") or 0)),
+                ("At night", _pct(row.get("Night Share %"))),
+            ],
+            subtitle=f"{_clean(row.get('Tier'))} tier",
+            footer=_hotspot_relation(row),
+        )
+        for row in frame.to_dict("records")
+    ]
 
     columns = ["Longitude", "Latitude", "_radius_m", "_r", "_g", "_b", "_tooltip"]
     layers = [

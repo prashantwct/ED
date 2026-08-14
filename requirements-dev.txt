@@ -3,3 +3,7 @@ pytest==9.1.1
 
 # research/ only -- the app itself does not import scikit-learn
 scikit-learn==1.9.0
+
+# tools/build_boundaries.py only -- a one-off shapefile conversion.
+# The app reads the vendored GeoJSON and needs no GIS stack.
+geopandas==1.1.4

@@ -25,6 +25,7 @@ from core.analytics import (
     night_day_comparison,
     severity_distribution,
 )
+from core import boundaries
 from core.config import LOG_PATH
 from core.data_loader import load_and_validate_csv
 from core.exceptions import DataValidationError, SpatialEnrichmentError
@@ -268,6 +269,22 @@ basemap = st.sidebar.selectbox(
 layer_sightings = st.sidebar.checkbox("Layer: sightings", value=True)
 layer_hotspots = st.sidebar.checkbox("Layer: hotspot footprints", value=True)
 layer_villages = st.sidebar.checkbox("Layer: villages at risk", value=True)
+
+if boundaries.available():
+    layer_boundaries = st.sidebar.checkbox("Layer: forest boundaries", value=True)
+    boundary_choice = st.sidebar.selectbox(
+        "Boundary level",
+        ["Auto (by zoom)"] + [boundaries.LEVEL_LABELS[k] for k in boundaries.LEVELS],
+        help="Auto draws divisions across a landscape and beats once the view "
+        "is tight enough to read them. Streamlit's map reports clicks but not "
+        "zoom, so Auto follows the view your filters produce, not live "
+        "pinch-zoom -- pin a level here to override it.",
+    )
+    boundary_level = None if boundary_choice.startswith("Auto") else {
+        boundaries.LEVEL_LABELS[k]: k for k in boundaries.LEVELS
+    }[boundary_choice]
+else:
+    layer_boundaries, boundary_level = False, None
 
 filtered = filter_dataframe(
     df,
@@ -519,7 +536,10 @@ else:
         st.caption(note)
 
     st.markdown("**Village risk map**")
-    render_village_map(village_risk, hotspots, style_name=basemap)
+    render_village_map(
+        village_risk, hotspots, style_name=basemap,
+        show_boundaries=layer_boundaries, boundary_level=boundary_level,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +606,9 @@ render_map(
     show_sightings=layer_sightings,
     show_hotspots=layer_hotspots,
     show_villages=layer_villages,
+    show_boundaries=layer_boundaries,
+    boundary_level=boundary_level,
+    beat_stats=brief["beats"],
 )
 
 
