@@ -2,16 +2,24 @@
 
 Two things here are load-bearing. Names in the shapefiles carry a
 reserve-zone suffix the sighting export does not, so any join has to
-normalise it away. And tooltips are written into the page with
-innerHTML, so every value taken from an uploaded CSV has to be escaped
-on the way there -- a beat name is field-entered text.
+normalise it away. And a tooltip is written into the page with
+innerHTML, so a beat name -- field-entered text -- must never reach an
+HTML attribute: Streamlit escapes the values it interpolates, which
+makes a text node safe, but an attribute is a different context and its
+escaper is not a substitute for keeping CSV text out of one.
 """
 
 import pandas as pd
 import pytest
 
 from core import boundaries
-from core.map_engine import _boundary_tooltip, _card, _clean, _view_bounds
+from core.map_engine import (
+    TOOLTIP_FIELDS,
+    _boundary_tooltip,
+    _clean,
+    _slots,
+    _view_bounds,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -147,27 +155,43 @@ def test_boundaries_are_in_lon_lat_over_the_landscape():
 # ---------------------------------------------------------------------------
 # Tooltips
 # ---------------------------------------------------------------------------
-def test_tooltip_escapes_names_from_the_uploaded_csv():
-    """deck.gl writes the tooltip with innerHTML."""
-    html = _card("<img src=x onerror=alert(1)>", (0, 0, 0),
-                 [("Beat", "<script>alert(2)</script>")],
-                 subtitle="<b>x</b>", footer="<i>y</i>")
-    for tag in ("<img", "<script", "<b>x", "<i>y"):
-        assert tag not in html
-    assert "&lt;script&gt;" in html
+# Slots that land inside an HTML attribute in the template. Nothing from
+# the uploaded CSV may reach one: Streamlit escapes interpolated values,
+# which makes a text node safe, but an attribute is a different context
+# and the escaper is not a substitute for keeping CSV text out of it.
+ATTRIBUTE_SLOTS = ("_a", "_k", "_hs", "_hf") + tuple(
+    f"_h{i}" for i in range(1, 6)
+)
 
 
-def test_tooltip_keeps_its_own_markup():
-    html = _card("Crop damage", (200, 100, 50), [("Killed", 2)])
-    assert html.startswith("<div")
-    assert "rgb(200,100,50)" in html
-    assert "Killed" in html and ">2<" in html
+def test_nothing_from_the_csv_reaches_an_html_attribute():
+    hostile = '"><img src=x onerror=alert(1)>'
+    slots = _slots(hostile, (200, 100, 50), [(hostile, hostile)],
+                   subtitle=hostile, footer=hostile)
+    for name in ATTRIBUTE_SLOTS:
+        assert slots[name] in ("", "mt-off", "mt-dark", "rgb(200,100,50)"), name
+        assert "<" not in slots[name] and '"' not in slots[name]
+
+
+def test_the_hostile_text_is_still_carried_through_to_be_escaped_downstream():
+    """It belongs in a text node, verbatim. Streamlit escapes it there."""
+    hostile = "<script>alert(1)</script>"
+    slots = _slots(hostile, (0, 0, 0), [("Beat", hostile)])
+    assert slots["_t"] == hostile and slots["_v1"] == hostile
+
+
+def test_tooltip_carries_its_accent_and_values():
+    slots = _slots("Crop damage", (200, 100, 50), [("Killed", 2)])
+    assert slots["_a"] == "rgb(200,100,50)"
+    assert slots["_t"] == "Crop damage"
+    assert slots["_l1"] == "Killed" and slots["_v1"] == "2"
 
 
 def test_tooltip_drops_rows_with_nothing_in_them():
-    html = _card("T", (0, 0, 0), [("Shown", 1), ("Hidden", None), ("Blank", "")])
-    assert "Shown" in html
-    assert "Hidden" not in html and "Blank" not in html
+    slots = _slots("T", (0, 0, 0), [("Shown", 1), ("Hidden", None), ("Blank", "")])
+    assert slots["_l1"] == "Shown"
+    labels = [slots[f"_l{i}"] for i in range(1, 6)]
+    assert "Hidden" not in labels and "Blank" not in labels
 
 
 def test_blank_values_render_as_a_dash_not_the_word_nan():
@@ -179,18 +203,20 @@ def test_blank_values_render_as_a_dash_not_the_word_nan():
 
 
 def test_boundary_tooltip_names_the_level_and_carries_stats():
-    html = _boundary_tooltip(boundaries.BEAT, {
+    slots = _boundary_tooltip(boundaries.BEAT, {
         "name": "Cholna", "parent": "Jaithari", "grandparent": "Anuppur",
         "Reports": 87, "Conflict Events": 45, "Human Deaths": 1,
         "Priority Tier": "High",
     })
+    rendered = " ".join(slots.values())
     for expected in ("Cholna", "Beat", "Jaithari", "Anuppur", "87", "45", "High"):
-        assert expected in html
+        assert expected in rendered
 
 
 def test_boundary_tooltip_works_with_no_statistics():
-    html = _boundary_tooltip(boundaries.DIVISION, {"name": "Anuppur"})
-    assert "Anuppur" in html and "Division" in html
+    slots = _boundary_tooltip(boundaries.DIVISION, {"name": "Anuppur"})
+    assert slots["_t"] == "Anuppur" and slots["_s"] == "Division"
+    assert set(slots) == set(TOOLTIP_FIELDS)
 
 
 # ---------------------------------------------------------------------------

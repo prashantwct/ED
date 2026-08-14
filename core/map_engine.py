@@ -17,7 +17,6 @@ import logging
 import math
 import os
 from functools import wraps
-from html import escape
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -65,12 +64,28 @@ _MAP_PROVIDER = "maplibre"
 # ---------------------------------------------------------------------------
 # Tooltips
 # ---------------------------------------------------------------------------
-# deck.gl writes the tooltip with innerHTML, so every value drawn from
-# the uploaded CSV is escaped before it gets there. Beat and village
-# names come straight from a field export.
-# Only the accent colour varies per feature, so it is the one thing that
-# stays inline. Everything else lives in core.ui as a stylesheet injected
-# once -- see the note there on payload size.
+# The markup lives in the template below, once per chart, and the layers
+# supply plain text into it.
+#
+# It cannot be the other way round. Streamlit interpolates {field} into
+# the tooltip's html and HTML-escapes the value first -- in the frontend,
+#
+#     xie = e => String(e).replace(/[&<>"']/g, e => bie[e])
+#     createTooltip: e => (t.html = X9(e, t.html, true), t)
+#
+# which is an XSS guard on values that came out of an uploaded CSV, and
+# not something to defeat. Shipping a built card per row put the whole of
+# that card through the escaper, so the reader got `<div class="mt">...`
+# as visible text instead of a tooltip.
+#
+# Two consequences worth keeping in mind:
+#
+# * Do not escape on this side. Streamlit does it at interpolation, and
+#   escaping twice renders "&amp;amp;" in a village name.
+# * Every pickable layer must supply every field named in the template.
+#   The interpolator leaves a field the hovered object does not have
+#   exactly as it found it, so a missing one shows the reader "{_v3}".
+#   There is a test holding that.
 _TOOLTIP_STYLE = {
     "backgroundColor": "transparent",
     "color": "inherit",
@@ -83,36 +98,76 @@ _TOOLTIP_STYLE = {
 # and white on it is unreadable.
 _LIGHT_HEADER_LUMINANCE = 150
 
+# Rows the card can hold. Cards are built from what actually happened, so
+# five is comfortably above what any layer fills in practice.
+_TOOLTIP_ROWS = 5
 
-def _card(
+# Class toggled onto a slot that has nothing to say. A row of two empty
+# spans is not :empty, so the CSS cannot find it on its own -- and a
+# class name survives the escaper untouched, having no special
+# characters in it.
+_OFF = "mt-off"
+
+
+def _tooltip_html() -> str:
+    """The one card, as a template Streamlit fills per feature."""
+    rows = "".join(
+        f'<div class="mt-r {{_h{i}}}">'
+        f'<span class="mt-l">{{_l{i}}}</span>'
+        f'<span class="mt-v">{{_v{i}}}</span></div>'
+        for i in range(1, _TOOLTIP_ROWS + 1)
+    )
+    return (
+        '<div class="mt">'
+        '<div class="mt-h {_k}" style="background:{_a}">{_t}'
+        '<div class="mt-s {_hs}">{_s}</div></div>'
+        f'<div class="mt-b">{rows}</div>'
+        '<div class="mt-f {_hf}">{_f}</div>'
+        "</div>"
+    )
+
+
+_TOOLTIP_HTML = _tooltip_html()
+
+# Every field the template names, so layers can be checked against it.
+TOOLTIP_FIELDS: Tuple[str, ...] = tuple(
+    ["_t", "_s", "_a", "_k", "_f", "_hs", "_hf"]
+    + [f"_{part}{i}" for i in range(1, _TOOLTIP_ROWS + 1) for part in ("l", "v", "h")]
+)
+
+
+def _slots(
     title: str,
     accent: Tuple[int, int, int],
     rows: List[Tuple[str, object]],
     subtitle: str = "",
     footer: str = "",
-) -> str:
-    """One tooltip, as a small card with a coloured header.
+) -> Dict[str, str]:
+    """One tooltip's worth of plain values for the template.
 
     Labelled rows rather than a run-on sentence: a hover is read in
     about a second, and a column of label/value pairs survives that
-    where prose does not.
+    where prose does not. Rows with nothing to report are switched off
+    rather than shown as a zero.
     """
     luminance = 0.299 * accent[0] + 0.587 * accent[1] + 0.114 * accent[2]
-    ink = " mt-dark" if luminance > _LIGHT_HEADER_LUMINANCE else ""
-    body = "".join(
-        f'<div class="mt-r"><span class="mt-l">{escape(str(label))}</span>'
-        f'<span class="mt-v">{escape(str(value))}</span></div>'
-        for label, value in rows
-        if value not in (None, "")
-    )
-    sub = f'<div class="mt-s">{escape(subtitle)}</div>' if subtitle else ""
-    foot = f'<div class="mt-f">{escape(footer)}</div>' if footer else ""
-    return (
-        f'<div class="mt">'
-        f'<div class="mt-h{ink}" style="background:rgb({accent[0]},{accent[1]},'
-        f'{accent[2]})">{escape(title)}{sub}</div>'
-        f'<div class="mt-b">{body}</div>{foot}</div>'
-    )
+    kept = [(l, v) for l, v in rows if v not in (None, "")][:_TOOLTIP_ROWS]
+
+    slots = {
+        "_t": str(title),
+        "_a": f"rgb({accent[0]},{accent[1]},{accent[2]})",
+        "_k": "mt-dark" if luminance > _LIGHT_HEADER_LUMINANCE else "",
+        "_s": str(subtitle),
+        "_hs": "" if subtitle else _OFF,
+        "_f": str(footer),
+        "_hf": "" if footer else _OFF,
+    }
+    for i in range(1, _TOOLTIP_ROWS + 1):
+        label, value = kept[i - 1] if i <= len(kept) else ("", "")
+        slots[f"_l{i}"] = str(label)
+        slots[f"_v{i}"] = str(value)
+        slots[f"_h{i}"] = "" if i <= len(kept) else _OFF
+    return slots
 
 
 def _pct(value: object) -> Optional[str]:
@@ -397,7 +452,7 @@ def _render_deck(layers, view_state, style_name: str) -> None:
         initial_view_state=view_state,
         map_style=basemap_style(style_name),
         map_provider=_MAP_PROVIDER,
-        tooltip={"html": "{_tooltip}", "style": _TOOLTIP_STYLE},
+        tooltip={"html": _TOOLTIP_HTML, "style": _TOOLTIP_STYLE},
     )
     st.pydeck_chart(_compact(deck), width="stretch")
 
@@ -492,7 +547,10 @@ def _outline_layers(level: str, features: list) -> List[pdk.Layer]:
         )
 
     for feature in features:
-        feature["_tooltip"] = _boundary_tooltip(level, feature["properties"])
+        # Onto the feature itself, not its properties: the interpolator
+        # looks at the hovered object first and falls back to properties,
+        # and the outline layers carry nothing else at the top level.
+        feature.update(_boundary_tooltip(level, feature["properties"]))
 
     drawn = []
     if cased:
@@ -501,7 +559,8 @@ def _outline_layers(level: str, features: list) -> List[pdk.Layer]:
     return drawn
 
 
-def _boundary_tooltip(level: str, properties: dict) -> str:
+def _boundary_tooltip(level: str, properties: dict) -> Dict[str, str]:
+    """Slot values for one boundary polygon."""
     rows: List[Tuple[str, object]] = []
     if properties.get("Reports"):
         rows.append(("Reports", f"{int(properties['Reports']):,}"))
@@ -513,7 +572,7 @@ def _boundary_tooltip(level: str, properties: dict) -> str:
         rows.append(("Tier", properties["Priority Tier"]))
 
     parent = _trail(properties.get("parent"), properties.get("grandparent"))
-    return _card(
+    return _slots(
         _clean(properties.get("name"), boundaries.LEVEL_LABELS[level]),
         tuple(boundaries.LEVEL_STYLE[level]["color"]),
         rows,
@@ -544,11 +603,12 @@ def _prepare_sightings(df: pd.DataFrame) -> pd.DataFrame:
             plot_df[col] = "N/A"
 
     plot_df["_group"] = classify_group(plot_df)
-    plot_df["_tooltip"] = _sighting_tooltips(plot_df)
-    return plot_df
+    return plot_df.join(
+        pd.DataFrame(_sighting_tooltips(plot_df), index=plot_df.index)
+    )
 
 
-def _sighting_tooltips(plot_df: pd.DataFrame) -> List[str]:
+def _sighting_tooltips(plot_df: pd.DataFrame) -> List[Dict[str, str]]:
     """What a manager needs off one hover: what, when, who, where."""
     date = (
         plot_df["Date"].dt.strftime("%d %b %Y")
@@ -589,7 +649,7 @@ def _sighting_tooltips(plot_df: pd.DataFrame) -> List[str]:
             village = f"{village}, {float(distance):.1f} km"
         rows.append(("Nearest village", village))
 
-        tooltips.append(_card(
+        tooltips.append(_slots(
             _clean(row.get("_category_label"), "Sighting"),
             CATEGORY_COLORS.get(row.get("_category"), (120, 120, 120)),
             rows,
@@ -603,7 +663,7 @@ def _sighting_layer(plot_df: pd.DataFrame) -> pdk.Layer:
     # Ship only what the layer and tooltip use: the frame is serialised to
     # JSON for the browser, and timestamps do not survive that round trip.
     columns = [
-        "Longitude", "Latitude", "_radius", "_r", "_g", "_b", "_tooltip",
+        "Longitude", "Latitude", "_radius", "_r", "_g", "_b", *TOOLTIP_FIELDS,
     ]
     return pdk.Layer(
         "ScatterplotLayer",
@@ -629,8 +689,8 @@ def _hotspot_layers(hotspots: pd.DataFrame, labels: bool = True) -> list:
         colors.notna(), pd.Series([(107, 133, 120)] * len(frame), index=frame.index)
     )
     frame[["_r", "_g", "_b"]] = pd.DataFrame(colors.tolist(), index=frame.index)
-    frame["_tooltip"] = [
-        _card(
+    frame = frame.join(pd.DataFrame([
+        _slots(
             _clean(row.get("Hotspot"), "Hotspot"),
             TIER_COLORS.get(str(row.get("Tier")), (107, 133, 120)),
             [
@@ -649,11 +709,11 @@ def _hotspot_layers(hotspots: pd.DataFrame, labels: bool = True) -> list:
             footer=_trail(row.get("Beats"), row.get("Divisions")),
         )
         for row in frame.to_dict("records")
-    ]
+    ], index=frame.index))
 
     columns = [
         "Centre Longitude", "Centre Latitude", "_radius_m",
-        "_r", "_g", "_b", "_tooltip",
+        "_r", "_g", "_b", *TOOLTIP_FIELDS,
     ]
     out = [
         pdk.Layer(
@@ -714,8 +774,8 @@ def _village_layers(
     base = 260 if emphasise else 180
     frame["_radius_m"] = (base + (events / max_events) ** 0.5 * (base * 3)).round(1)
 
-    frame["_tooltip"] = [
-        _card(
+    frame = frame.join(pd.DataFrame([
+        _slots(
             _clean(row.get("Village"), "Village"),
             TIER_COLORS.get(str(row.get("Tier")), (107, 133, 120)),
             [
@@ -730,9 +790,9 @@ def _village_layers(
             footer=_hotspot_relation(row),
         )
         for row in frame.to_dict("records")
-    ]
+    ], index=frame.index))
 
-    columns = ["Longitude", "Latitude", "_radius_m", "_r", "_g", "_b", "_tooltip"]
+    columns = ["Longitude", "Latitude", "_radius_m", "_r", "_g", "_b", *TOOLTIP_FIELDS]
     layers = [
         pdk.Layer(
             "ScatterplotLayer",
