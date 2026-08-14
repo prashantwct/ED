@@ -315,14 +315,13 @@ st.sidebar.subheader("Analysis settings")
 recent_days = st.sidebar.slider(
     "Escalation window (days)",
     min_value=30, max_value=180, value=DEFAULT_RECENT_DAYS, step=30,
-    help="Compares each beat's recent N days against the N before. Does not "
-    f"affect Critical, which uses a fixed {CRITICAL_CASUALTY_WINDOW_DAYS}-day window.",
+    help="Compares the recent N days against the N before. Critical uses a "
+    f"fixed {CRITICAL_CASUALTY_WINDOW_DAYS}-day window.",
 )
 eps_km = st.sidebar.slider(
     "Hotspot neighbour distance (km)",
     min_value=0.5, max_value=3.0, value=DEFAULT_EPS_KM, step=0.25,
-    help="Larger values merge nearby activity. Too large and separate "
-    "concentrations chain into one region.",
+    help="Larger values merge nearby activity into one region.",
 )
 min_samples = st.sidebar.slider(
     "Minimum sightings per hotspot",
@@ -351,10 +350,8 @@ if boundaries.available():
     boundary_choice = st.sidebar.selectbox(
         "Boundary level",
         ["Auto (by zoom)"] + [boundaries.LEVEL_LABELS[k] for k in boundaries.LEVELS],
-        help="Auto draws divisions across a landscape and beats once the view "
-        "is tight enough to read them. Streamlit's map reports clicks but not "
-        "zoom, so Auto follows the view your filters produce, not live "
-        "pinch-zoom -- pin a level here to override it.",
+        help="Auto picks the level from the view your filters produce. "
+        "Pin one to override it.",
     )
     boundary_level = None if boundary_choice.startswith("Auto") else {
         boundaries.LEVEL_LABELS[k]: k for k in boundaries.LEVELS
@@ -451,8 +448,8 @@ else:
             ),
             "Adj. Conflict Rate %": st.column_config.NumberColumn(
                 "Adj. rate", format="%.1f%%",
-                help="Shrunk toward the landscape average, so a beat with few "
-                "reports cannot top the ranking on one incident.",
+                help="Shrunk toward the landscape average, so one incident "
+                "cannot top the ranking.",
             ),
             "Recent Deaths": st.column_config.NumberColumn(
                 "Killed (recent)", format="%.0f",
@@ -470,9 +467,7 @@ else:
             "Bull-Type Conflict %": st.column_config.NumberColumn(
                 "Bull-driven", format="%.0f%%",
                 help="Share of this beat's conflict from lone bulls or small "
-                "all-male parties. Bulls raid and occasionally kill; breeding "
-                "herds with calves keep away from settlements, and the two take "
-                "opposite handling.",
+                "all-male parties.",
             ),
             "Recommended Action": st.column_config.TextColumn(width="large"),
         },
@@ -504,7 +499,7 @@ if not composition.empty and composition["Conflict Events"].sum() > 0:
             column_config={
                 "Damage Rate %": st.column_config.NumberColumn(
                     "Damage rate", format="%.1f%%",
-                    help="Share of that group's sightings that involved damage, "
+                    help="Share of that group's sightings involving damage, "
                     "injury or death.",
                 ),
                 "Human Deaths": st.column_config.NumberColumn(
@@ -518,8 +513,8 @@ if not composition.empty and composition["Conflict Events"].sum() > 0:
             "tusker count. A lone bull or a small all-male party raids and "
             "occasionally kills. A breeding herd with calves is trying to avoid "
             "people.\n\n"
-            "The two need opposite handling — a bull is tracked and deterred, a "
-            "herd is given passage and not driven — so the beat table carries "
+            "The two need opposite handling -- a bull is tracked and deterred, a "
+            "herd is given passage and not driven -- so the beat table carries "
             "the split as **Bull-driven %**."
         )
     st.caption(
@@ -585,7 +580,7 @@ village_risk = villages_at_risk(
 if village_risk.empty:
     st.info(
         "No village ranking. Sighting exports carry no village field, so this "
-        "needs a centroids file (Village, Latitude, Longitude) — the Census "
+        "needs a centroids file (Village, Latitude, Longitude) -- the Census "
         "village directory, a forest department layer, or OpenStreetMap places."
     )
 else:
@@ -670,8 +665,7 @@ if not coverage_table.empty:
         ),
         "Coverage": st.column_config.TextColumn(
             width="small",
-            help=f"Thin means fewer than {min_contacts} registrations — one "
-            "handset that is off overnight leaves the village unwarned.",
+            help=f"Fewer than {min_contacts} registrations counts as thin.",
         ),
     }
 
@@ -681,7 +675,7 @@ if not coverage_table.empty:
             f"{min_contacts} registered contacts."
         )
     else:
-        st.markdown("**Enrolment queue** — worst tier and thinnest cover first")
+        st.markdown("**Enrolment queue** -- worst tier and thinnest cover first")
         st.dataframe(
             gaps[[c for c in gap_cols if c in gaps.columns]],
             width="stretch", hide_index=True, column_config=coverage_config,
@@ -710,7 +704,7 @@ if not coverage_table.empty:
         enrolment = ews.enrolment_by_division(registry, labels)
         st.dataframe(enrolment, width="stretch", hide_index=True)
         st.caption(
-            "Whole registry, not the filtered period — enrolment is a standing "
+            "Whole registry, not the filtered period -- enrolment is a standing "
             "figure, and the divisions it is thinnest in are the ones to work on."
         )
 
@@ -914,7 +908,7 @@ st.download_button(
 )
 st.warning(
     "Field exports carry victim and reporter names, often in the free-text "
-    "description. This app has no access control — check before sharing."
+    "description. This app has no access control -- check before sharing."
 )
 
 
