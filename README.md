@@ -44,6 +44,21 @@ The key is fetched by the browser to load tiles, so it is visible to anyone
 using the app and cannot be kept secret. Restrict it by origin in the MapTiler
 dashboard (Keys → Allowed origins) rather than relying on secrecy.
 
+**Forest boundaries (bundled).** `data/boundaries/*.geojson.gz` — division,
+range, beat and reserve outlines for the Shahdol and Rewa circles, converted
+from the MP forest department shapefiles by `tools/build_boundaries.py` and
+committed so the app needs no GIS stack at runtime. 612 KB for 1,377 polygons.
+
+The source is a custom Transverse Mercator, reprojected to WGS84. Geometry is
+simplified per level and coordinates rounded to about a metre, because a beat
+outline at landscape zoom cannot show detail finer than its own pixel.
+
+Every sighting falls inside a division and a range polygon. **Beats cover
+forest land only**, so a sighting on farmland between two blocks — a third of
+them — sits in no beat at all. The shapefiles also suffix reserve ranges with
+their zone, so the export's "Kallwah" is "Kallwah Core" here; joins normalise
+that away.
+
 **Village centroids (bundled).** `data/centroids.csv` — 9,229 villages,
 `Village, Latitude, Longitude`, UTF-8. Constant reference data, loaded by
 default from a repo-relative path so it resolves regardless of working
@@ -79,6 +94,13 @@ village, so a settlement between two hotspots is credited with both.
 **Timing.** The shortest contiguous block of hours holding a target share of
 conflict, reported with how concentrated it actually is. Seasonality likewise,
 and silent when there is none.
+
+**Forest boundaries.** Division, range and beat outlines, drawn as a pale
+casing under a dark line so they read on pale terrain and on satellite alike.
+Which level shows follows the zoom — divisions across a landscape, beats once
+the view is tight enough to read them. Streamlit's map reports clicks but not
+viewport changes, so that follows the view the filters produce rather than live
+pinch-zoom; the sidebar can pin a level instead.
 
 **Two maps.** The spatial view carries three toggleable layers — sightings
 coloured by what happened, hotspot footprints drawn at true radius, and
@@ -139,11 +161,14 @@ core/analytics.py    Severity, conflict classification, KPIs, filters
 core/intelligence.py Beat priorities, escalation, timing, the brief
 core/hotspots.py     DBSCAN clustering and village risk
 core/spatial.py      Centroid loading and nearest-village enrichment
-core/map_engine.py   Interactive pydeck maps
+core/boundaries.py   Vendored forest boundary layers
+core/map_engine.py   Interactive pydeck maps and tooltips
 core/map_export.py   Static SVG maps embedded in the brief
 core/report.py       Self-contained HTML brief
 core/ui.py           Design tokens, SVG icons, shared components
+data/boundaries/     Division, range, beat and reserve outlines
 data/centroids.csv   Bundled village centroids
+tools/               Build-time data preparation, not imported by the app
 tests/               Unit tests, run with `pytest -q`
 ```
 
