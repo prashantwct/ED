@@ -55,6 +55,9 @@ CAPABILITIES: Tuple[Tuple[str, str, str], ...] = (
     ("village", "Villages at risk",
      "Conflict counted around each settlement, ranked by tier, with the "
      "distance to the nearest hotspot."),
+    ("broadcast", "Early-warning coverage",
+     "The same ranking read against the villager registry, so a village that "
+     "keeps losing people with nobody enrolled to warn stops being invisible."),
     ("clock", "Timing and season",
      "The hours that hold most of the conflict, and the months, reported "
      "with how concentrated they actually are."),

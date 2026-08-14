@@ -76,6 +76,58 @@ def test_report_includes_casualty_and_priority_sections():
         assert section in html
 
 
+def _coverage_frame(village="Kusumhai", registered=0, tier="Critical"):
+    from core.coverage import _coverage_label
+
+    return pd.DataFrame([{
+        "Village": village, "Tier": tier, "Conflict Events": 7,
+        "Human Deaths": 1.0, "People Injured": 0.0,
+        "Registered Contacts": registered,
+        "Coverage": _coverage_label(registered, 3),
+    }])
+
+
+def test_the_brief_omits_the_coverage_section_when_no_registry_was_loaded():
+    """A heading reading "no data" invites the reader to infer "no gaps"."""
+    df = _df()
+    html = generate_html_report(df, df["Date"].min(), df["Date"].max())
+    assert "Early-Warning Coverage" not in html
+
+
+def test_the_brief_names_the_villages_with_nobody_enrolled():
+    df = _df()
+    html = generate_html_report(
+        df, df["Date"].min(), df["Date"].max(),
+        coverage=_coverage_frame(registered=0),
+        coverage_stats={"registrants": 100, "unmatched": 4, "min_contacts": 3},
+    )
+    assert "Early-Warning Coverage" in html
+    assert "Kusumhai" in html
+    assert "No contact" in html
+    assert "not a reachable person" in html
+
+
+def test_the_brief_says_so_when_every_exposed_village_is_covered():
+    df = _df()
+    html = generate_html_report(
+        df, df["Date"].min(), df["Date"].max(),
+        coverage=_coverage_frame(registered=5),
+        coverage_stats={"min_contacts": 3},
+    )
+    assert "Early-Warning Coverage" in html
+    assert "at least 3 registered contacts" in html
+
+
+def test_village_names_in_the_coverage_section_are_escaped():
+    df = _df()
+    html = generate_html_report(
+        df, df["Date"].min(), df["Date"].max(),
+        coverage=_coverage_frame(village="<script>alert(1)</script>"),
+        coverage_stats={"min_contacts": 3},
+    )
+    assert "<script>alert(1)</script>" not in html
+
+
 def test_report_conflict_breakdown_counts_each_report_once():
     """A report with both a death and crop damage belongs under Death
     only; double-counting would make the rows exceed the total."""

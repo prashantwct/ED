@@ -106,6 +106,20 @@ BULL_SHARE_FOR_ALERT = 60.0
 MIN_CONFLICTS_FOR_COMPOSITION = 3
 
 
+# --- Early-warning coverage -------------------------------------------------
+# How far a registrant's GPS may sit from a village centroid and still be
+# counted as that village's. On the reference registry 2 km placed 95% of
+# 7,261 people; 1 km placed only 49%, which reflects centroid position
+# rather than anyone being unreachable.
+EWS_MATCH_RADIUS_KM = 2.0
+# Below this many registrations a village is covered on paper only: one
+# number is a handset that is off, or an owner who is away.
+MIN_EWS_CONTACTS = 3
+# Decimal places kept on a registrant's coordinates: 3 dp is about 110 m,
+# enough to place someone in a village and not at a house.
+REGISTRY_COORD_PRECISION = 3
+
+
 # --- Temporal ---------------------------------------------------------------
 # Share of conflict a recommended patrol window should cover.
 DEFAULT_COVERAGE_TARGET = 0.60

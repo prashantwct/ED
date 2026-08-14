@@ -33,6 +33,24 @@ Dates are parsed by trying each candidate format against the whole column,
 day-first first. Genuinely ambiguous files (every day ≤ 12) are read day-first
 and flagged. Non-UTF-8 files fall back to cp1252 then Latin-1.
 
+**Early-warning registry (optional upload).** The villager registry export:
+`Latitude, Longitude` required, `Village` and `Division` used when present.
+Unlocks the coverage section below.
+
+**Registered app users (optional upload).** The user-list export; `Division`
+required. `Beat`, `Sub Beat` and `Range` are ignored — in the export this was
+built against they were placeholders for 1,356 of 1,357 users, all of them, and
+1,327 respectively, so the roster can only be read at division level.
+
+Both files carry personal data: names and mobile numbers, and email addresses
+in the user list. `core/coverage.py` keeps an **allowlist** of columns and
+discards everything else while reading, before the frame reaches anything else,
+so a new identifying column in a future export is excluded by default rather
+than by having been anticipated. Coordinates are rounded to three decimals,
+about 110 m — enough to place someone in a village, not at a house. Only
+per-village counts reach the page, the brief or any download. Neither file is
+stored, and both file shapes are in `.gitignore`.
+
 **MapTiler key (optional).** Set `MAPTILER_KEY` in `.streamlit/secrets.toml`
 locally, or under Manage app → Settings → Secrets on Streamlit Cloud. See
 `.streamlit/secrets.toml.example`. Without it both the on-screen maps and the
@@ -105,6 +123,22 @@ as one hotspot instead of moderate pressure in two beats.
 **Villages at risk.** Every conflict incident within a chosen radius of each
 village, so a settlement between two hotspots is credited with both.
 
+**Early-warning coverage.** The risk ranking read against the registry: which
+exposed villages have nobody enrolled to warn. Registrants are placed against
+village centroids spatially, not by name — the two files transliterate
+differently, and on the reference data only 41% of nearest-centroid names
+agreed with the registry's own village field while 95% of registrants fell
+within 2 km of some centroid. Where a same-named centroid does lie inside that
+radius it wins over a marginally closer stranger, which moved 898 of 7,261
+people. Placement is exclusive, so the counts partition and can be audited
+against the file's row count.
+
+The output is an enrolment queue: Critical and High villages with no contact or
+fewer than three, worst tier and thinnest cover first. On the reference export
+that was seven villages, five of them Critical with nobody enrolled at all.
+Below three is "Thin" rather than covered, because one number is a handset that
+is off overnight.
+
 **Timing.** The shortest contiguous block of hours holding a target share of
 conflict, reported with how concentrated it actually is. Seasonality likewise,
 and silent when there is none.
@@ -175,6 +209,13 @@ features, the spec is minified because pydeck pretty-prints by default, and
 boundary geometry is filtered to the viewport. Together that is the difference
 between 5.8 MB and 1.6 MB, and between a map that loads and one that does not.
 
+**Personal data is dropped at the door, not at the display.** The registry and
+user-list loaders slice to an allowlist before returning, so no name, number or
+email exists anywhere downstream — not in a cache, not in session state, not in
+the deck spec. A rule enforced where the data enters cannot be forgotten by the
+next feature that reads it, and there is a test asserting the values are absent
+from the loaded frame rather than merely unrendered.
+
 **Colour is never the only signal.** Tier badges carry a shape, a glyph and a
 word, so rankings survive greyscale printing and colour vision deficiency. Map
 categories use the Okabe-Ito colourblind-safe palette with size as a parallel
@@ -190,6 +231,7 @@ core/data_loader.py  Schema validation, date/time parsing, data-quality warnings
 core/analytics.py    Severity, conflict classification, KPIs, filters
 core/intelligence.py Beat priorities, escalation, timing, the brief
 core/hotspots.py     DBSCAN clustering and village risk
+core/coverage.py     Early-warning enrolment, de-identified at load
 core/spatial.py      Centroid loading and nearest-village enrichment
 core/boundaries.py   Vendored forest boundary layers
 core/landing.py      Pre-upload masthead and the loaded-state identity bar
@@ -239,6 +281,15 @@ secrets; never commit it. The app works without it.
   columns are what separate a busy patrol route from a dangerous place.
 - **Village casualty columns do not sum.** Search radii overlap, so one fatality
   is credited to every village near it. The app states this under the table.
+- **A registration is not a reachable person.** Coverage counts enrolments. A
+  number that has changed hands, or a handset that is off overnight, counts the
+  same as a phone that rings.
+- **5% of registrants sit more than 2 km from any centroid** and count towards
+  no village. Where two settlements are close, a count can also land on the
+  neighbour.
+- **Staffing is division-level only.** The user list's Range and Beat fields are
+  placeholders, and a low reports-per-user figure is as likely to mean accounts
+  created and never used as a quiet division.
 - **No persistent store.** Fresh upload per session, so month-over-month
   comparison means re-uploading.
 - **Effort is not modelled.** Rates control for how many reports a beat filed,

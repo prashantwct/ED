@@ -106,6 +106,8 @@ def generate_html_report(
     village_risk: Optional[pd.DataFrame] = None,
     filters: Optional[Dict[str, object]] = None,
     basemap_style_name: str = DEFAULT_BASEMAP,
+    coverage: Optional[pd.DataFrame] = None,
+    coverage_stats: Optional[Dict[str, object]] = None,
 ) -> str:
     """Build a complete, styled conservation intelligence brief.
 
@@ -122,6 +124,9 @@ def generate_html_report(
         filters: Active sidebar filters, named in the header so the
             reader knows which divisions the figures cover.
         basemap_style_name: Basemap for the embedded static maps.
+        coverage: Output of :func:`core.coverage.village_coverage`. The
+            section is omitted when no registry was supplied.
+        coverage_stats: Its companion summary, used for the caveats.
 
     Returns:
         A complete HTML document as a string.
@@ -180,6 +185,8 @@ def generate_html_report(
     <h2>Villages at Risk</h2>
     {village_map_svg(village_risk, hotspots, basemap_style_name)}
     {_village_risk_html(village_risk)}
+
+    {_coverage_section(coverage, coverage_stats)}
 
     <h2>Escalating Beats <span class="sub">last {brief['coverage']['recent_days']} days vs the window before</span></h2>
     {_escalation_html(brief["escalating"])}
@@ -386,6 +393,61 @@ def _village_risk_html(village_risk: Optional[pd.DataFrame], top_n: int = 15) ->
         "<th class='num'>Night</th><th>Hotspot</th>"
         "<th class='num'>Distance</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def _coverage_section(
+    coverage: Optional[pd.DataFrame], stats: Optional[Dict[str, object]]
+) -> str:
+    """Early-warning gaps, omitted entirely when no registry was loaded.
+
+    An empty heading reading "no data" in a forwarded document invites
+    the reader to conclude there are no gaps, which is the opposite of
+    what it means.
+    """
+    if coverage is None or coverage.empty:
+        return ""
+
+    # Imported here: the brief is the only caller, and core.coverage
+    # pulls in scipy that a report without a registry never needs.
+    from core.coverage import COVERAGE_NONE, coverage_caveats, coverage_gaps
+
+    stats = stats or {}
+    gaps = coverage_gaps(coverage)
+
+    if gaps.empty:
+        body = (
+            '<p class="empty-note">Every Critical and High village has at least '
+            f"{int(stats.get('min_contacts', 3))} registered contacts.</p>"
+        )
+    else:
+        rows = "".join(
+            "<tr>"
+            f"<td><b>{escape(str(r['Village']))}</b></td>"
+            f"<td>{_tier_cell(r['Tier'])}</td>"
+            f"<td class='num'>{int(r['Registered Contacts'])}</td>"
+            f"<td>{escape(str(r['Coverage']))}</td>"
+            f"<td class='num'>{int(r['Conflict Events']):,}</td>"
+            f"<td class='num'>{int(r['Human Deaths'])} / {int(r['People Injured'])}</td>"
+            "</tr>"
+            for r in gaps.to_dict("records")
+        )
+        no_contact = int((gaps["Coverage"] == COVERAGE_NONE).sum())
+        body = (
+            "<table><thead><tr><th>Village</th><th>Tier</th>"
+            "<th class='num'>Registered</th><th>Cover</th>"
+            "<th class='num'>Conflicts</th><th class='num'>Killed / injured</th>"
+            f"</tr></thead><tbody>{rows}</tbody></table>"
+            f"<p class='table-note'>{len(gaps)} village(s) in the worst two tiers "
+            f"are short of early-warning contacts, {no_contact} with nobody "
+            "enrolled at all.</p>"
+        )
+
+    return (
+        '<h2>Early-Warning Coverage <span class="sub">who can be warned where '
+        "it matters</span></h2>"
+        + body
+        + _caveats_html(coverage_caveats(stats))
     )
 
 
