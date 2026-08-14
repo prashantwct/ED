@@ -25,7 +25,7 @@ from core.analytics import (
     night_day_comparison,
     severity_distribution,
 )
-from core import boundaries
+from core import boundaries, landing
 from core.config import LOG_PATH
 from core.data_loader import load_and_validate_csv
 from core.exceptions import DataValidationError, SpatialEnrichmentError
@@ -81,11 +81,6 @@ st.set_page_config(
 )
 inject_theme()
 
-st.title("Elephant Conflict Intelligence")
-st.caption(
-    "Which beats, which shift, which villages."
-)
-
 # A raw 0-300 severity slider is unusable once fatalities weigh 100.
 SEVERITY_FILTERS = {
     "All reports": 0.0,
@@ -128,16 +123,21 @@ def _hotspots(frame: pd.DataFrame, eps_km: float, min_samples: int, as_of):
 # ---------------------------------------------------------------------------
 # 1. Upload & load
 # ---------------------------------------------------------------------------
-uploaded = st.file_uploader("Upload sightings/conflict CSV", type="csv")
+# The masthead sits above the uploader but depends on whether a file
+# arrived, which is only known after the widget is created. A container
+# reserves the slot now and is filled once that is settled.
+masthead = st.container()
+uploaded = st.file_uploader(
+    "Upload the Gajrakshak sightings export (CSV)", type="csv"
+)
+with masthead:
+    if uploaded:
+        landing.header()
+    else:
+        landing.hero()
 
 if not uploaded:
-    st.info(
-        "Please upload a CSV file to continue. Required columns: "
-        "**Date, Latitude, Longitude, Division, Range, Beat**. "
-        "Optional columns (unlock extra features): Time or Hour, Total Count, "
-        "Crop Damage, Grain Damage, House Damage, Injury, Death, "
-        "Male/Female/Children Death Count."
-    )
+    landing.details()
     st.stop()
 
 try:

@@ -10,7 +10,7 @@ Rules this enforces:
   deficiency.
 * No emoji as structural icons. Icons are inline SVG on a 24px grid.
 * Data columns use tabular figures so counts line up when scanned.
-* Both light and dark themes are defined; Streamlit follows the system.
+* One light theme, matching the pinned Streamlit theme.
 * Anything drawn from the CSV is escaped before it reaches HTML.
 """
 
@@ -126,17 +126,10 @@ _THEME_CSS = """
   --ci-radius:  10px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ci-bg-raised:  #182420;
-    --ci-bg-sunken:  #101815;
-    --ci-border:     #2c3b34;
-    --ci-text:       #e8efea;
-    --ci-text-muted: #9db0a5;
-    --ci-brand:      #6fbf8f;
-    --ci-brand-soft: #1c2b24;
-  }
-}
+/* No dark-mode token block. .streamlit/config.toml pins the Streamlit
+   theme to light, and flipping only these tokens on the OS preference
+   produced dark cards on Streamlit's light page background. One theme,
+   consistently, until the whole app is designed for both. */
 
 /* Tabular figures wherever numbers form a column. */
 .ci-num, [data-testid="stMetricValue"], .stDataFrame td {
