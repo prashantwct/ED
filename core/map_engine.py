@@ -455,7 +455,12 @@ def _outline_layers(level: str, features: list) -> List[pdk.Layer]:
             filled=False,
             get_line_color=colour,
             get_line_width=width,
-            line_width_units="pixels",
+            # Quoted deliberately. pydeck turns a bare string prop into a
+            # deck.gl accessor -- "pixels" became "@@=pixels", a function
+            # where a unit belongs, and the width it produced rendered
+            # the outlines as rounded blobs or not at all. Quotes are
+            # pydeck's escape hatch for a literal.
+            line_width_units='"pixels"',
             line_width_min_pixels=width,
             line_joint_rounded=True,
             pickable=pickable,

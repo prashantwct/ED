@@ -95,14 +95,16 @@ village, so a settlement between two hotspots is credited with both.
 conflict, reported with how concentrated it actually is. Seasonality likewise,
 and silent when there is none.
 
-**Forest boundaries** (off by default). Division, range and beat outlines in
-amber, chosen to hold up against both pale terrain and satellite; reserve
-outlines get a pale casing under the line, which the administrative levels
-cannot afford because it doubles their geometry payload.
+**Forest boundaries.** Hollow outlines — no fill — in amber, chosen to hold up
+against both pale terrain and satellite; reserve outlines get a pale casing
+under the line, which the administrative levels cannot afford because it
+doubles their geometry payload.
 
-They ship switched off. Boundary geometry is the heaviest thing the map sends,
-and an oversized deck spec is what stopped the maps loading on Streamlit Cloud
-once already. Turn them on in the sidebar.
+`line_width_units` is passed as a *quoted* string. pydeck turns a bare string
+prop into a deck.gl accessor, so `"pixels"` was serialised as `"@@=pixels"` — a
+per-feature function where a unit belongs. The widths that produced drew the
+outlines as rounded blobs, or made them vanish. There is a test asserting no
+layer prop leaves as an accessor unless it is one.
 
 Which level shows follows the zoom — divisions across a landscape, beats once
 the view is tight enough to read them. Streamlit's map reports clicks but not

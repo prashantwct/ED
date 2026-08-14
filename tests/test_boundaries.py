@@ -293,3 +293,48 @@ def test_only_reserves_carry_a_casing_layer():
     reserve = _outline_layers(boundaries.RESERVE, boundaries.annotate([feature]))
     assert len(admin) == 1
     assert len(reserve) == 2
+
+
+def test_no_layer_prop_is_mangled_into_an_accessor():
+    """pydeck turns a bare string prop into a deck.gl accessor.
+
+    ``line_width_units="pixels"`` was serialised as ``"@@=pixels"``, a
+    per-feature function where deck.gl expects a unit. The width that
+    produced drew the boundaries as rounded blobs, or not at all.
+    Quoting the value is pydeck's escape hatch for a literal, and this
+    guards every layer against the same trap.
+    """
+    import json
+
+    import pydeck as pdk
+
+    from core.map_engine import boundary_layers
+
+    for layer in boundary_layers(
+        pdk.ViewState(latitude=23.4, longitude=81.4, zoom=7.24)
+    ):
+        spec = json.loads(layer.to_json())
+        mangled = [
+            key for key, value in spec.items()
+            if isinstance(value, str)
+            and value.startswith("@@=")
+            and not key.startswith("get")
+        ]
+        assert not mangled, f"{spec['id']} sends {mangled} as accessors"
+
+
+def test_boundaries_are_outlines_not_filled_shapes():
+    """Hollow: the data belongs on top of them, not under a wash."""
+    import json
+
+    import pydeck as pdk
+
+    from core.map_engine import boundary_layers
+
+    for layer in boundary_layers(
+        pdk.ViewState(latitude=23.4, longitude=81.4, zoom=7.24)
+    ):
+        spec = json.loads(layer.to_json())
+        assert spec["filled"] is False, spec["id"]
+        assert spec["stroked"] is True, spec["id"]
+        assert spec["lineWidthUnits"] == "pixels", spec["id"]
