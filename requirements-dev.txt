@@ -4,11 +4,6 @@ pytest==9.1.1
 # research/ only -- the app itself does not import scikit-learn
 scikit-learn==1.9.0
 
-# tools/scrape_sightings.py only -- the app never makes an outbound
-# request. HTML is parsed with the standard library's html.parser, so
-# this is the whole of the scraper's dependency footprint.
-requests==2.33.1
-
 # tools/build_boundaries.py only -- a one-off shapefile conversion.
 # The app reads the vendored GeoJSON and needs no GIS stack.
 geopandas==1.1.4

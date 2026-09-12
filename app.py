@@ -29,6 +29,7 @@ from core import boundaries, landing
 from core.config import LOG_PATH
 from core.data_loader import load_and_validate_csv
 from core.exceptions import DataValidationError, SpatialEnrichmentError
+from core.fetch import window as fetch_window
 from core.hotspots import (
     DEFAULT_EPS_KM,
     DEFAULT_MIN_SAMPLES,
@@ -144,9 +145,43 @@ def _hotspots(frame: pd.DataFrame, eps_km: float, min_samples: int, as_of):
     return detect_hotspots(frame, eps_km=eps_km, min_samples=min_samples, as_of=as_of)
 
 
+def _fetch(request: landing.FetchRequest):
+    """Run a Forest Alerts pull behind a status panel.
+
+    Deliberately not cached. A Streamlit cache keyed on this call would
+    be a cache keyed on a password; the CSV it returns goes through the
+    same cached ``_load`` as an upload instead.
+    """
+    from core.fetch import FetchError, fetch_sightings
+
+    with st.status("Signing in to Forest Alerts...", expanded=True) as status:
+        def progress(page: int, rows: int) -> None:
+            status.update(label=f"Reading page {page} -- {rows:,} row(s) so far")
+
+        try:
+            result = fetch_sightings(
+                email=request.email,
+                password=request.password,
+                cookie=request.cookie,
+                progress=progress,
+            )
+        except FetchError as exc:
+            status.update(label="Could not fetch the register", state="error")
+            st.error(str(exc))
+            return None
+        status.update(
+            label=f"Fetched {result.rows:,} row(s) from {result.pages} page(s)",
+            state="complete",
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
-# 1. Upload & load
+# 1. Upload, or fetch, & load
 # ---------------------------------------------------------------------------
+# A fetch survives reruns under this key; nothing else about it does.
+FETCHED_KEY = "fetched_register"
+
 # The masthead sits above the uploader but depends on whether a file
 # arrived, which is only known after the widget is created. A container
 # reserves the slot now and is filled once that is settled.
@@ -154,18 +189,60 @@ masthead = st.container()
 uploaded = st.file_uploader(
     "Upload the Gajrakshak sightings export (CSV)", type="csv"
 )
+fetched = st.session_state.get(FETCHED_KEY)
+
 with masthead:
-    if uploaded:
+    if uploaded or fetched:
         landing.header()
     else:
         landing.hero()
 
-if not uploaded:
+if not uploaded and not fetched:
+    request = landing.fetch_panel(*fetch_window())
+    if request is not None:
+        refusal = request.is_usable()
+        if refusal:
+            st.warning(refusal)
+        else:
+            result = _fetch(request)
+            if result is not None:
+                st.session_state[FETCHED_KEY] = result
+                st.rerun()
     landing.details()
     st.stop()
 
+# A fetch is the source until it is cleared, and an upload overrides it.
+# The escape hatch is drawn before the load so that a fetch the loader
+# rejects does not strand the session on an error with no way back.
+if fetched:
+    source, clear = st.columns([6, 1])
+    with source:
+        if uploaded:
+            landing.source_note(
+                "Uploaded file",
+                f"Using {uploaded.name}. The register fetched on "
+                f"{fetched.fetched_at} is still held -- remove the upload to "
+                f"go back to it.",
+            )
+        else:
+            landing.source_note(
+                "Forest Alerts",
+                f"{fetched.rows:,} rows over {fetched.pages} page(s), "
+                f"{fetched.start_date} to {fetched.end_date}, fetched "
+                f"{fetched.fetched_at}.",
+            )
+    with clear:
+        if st.button("Clear", help="Discard the fetched register."):
+            del st.session_state[FETCHED_KEY]
+            st.rerun()
+
+if uploaded:
+    source_bytes, source_name = uploaded.getvalue(), uploaded.name
+else:
+    source_bytes, source_name = fetched.data, fetched.name
+
 try:
-    raw_df, load_warnings = _load(uploaded.getvalue(), uploaded.name)
+    raw_df, load_warnings = _load(source_bytes, source_name)
 except DataValidationError as exc:
     st.error(f"Could not load the file: {exc}")
     st.stop()

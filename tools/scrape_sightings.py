@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import logging
 import os
 import re
@@ -51,7 +52,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
@@ -728,9 +729,18 @@ class ForestAlertsScraper:
         return response.text
 
     def iter_rows(
-        self, start_date: str, end_date: str, max_pages: int = 500
+        self,
+        start_date: str,
+        end_date: str,
+        max_pages: int = 500,
+        progress: Optional[Callable[[int, int], None]] = None,
     ) -> Iterator[Dict[str, str]]:
-        """Walk the listing, yielding every row exactly once."""
+        """Walk the listing, yielding every row exactly once.
+
+        ``progress`` is called with ``(page, rows so far)`` as each page
+        lands, for a caller with a screen to keep honest.
+        """
+        total = 0
         seen: set = set()
         duplicates = 0
         expected_last: Optional[int] = None
@@ -779,6 +789,9 @@ class ForestAlertsScraper:
                 break
 
             logger.info("Page %s: %s row(s)", page, len(fresh))
+            total += len(fresh)
+            if progress is not None:
+                progress(page, total)
             yield from fresh
         else:
             logger.warning(
@@ -809,6 +822,7 @@ def scrape(
     delay: float = 1.0,
     timeout: float = 30.0,
     dump_dir: Optional[Path] = None,
+    progress: Optional[Callable[[int, int], None]] = None,
 ) -> List[Dict[str, str]]:
     """Log in, walk the listing, and return every row as a dict."""
     end_date = end_date or today()
@@ -836,7 +850,9 @@ def scrape(
         )
 
     logger.info("Scraping %s from %s to %s", scraper.sightings_url, start_date, end_date)
-    return list(scraper.iter_rows(start_date, end_date, max_pages=max_pages))
+    return list(
+        scraper.iter_rows(start_date, end_date, max_pages=max_pages, progress=progress)
+    )
 
 
 def today() -> str:
@@ -851,17 +867,29 @@ def check_date(value: str, label: str) -> str:
     return value
 
 
-def write_csv(records: Sequence[Dict[str, str]], path: Path) -> List[str]:
-    """Write the scrape, dashboard columns first. Returns the header."""
+def records_to_csv(records: Sequence[Dict[str, str]]) -> Tuple[str, List[str]]:
+    """Render the scrape as CSV text. Returns ``(text, header)``.
+
+    Kept separate from :func:`write_csv` so the app can load a scrape
+    straight into memory: a register pulled inside a session has no
+    business being written to the server's disk on the way through.
+    """
     if not records:
         raise ScrapeError("Nothing was scraped, so there is nothing to write.")
     columns = order_columns(records)
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for record in records:
+        writer.writerow({column: record.get(column, "") for column in columns})
+    return buffer.getvalue(), columns
+
+
+def write_csv(records: Sequence[Dict[str, str]], path: Path) -> List[str]:
+    """Write the scrape, dashboard columns first. Returns the header."""
+    text, columns = records_to_csv(records)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
-        for record in records:
-            writer.writerow({column: record.get(column, "") for column in columns})
+    path.write_text(text, encoding="utf-8", newline="")
     return columns
 
 

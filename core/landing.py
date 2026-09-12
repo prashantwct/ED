@@ -4,6 +4,11 @@ A forest officer opening this for the first time should be able to tell
 whose tool it is, what it does with their export, and what it will not
 do, before uploading anything. That is the whole job of this page.
 
+The page offers two ways in: upload the export, or sign in to Forest
+Alerts and let the app pull it. The sign-in is a form and nothing more --
+it collects, it does not authenticate; ``core.fetch`` does the work, and
+the credentials are gone the moment it returns.
+
 Partner marks are real files or they are typography. An official
 emblem is not something to approximate: a drawn-from-memory state seal
 is a misrepresentation, so a partner without a supplied logo file gets a
@@ -15,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -74,6 +80,14 @@ OPTIONAL_COLUMNS = (
     "Time or Hour", "Total Count", "Male / Female / Calf Count", "Crop Damage",
     "Grain Damage", "House Damage", "Injury", "Death",
     "Male / Female / Children Death Count",
+)
+
+SOURCE_URL = "https://mpforest.forestalerts.com/admin/sightings"
+
+CREDENTIAL_NOTE = (
+    "Your sign-in is used once, for this fetch, and is not stored: not in "
+    "the session, not in a cache, not in a log. The app signs in as you, so "
+    "you see exactly what your own Forest Alerts account can see."
 )
 
 ACCESS_NOTE = (
@@ -170,6 +184,77 @@ def hero() -> None:
     )
 
 
+@dataclass(frozen=True)
+class FetchRequest:
+    """What the sign-in form collected. Held no longer than the call."""
+
+    email: str
+    password: str
+    cookie: str
+
+    def is_usable(self) -> Optional[str]:
+        """The reason this cannot be submitted, or None."""
+        if self.cookie:
+            return None
+        if not self.email or not self.password:
+            return ("Enter the email and password for your Forest Alerts "
+                    "account, or paste a session cookie instead.")
+        return None
+
+
+def fetch_panel(start_date: str, end_date: str) -> Optional[FetchRequest]:
+    """The sign-in that pulls the register instead of uploading it.
+
+    Returns the submitted credentials once, on the rerun that follows the
+    button, and None otherwise. It does not keep them: the form's fields
+    are unkeyed, so nothing is parked in session state under a name that
+    would outlive this call.
+    """
+    st.markdown(
+        '<div class="lp-or"><span>or pull it straight from Forest Alerts</span></div>',
+        unsafe_allow_html=True,
+    )
+    with st.expander("Sign in to Forest Alerts and fetch the register", expanded=False):
+        st.markdown(
+            f'<div class="lp-fetch__lede">Signs in to '
+            f'<code>{escape(SOURCE_URL)}</code> and reads the sightings '
+            f'listing page by page, from {escape(start_date)} to '
+            f'{escape(end_date)}, into the same CSV the uploader takes.</div>',
+            unsafe_allow_html=True,
+        )
+        with st.form("forestalerts_signin", clear_on_submit=True):
+            email = st.text_input("Email", autocomplete="username",
+                                  placeholder="you@mpforest.gov.in")
+            password = st.text_input("Password", type="password",
+                                     autocomplete="current-password")
+            cookie = st.text_input(
+                "Session cookie (only if your sign-in needs a one-time code)",
+                type="password", placeholder="laravel_session=...",
+                help="Some accounts sign in with an OTP or through single "
+                     "sign-on, which a form cannot complete. Copy the session "
+                     "cookie from a browser already signed in and paste it "
+                     "here instead of the email and password.",
+            )
+            submitted = st.form_submit_button("Fetch the register",
+                                              type="primary")
+        st.markdown(f'<div class="lp-note">{escape(CREDENTIAL_NOTE)}</div>',
+                    unsafe_allow_html=True)
+
+    if not submitted:
+        return None
+    return FetchRequest(email=email.strip(), password=password,
+                        cookie=cookie.strip())
+
+
+def source_note(label: str, detail: str) -> None:
+    """One line saying where the loaded data came from."""
+    st.markdown(
+        f'<div class="lp-source"><span class="lp-source__tag">{escape(label)}'
+        f'</span><span>{escape(detail)}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def details() -> None:
     """Everything below the uploader on the pre-upload screen."""
     st.markdown(
@@ -231,6 +316,30 @@ def header() -> None:
 
 _CSS = """
 <style>
+.lp-or {
+  display: flex; align-items: center; gap: var(--ci-space-3);
+  margin: var(--ci-space-3) 0 var(--ci-space-2) 0;
+  color: var(--ci-text-muted); font-size: .8rem;
+}
+.lp-or::before, .lp-or::after {
+  content: ""; flex: 1; height: 1px; background: var(--ci-border);
+}
+.lp-fetch__lede {
+  color: var(--ci-text-muted); font-size: .85rem; line-height: 1.5;
+  margin-bottom: var(--ci-space-3);
+}
+.lp-fetch__lede code {
+  font-size: .8rem; word-break: break-all;
+}
+.lp-source {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: .82rem; color: var(--ci-text-muted);
+  margin: 0 0 var(--ci-space-2) 0;
+}
+.lp-source__tag {
+  font-weight: 600; color: var(--ci-text);
+  padding: 2px 8px; border: 1px solid var(--ci-border); border-radius: 5px;
+}
 .lp-bar {
   display: flex; align-items: center; justify-content: space-between;
   gap: var(--ci-space-4); flex-wrap: wrap;

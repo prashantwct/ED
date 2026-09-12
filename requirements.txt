@@ -6,3 +6,4 @@ plotly==6.9.0
 scipy==1.17.1
 pillow==12.3.0
 python-dateutil==2.9.0.post0
+requests==2.33.1
