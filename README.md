@@ -12,7 +12,8 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Then upload a sightings CSV. Village centroids for the Shahdol–Anuppur
+Then either upload a sightings CSV, or sign in to Forest Alerts on the landing
+page and let the app pull one. Village centroids for the Shahdol–Anuppur
 landscape ship with the repo and load automatically.
 
 Tests:
@@ -33,13 +34,32 @@ Dates are parsed by trying each candidate format against the whole column,
 day-first first. Genuinely ambiguous files (every day ≤ 12) are read day-first
 and flagged. Non-UTF-8 files fall back to cp1252 then Latin-1.
 
-**Scraping the sightings export.** Where no export button exists, the same
-rows can be pulled off the Forest Alerts admin listing:
+**Fetching the export instead of uploading it.** Where no export button
+exists, the same rows can be pulled off the Forest Alerts admin listing — from
+the landing page, or from the command line:
 
 ```bash
 export FORESTALERTS_EMAIL=... FORESTALERTS_PASSWORD=...
 python -m tools.scrape_sightings -o data/sightings_scraped.csv
 ```
+
+On the landing page it is a sign-in below the uploader. Both paths run the same
+scraper and end in the same `core.data_loader`, so there is no second parser and
+no way for the two to drift.
+
+**The app signs in as the person using it.** Their own Forest Alerts account
+decides what they can pull, which is why there is deliberately no way to
+configure a shared login in `secrets.toml`: this app has no access control of
+its own, and a stored credential would turn it into a public mirror of the
+register. Credentials are a request parameter and nothing else — used for one
+sign-in, then gone. The form clears on submit, the fetch is not cached (a cache
+keyed on a password is a password at rest), and only the resulting CSV bytes
+reach session state, where they go through the same cached load as an upload.
+`tests/test_app_fetch.py` asserts the password is absent from session state
+after a real round trip rather than merely unrendered.
+
+If the sign-in needs a one-time code or goes through SSO, paste a browser
+session cookie into the third field instead of the email and password.
 
 The window is not a parameter of the job: `start_date` is pinned to the
 register's first day, 2025-10-01, and `end_date` defaults to today, so every
@@ -61,12 +81,10 @@ The run finishes by loading its own output back through `core.data_loader`,
 which is the only check worth making — the scrape is correct when the dashboard
 accepts it, not when it parsed. `--no-verify` skips it.
 
-Two things it cannot do for you. If the panel sits behind an OTP or an SSO
-redirect, pass `--cookie` with a session cookie from a logged-in browser
-instead of credentials. If the listing renders its rows in JavaScript there is
-no table in the HTML to read, and the error says so; `--dump-dir` saves every
-fetched page to check. Prefer the environment variables over `--password`,
-which is visible in `ps` and shell history.
+If the listing renders its rows in JavaScript there is no table in the HTML to
+read, and the error says so; `--dump-dir` saves every fetched page to check. On
+the command line, prefer the environment variables over `--password`, which is
+visible in `ps` and shell history.
 
 **Early-warning registry (optional upload).** The villager registry export:
 `Latitude, Longitude` required, `Village` and `Division` used when present.
@@ -126,8 +144,10 @@ victim names.
 
 The pre-upload screen carries the project identity: a MOVE-MP masthead over a
 field photograph, the partner marks, what the tool does, and what to upload.
-Once an export is loaded it collapses to a one-line bar so the screen belongs
-to the data.
+Below the uploader is the Forest Alerts sign-in, which fetches the register
+instead. Once an export is loaded, either way, the screen collapses to a
+one-line bar so it belongs to the data, with a line saying where that data came
+from and a button to discard a fetch.
 
 Assets live in `assets/`. `hero-elephant.jpg` and `logo-wct.png` are taken from
 the project's own progress report. **`logo-mpfd.png` is not supplied** — an
@@ -251,6 +271,13 @@ the deck spec. A rule enforced where the data enters cannot be forgotten by the
 next feature that reads it, and there is a test asserting the values are absent
 from the loaded frame rather than merely unrendered.
 
+**Credentials are a request parameter, never state.** The Forest Alerts
+sign-in is read off the form, used for one login, and kept nowhere: not in
+session state, not in a cache, not in a log, not on disk. The fetch is
+deliberately uncached for that reason — its CSV output is cached instead. The
+same reasoning as the rule above, applied to a secret rather than to someone
+else's name.
+
 **Colour is never the only signal.** Tier badges carry a shape, a glyph and a
 word, so rankings survive greyscale printing and colour vision deficiency. Map
 categories use the Okabe-Ito colourblind-safe palette with size as a parallel
@@ -263,6 +290,7 @@ app.py               Streamlit entry point: layout and widgets only
 core/config.py       Every tunable parameter
 core/csv_io.py       Encoding-tolerant CSV reading
 core/data_loader.py  Schema validation, date/time parsing, data-quality warnings
+core/fetch.py        The landing-page sign-in, bridged to the scraper
 core/analytics.py    Severity, conflict classification, KPIs, filters
 core/intelligence.py Beat priorities, escalation, timing, the brief
 core/hotspots.py     DBSCAN clustering and village risk
@@ -278,6 +306,7 @@ assets/              Hero photograph and partner logos
 data/boundaries/     Division, range, beat and reserve outlines
 data/centroids.csv   Bundled village centroids
 tools/               Data preparation and the scraper, not imported by the app
+tests/replica.py     A local stand-in for the Forest Alerts admin site
 tests/               Unit tests, run with `pytest -q`
 ```
 
@@ -289,6 +318,11 @@ and were set against a 1,761-row Anuppur/Bandhavgarh export.
 **Streamlit Cloud.** Point it at `app.py`. `requirements.txt` is pinned,
 `runtime.txt` fixes the Python version, and `.streamlit/config.toml` caps
 uploads at 10 MB and disables usage stats.
+
+The landing-page fetch makes the deployment's only outbound request, so
+`requests` is a runtime dependency rather than a tools-only one, and the host
+has to be able to reach `mpforest.forestalerts.com`. Where it cannot, the fetch
+fails with that reason on screen and the uploader still works.
 
 **Reboot after adding a constant to `core/config.py`.** Streamlit re-executes
 `app.py` on every rerun but leaves already-imported modules in `sys.modules`,
