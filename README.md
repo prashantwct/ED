@@ -33,6 +33,41 @@ Dates are parsed by trying each candidate format against the whole column,
 day-first first. Genuinely ambiguous files (every day ≤ 12) are read day-first
 and flagged. Non-UTF-8 files fall back to cp1252 then Latin-1.
 
+**Scraping the sightings export.** Where no export button exists, the same
+rows can be pulled off the Forest Alerts admin listing:
+
+```bash
+export FORESTALERTS_EMAIL=... FORESTALERTS_PASSWORD=...
+python -m tools.scrape_sightings -o data/sightings_scraped.csv
+```
+
+The window is not a parameter of the job: `start_date` is pinned to the
+register's first day, 2025-10-01, and `end_date` defaults to today, so every
+run is a full refresh rather than an increment to be merged. A full pull cannot
+develop a gap, and the register is small enough that this is cheaper than being
+clever. Both are overridable with `--start-date` / `--end-date`.
+
+Column headers are read rather than assumed — each is normalised and looked up
+in a synonym table to find the dashboard's name for it, so `Sighting Date`,
+`Tuskers` and `No. of Elephants` land in `Date`, `Male Count` and `Total Count`.
+A header nobody anticipated is carried through under its own name rather than
+dropped, because the file is meant to be a raw capture that also happens to
+load. Pagination stops on evidence: asking for a page past the end returns
+either nothing or a repeat depending on the framework, so the walk stops when a
+page yields no row it has not already seen, and rows are fingerprinted and
+de-duplicated across pages.
+
+The run finishes by loading its own output back through `core.data_loader`,
+which is the only check worth making — the scrape is correct when the dashboard
+accepts it, not when it parsed. `--no-verify` skips it.
+
+Two things it cannot do for you. If the panel sits behind an OTP or an SSO
+redirect, pass `--cookie` with a session cookie from a logged-in browser
+instead of credentials. If the listing renders its rows in JavaScript there is
+no table in the HTML to read, and the error says so; `--dump-dir` saves every
+fetched page to check. Prefer the environment variables over `--password`,
+which is visible in `ps` and shell history.
+
 **Early-warning registry (optional upload).** The villager registry export:
 `Latitude, Longitude` required, `Village` and `Division` used when present.
 Unlocks the coverage section below.
@@ -242,7 +277,7 @@ core/ui.py           Design tokens, SVG icons, shared components
 assets/              Hero photograph and partner logos
 data/boundaries/     Division, range, beat and reserve outlines
 data/centroids.csv   Bundled village centroids
-tools/               Build-time data preparation, not imported by the app
+tools/               Data preparation and the scraper, not imported by the app
 tests/               Unit tests, run with `pytest -q`
 ```
 
