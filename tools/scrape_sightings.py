@@ -61,7 +61,11 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://mpforest.forestalerts.com"
 SIGHTINGS_PATH = "/admin/sightings"
-LOGIN_PATH = "/login"
+# Tried in order when --login-path is not given. Guessing at a path is
+# cheap; failing with "no form at /login" when the form is at
+# /admin/login is a dead end the user has to diagnose themselves.
+LOGIN_PATHS = ("/login", "/admin/login", "/auth/login", "/")
+LOGIN_PATH = LOGIN_PATHS[0]
 
 # The register opens on 1 October 2025; there is nothing before it to
 # fetch, so the start of the window is a constant and not an argument.
@@ -175,8 +179,18 @@ _CLOCK = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([APap])\.?[Mm]\.?\s*$|^
 _PAGE_LINK = re.compile(r"[?&]page=(\d+)")
 
 
+# Where single-page frameworks mount. A page that is one of these and
+# little else has no form in its HTML to find.
+_MOUNT_IDS = ("app", "root", "__next", "__nuxt", "main", "main-app")
+
+
 class ScrapeError(RuntimeError):
     """The site did not give us what we asked for, and said why."""
+
+
+def _slug(url: str) -> str:
+    """A filename for a dumped page, from its path."""
+    return re.sub(r"[^a-z0-9]+", "-", urlparse(url).path.lower()).strip("-") or "root"
 
 
 def _normalise(text: str) -> str:
@@ -339,6 +353,12 @@ class Form:
     # Field names by input type, so the login form can be filled without
     # knowing what the site calls its username box.
     types: Dict[str, str] = field(default_factory=dict)
+    # Inputs the page rendered with no name attribute, as (type, id). A
+    # script cannot post them -- the server never sees a nameless field
+    # -- but they are the whole difference between "this page has no
+    # password box" and "this page has one I cannot submit", which are
+    # different problems with different answers.
+    unnamed: List[Tuple[str, str]] = field(default_factory=list)
 
     @property
     def password_field(self) -> Optional[str]:
@@ -347,6 +367,13 @@ class Form:
                 return name
         return None
 
+    @property
+    def has_password_input(self) -> bool:
+        """A password box is here, submittable or not."""
+        return self.password_field is not None or any(
+            kind == "password" for kind, _ in self.unnamed
+        )
+
 
 class _FormExtractor(HTMLParser):
     """Collect forms with their inputs, so a login can be replayed."""
@@ -354,21 +381,32 @@ class _FormExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.forms: List[Form] = []
+        # Inputs that belong to no <form> at all. A page whose form is
+        # assembled by JavaScript still renders its boxes, and knowing
+        # they are there is the difference between diagnosing the site
+        # and guessing at it.
+        self.loose = Form()
         self._current: Optional[Form] = None
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
         values = {key.lower(): (value or "") for key, value in attrs}
         if tag == "form":
+            if self._current is not None:  # a form that was never closed
+                self.forms.append(self._current)
             self._current = Form(
                 action=values.get("action", ""),
                 method=(values.get("method") or "post").lower(),
             )
-        elif tag in ("input", "select", "textarea") and self._current is not None:
+        elif tag in ("input", "select", "textarea"):
+            target = self._current if self._current is not None else self.loose
             name = values.get("name")
-            if not name:
-                return
-            self._current.fields[name] = values.get("value", "")
-            self._current.types[name] = (values.get("type") or "text").lower()
+            kind = (values.get("type") or "text").lower()
+            if name:
+                target.fields[name] = values.get("value", "")
+                target.types[name] = kind
+            else:
+                # Keyed by id for the report; it cannot be posted.
+                target.unnamed.append((kind, values.get("id", "")))
 
     def handle_startendtag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
         self.handle_starttag(tag, attrs)
@@ -385,20 +423,176 @@ class _FormExtractor(HTMLParser):
             self._current = None
 
 
-def extract_forms(html: str) -> List[Form]:
+def _parse_inputs(html: str) -> Tuple[List[Form], Form]:
+    """Every form on the page, plus the inputs belonging to none of them."""
     parser = _FormExtractor()
     parser.feed(html)
     parser.close()
-    return parser.forms
+    return parser.forms, parser.loose
+
+
+def extract_forms(html: str) -> List[Form]:
+    return _parse_inputs(html)[0]
 
 
 def looks_like_login(html: str) -> bool:
     """Whether a response is the login screen wearing another URL.
 
     A session that expires mid-scrape is served the login page with a
-    200, so the only reliable tell is a password box.
+    200, so the tell is a password box -- any password box, named or
+    not, inside a form or loose in the document. Requiring a submittable
+    one would read a JavaScript login screen as a successful fetch of an
+    empty register.
     """
-    return any(form.password_field for form in extract_forms(html))
+    forms, loose = _parse_inputs(html)
+    return loose.has_password_input or any(f.has_password_input for f in forms)
+
+
+class _PageProbe(HTMLParser):
+    """Enough of a page to say why it is not the login screen."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.title = ""
+        self.scripts = 0
+        self.mounts: List[str] = []
+        self._text: List[str] = []
+        self._in_title = False
+        self._skipping = 0
+
+    def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
+        values = {key.lower(): (value or "") for key, value in attrs}
+        if tag == "title":
+            self._in_title = True
+        elif tag == "script":
+            self.scripts += 1
+            self._skipping += 1
+        elif tag == "style":
+            self._skipping += 1
+        elif values.get("id", "").lower() in _MOUNT_IDS:
+            self.mounts.append("#" + values["id"])
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "title":
+            self._in_title = False
+        elif tag in ("script", "style"):
+            self._skipping = max(0, self._skipping - 1)
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self.title += data
+        elif not self._skipping:
+            self._text.append(data)
+
+    @property
+    def text(self) -> str:
+        return re.sub(r"\s+", " ", "".join(self._text)).strip()
+
+
+@dataclass
+class PageReport:
+    """What a page actually contains, for when it is not what we wanted."""
+
+    url: str
+    status: int
+    title: str
+    forms: List[Form]
+    loose: Form
+    scripts: int
+    mounts: List[str]
+    text_length: int
+    mentions_password: bool
+    data_rows: int
+
+    @property
+    def submittable_password(self) -> bool:
+        return any(f.password_field for f in self.forms)
+
+    @property
+    def unsubmittable_password(self) -> bool:
+        """A password box is on the page but nothing can post it."""
+        return not self.submittable_password and (
+            self.loose.has_password_input
+            or any(f.has_password_input for f in self.forms)
+        )
+
+    @property
+    def looks_like_an_app_shell(self) -> bool:
+        return bool(self.mounts) and self.scripts > 0 and self.text_length < 400
+
+    def lines(self) -> List[str]:
+        inputs = sorted(
+            {name for f in self.forms for name in f.fields} | set(self.loose.fields)
+        )
+        nameless = [
+            kind for f in (*self.forms, self.loose) for kind, _ in f.unnamed
+        ]
+        detail = [
+            f"{self.url}  HTTP {self.status}" + (f'  "{self.title.strip()}"' if self.title.strip() else ""),
+            f"  forms: {len(self.forms)}"
+            f"; named inputs: {', '.join(inputs) if inputs else 'none'}"
+            f"; nameless inputs: {', '.join(nameless) if nameless else 'none'}",
+            f"  scripts: {self.scripts}"
+            f"; mount points: {', '.join(self.mounts) if self.mounts else 'none'}"
+            f"; visible text: {self.text_length} chars"
+            f"; table rows: {self.data_rows}",
+        ]
+        detail.append("  -> " + self.verdict())
+        return detail
+
+    def verdict(self) -> str:
+        if self.submittable_password:
+            return "a login form this can fill and post."
+        if self.unsubmittable_password:
+            return ("a password box that cannot be posted -- it has no name "
+                    "attribute, or sits outside any <form>. The form is wired "
+                    "up in JavaScript.")
+        if self.looks_like_an_app_shell:
+            return ("a JavaScript application shell: the page's content is not "
+                    "in its HTML.")
+        if self.mentions_password:
+            return ("the word 'password' appears but no password input does, "
+                    "so the form is most likely built by script.")
+        if self.data_rows:
+            return f"a page with {self.data_rows} table row(s) -- not a login screen."
+        if self.status >= 400:
+            return "not served."
+        return "no login form and nothing password-shaped."
+
+
+def diagnose(html: str, url: str = "", status: int = 200) -> PageReport:
+    """Read a page for the purpose of explaining it, not using it."""
+    probe = _PageProbe()
+    probe.feed(html)
+    probe.close()
+    forms, loose = _parse_inputs(html)
+    table = choose_table(extract_tables(html))
+    return PageReport(
+        url=url,
+        status=status,
+        title=probe.title,
+        forms=forms,
+        loose=loose,
+        scripts=probe.scripts,
+        mounts=probe.mounts,
+        text_length=len(probe.text),
+        mentions_password="password" in html.lower(),
+        data_rows=len(table.data_rows) if table else 0,
+    )
+
+
+COOKIE_ADVICE = (
+    "The way through a form no script can fill is --cookie: sign in with a "
+    "browser, copy the session cookie from its developer tools (Application "
+    "-> Cookies), and pass that instead of --email/--password. Run with "
+    "--probe to see this report again, or --dump-dir to keep the HTML."
+)
+
+
+def _has_listing(html: str) -> bool:
+    """Whether the page carries something that reads as the sightings table."""
+    table = choose_table(extract_tables(html))
+    return bool(table and table.data_rows)
 
 
 def last_page_number(html: str) -> Optional[int]:
@@ -571,20 +765,28 @@ class ForestAlertsScraper:
         base_url: str = BASE_URL,
         *,
         sightings_path: str = SIGHTINGS_PATH,
-        login_path: str = LOGIN_PATH,
+        login_path: Optional[str] = None,
         timeout: float = 30.0,
         delay: float = 1.0,
         dump_dir: Optional[Path] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.sightings_url = urljoin(self.base_url + "/", sightings_path.lstrip("/"))
-        self.login_url = urljoin(self.base_url + "/", login_path.lstrip("/"))
+        paths = [login_path] if login_path else list(LOGIN_PATHS)
+        self.login_urls = [
+            urljoin(self.base_url + "/", path.lstrip("/")) for path in paths
+        ]
         self.timeout = timeout
         self.delay = delay
         self.dump_dir = dump_dir
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT})
         self._credentials: Optional[Tuple[str, str]] = None
+
+    @property
+    def login_url(self) -> str:
+        """The first candidate, for messages that name one."""
+        return self.login_urls[0]
 
     # -- plumbing ---------------------------------------------------------
 
@@ -641,28 +843,52 @@ class ForestAlertsScraper:
         of them it is talking to.
         """
         self._credentials = (email, password)
-        page = self._request("GET", self.login_url)
-        self._dump("login.html", page.text)
-        if page.status_code >= 400:
-            raise ScrapeError(
-                f"Login page {self.login_url} returned HTTP {page.status_code}. "
-                "Pass --login-path if the form lives somewhere else."
-            )
+        reports: List[PageReport] = []
+        for url in self.login_urls:
+            page = self._request("GET", url)
+            self._dump(f"login-{_slug(url)}.html", page.text)
+            report = diagnose(page.text, url=page.url, status=page.status_code)
+            if report.submittable_password:
+                form = next(
+                    f for f in report.forms if f.password_field
+                )
+                return self._submit_login(form, page, email, password)
+            reports.append(report)
 
-        form = next((f for f in extract_forms(page.text) if f.password_field), None)
-        if form is None:
-            raise ScrapeError(
-                f"No password field found at {self.login_url}. The form may be "
-                "rendered by JavaScript -- use --cookie with a session cookie "
-                "copied from a logged-in browser, or --dump-dir to inspect the page."
-            )
+        raise ScrapeError(
+            "No login form this can fill was found. What each candidate page "
+            "actually holds:\n\n"
+            + "\n\n".join("\n".join(r.lines()) for r in reports)
+            + "\n\n"
+            + COOKIE_ADVICE
+        )
 
+    def probe(self) -> List[PageReport]:
+        """Report what the candidate pages contain, without signing in.
+
+        For the case this tool is least able to guess its way out of: a
+        login that is not where or what it was expected to be.
+        """
+        reports = []
+        for url in [*self.login_urls, self.sightings_url]:
+            response = self._request("GET", url)
+            self._dump(f"probe-{_slug(url)}.html", response.text)
+            reports.append(
+                diagnose(response.text, url=response.url, status=response.status_code)
+            )
+        return reports
+
+    def _submit_login(
+        self, form: Form, page: requests.Response, email: str, password: str
+    ) -> None:
+        """Fill the form the site served and post it back."""
         data = dict(form.fields)
         data[form.password_field] = password
         user_field = self._user_field(form)
         if user_field is None:
             raise ScrapeError(
-                f"No username or email field found in the login form at {self.login_url}."
+                f"The login form at {page.url} has a password box but no "
+                "username or email field this recognises."
             )
         data[user_field] = email
 
@@ -713,7 +939,9 @@ class ForestAlertsScraper:
             raise ScrapeError(
                 f"{self.sightings_url} page {page} returned HTTP {response.status_code}."
             )
-        if looks_like_login(response.text):
+        # A password box on a page that also carries the listing is a
+        # profile widget, not an expired session.
+        if looks_like_login(response.text) and not _has_listing(response.text):
             if self._credentials is None:
                 raise ScrapeError(
                     "The listing served the login page. Supply credentials "
@@ -724,7 +952,7 @@ class ForestAlertsScraper:
             response = self._request(
                 "GET", self.sightings_url, params=self.page_params(page, start_date, end_date)
             )
-            if looks_like_login(response.text):
+            if looks_like_login(response.text) and not _has_listing(response.text):
                 raise ScrapeError("Session expired and could not be re-established.")
         return response.text
 
@@ -816,7 +1044,7 @@ def scrape(
     email: Optional[str] = None,
     password: Optional[str] = None,
     cookie: Optional[str] = None,
-    login_path: str = LOGIN_PATH,
+    login_path: Optional[str] = None,
     sightings_path: str = SIGHTINGS_PATH,
     max_pages: int = 500,
     delay: float = 1.0,
@@ -940,7 +1168,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                              "a password on the command line is visible in ps and history.")
     parser.add_argument("--cookie", default=os.environ.get("FORESTALERTS_COOKIE"),
                         help="Session cookie(s) from a logged-in browser, instead of a login.")
-    parser.add_argument("--login-path", default=LOGIN_PATH)
+    parser.add_argument("--login-path", default=None,
+                        help="Where the login form lives. Default: try "
+                             + ", ".join(LOGIN_PATHS) + " in turn.")
+    parser.add_argument("--probe", action="store_true",
+                        help="Report what the candidate login pages and the "
+                             "listing actually contain, then exit. Needs no "
+                             "credentials, and is the place to start when the "
+                             "login is not where this expects it.")
     parser.add_argument("--sightings-path", default=SIGHTINGS_PATH)
     parser.add_argument("--max-pages", type=int, default=500)
     parser.add_argument("--delay", type=float, default=1.0,
@@ -951,6 +1186,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--no-verify", action="store_true",
                         help="Skip loading the result back through core.data_loader.")
     args = parser.parse_args(argv)
+
+    if args.probe:
+        scraper = ForestAlertsScraper(
+            args.base_url,
+            sightings_path=args.sightings_path,
+            login_path=args.login_path,
+            timeout=args.timeout,
+            dump_dir=args.dump_dir,
+        )
+        if args.cookie:
+            scraper.use_cookie(args.cookie)
+        try:
+            reports = scraper.probe()
+        except ScrapeError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        for report in reports:
+            for line in report.lines():
+                print(line)
+            print()
+        print(COOKIE_ADVICE)
+        return 0
 
     try:
         records = scrape(

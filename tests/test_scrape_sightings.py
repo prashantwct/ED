@@ -35,6 +35,8 @@ from replica import (
 from core.data_loader import load_and_validate_csv
 from tools.scrape_sightings import (
     ForestAlertsScraper,
+    _has_listing,
+    diagnose,
     ScrapeError,
     Table,
     canonical_header,
@@ -342,3 +344,101 @@ def test_a_backwards_window_is_refused(site):
 def test_a_malformed_date_argument_is_refused(site):
     with pytest.raises(ScrapeError, match="YYYY-MM-DD"):
         _scrape(site, end_date="13/09/2026")
+
+
+# --- when the login form is not what was expected -------------------------
+# The live site answered the first real run with "no password field found
+# at /login". Three ordinary things produce that message, and only one of
+# them is the site being a JavaScript app: a password box with no name
+# attribute and a password box outside any <form> were both invisible to
+# the parser, and a form at another path was never looked for.
+
+
+def test_a_password_box_with_no_name_is_seen_even_though_it_cannot_be_posted():
+    """Invisible to the old parser, which skipped any input without a
+    name -- so a perfectly ordinary login screen read as 'no password
+    field found'."""
+    from replica import NAMELESS_LOGIN_PAGE
+
+    assert looks_like_login(NAMELESS_LOGIN_PAGE)
+    report = diagnose(NAMELESS_LOGIN_PAGE)
+    assert report.unsubmittable_password
+    assert not report.submittable_password
+    assert "no name attribute" in report.verdict()
+
+
+def test_a_password_box_outside_any_form_is_seen_too():
+    from replica import LOOSE_LOGIN_PAGE
+
+    assert looks_like_login(LOOSE_LOGIN_PAGE)
+    report = diagnose(LOOSE_LOGIN_PAGE)
+    assert report.unsubmittable_password
+    assert "outside any <form>" in report.verdict()
+
+
+def test_an_app_shell_is_named_as_one():
+    from replica import APP_SHELL_PAGE
+
+    report = diagnose(APP_SHELL_PAGE)
+    assert report.looks_like_an_app_shell
+    assert report.mounts == ["#app"]
+    assert "not in its HTML" in report.verdict()
+
+
+def test_a_real_login_form_is_still_reported_as_submittable():
+    report = diagnose(LOGIN_PAGE)
+    assert report.submittable_password
+    assert "fill and post" in report.verdict()
+
+
+def test_a_login_form_at_another_path_is_found(site):
+    """A form at /admin/login used to fail as 'no password field at
+    /login'. The candidates are tried in turn instead."""
+    Handler.login_path = "/admin/login"
+    records = _scrape(site)
+    assert len(records) == TOTAL_ROWS
+
+
+def test_the_failure_names_what_each_candidate_page_held(site):
+    Handler.login_path = "/nowhere"
+    Handler.login_html = None
+    with pytest.raises(ScrapeError) as caught:
+        _scrape(site)
+    message = str(caught.value)
+    assert "/login" in message and "/admin/login" in message
+    assert "HTTP 404" in message
+    assert "--cookie" in message
+
+
+def test_a_javascript_login_says_to_use_a_cookie(site):
+    from replica import APP_SHELL_PAGE
+
+    Handler.login_html = APP_SHELL_PAGE
+    with pytest.raises(ScrapeError) as caught:
+        _scrape(site)
+    message = str(caught.value)
+    assert "application shell" in message
+    assert "--cookie" in message
+    assert "developer tools" in message
+
+
+def test_the_probe_reports_every_candidate_and_the_listing(site):
+    """The point of --probe: say what is actually being served, without
+    needing credentials to find out."""
+    Handler.login_html = None
+    scraper = ForestAlertsScraper(site, delay=0)
+    reports = scraper.probe()
+    assert [r.url.rsplit("/", 1)[-1] or "root" for r in reports][:1] == ["login"]
+    assert reports[0].submittable_password
+    # The listing, fetched without a session, is the login page again.
+    assert reports[-1].url.endswith("/admin/sightings")
+
+
+def test_a_listing_that_mentions_a_password_is_not_an_expired_session(site):
+    """looks_like_login is now satisfied by any password box, so a
+    listing carrying a profile widget must not be read as a logout."""
+    listing = _listing(1, ROWS[:2]).replace(
+        "</body>", '<input type="password" name="new_password"></body>'
+    )
+    assert looks_like_login(listing)
+    assert _has_listing(listing)

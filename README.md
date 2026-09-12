@@ -58,8 +58,10 @@ reach session state, where they go through the same cached load as an upload.
 `tests/test_app_fetch.py` asserts the password is absent from session state
 after a real round trip rather than merely unrendered.
 
-If the sign-in needs a one-time code or goes through SSO, paste a browser
-session cookie into the third field instead of the email and password.
+If the sign-in needs a one-time code, goes through SSO, or is a form built in
+JavaScript, paste a browser session cookie into the third field instead of the
+email and password. The app shows the same page report the CLI does when it
+cannot find a form to fill.
 
 The window is not a parameter of the job: `start_date` is pinned to the
 register's first day, 2025-10-01, and `end_date` defaults to today, so every
@@ -81,10 +83,34 @@ The run finishes by loading its own output back through `core.data_loader`,
 which is the only check worth making — the scrape is correct when the dashboard
 accepts it, not when it parsed. `--no-verify` skips it.
 
-If the listing renders its rows in JavaScript there is no table in the HTML to
-read, and the error says so; `--dump-dir` saves every fetched page to check. On
-the command line, prefer the environment variables over `--password`, which is
-visible in `ps` and shell history.
+**When the login is not where or what this expects.** The first real run
+against the site failed with "no password field found at /login", which has
+several ordinary causes and only one of them is the site being a JavaScript
+app. So the login is no longer a single guess: `/login`, `/admin/login`,
+`/auth/login` and `/` are tried in turn, a password box is recognised whether
+or not it has a `name` attribute and whether or not it sits inside a `<form>`,
+and the failure reports what each candidate page actually held rather than
+which one it wanted.
+
+`--probe` prints that report on demand and needs no credentials:
+
+```bash
+python -m tools.scrape_sightings --probe
+```
+
+For each candidate it gives the status, title, forms, named and nameless
+inputs, script and mount-point counts, visible text length, table rows, and a
+verdict — a submittable form, a password box nothing can post, a JavaScript
+application shell, or simply not a login page. `--dump-dir` keeps the HTML
+alongside it.
+
+A password box with no `name`, or one outside any `<form>`, is a form wired up
+in JavaScript: the server never receives a nameless field, so no script can
+sign in. That is what `--cookie` is for — sign in with a browser, copy the
+session cookie, and pass it instead of the email and password.
+
+On the command line, prefer the environment variables over `--password`, which
+is visible in `ps` and shell history.
 
 **Early-warning registry (optional upload).** The villager registry export:
 `Latitude, Longitude` required, `Village` and `Division` used when present.

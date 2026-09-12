@@ -89,6 +89,28 @@ def _listing(page, rows, advertise=(1, 2, 3)):
 <p>Showing page {page}</p></body></html>"""
 
 
+# The shapes a login page takes when a script, not the server, builds
+# it. Each one renders a password box a person can see and type into,
+# and none of them can be posted by anything but a browser.
+NAMELESS_LOGIN_PAGE = """<!doctype html><html><head><title>Sign in</title></head>
+<body><form method="post" action="/login">
+  <input type="email" id="email">
+  <input type="password" id="password">
+  <button>Login</button>
+</form></body></html>"""
+
+LOOSE_LOGIN_PAGE = """<!doctype html><html><head><title>Sign in</title></head>
+<body><div class="card">
+  <input type="email" name="email">
+  <input type="password" name="password">
+  <button onclick="submitLogin()">Login</button>
+</div></body></html>"""
+
+APP_SHELL_PAGE = """<!doctype html><html><head><title>Forest Alerts</title>
+<script src="/build/app.js"></script></head>
+<body><div id="app"></div><script>window.boot();</script></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     """A small, deliberately awkward stand-in for the admin site."""
 
@@ -96,6 +118,8 @@ class Handler(BaseHTTPRequestHandler):
     expire_on_page = None  # serve the login page once for this page number
     expired = set()
     advertise = (1, 2, 3)  # what the paginator links to
+    login_path = "/login"  # where the login form is served, if anywhere
+    login_html = None      # override the login page body
 
     def log_message(self, *args):  # keep pytest output clean
         pass
@@ -116,8 +140,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query, keep_blank_values=True)
-        if parsed.path == "/login":
-            return self._send(LOGIN_PAGE)
+        if parsed.path == self.login_path:
+            return self._send(self.login_html or LOGIN_PAGE)
+        if parsed.path in ("/login", "/admin/login", "/auth/login", "/"):
+            return self._send("<h1>Not found</h1>", status=404)
         if parsed.path == "/admin/no-table":
             # A 200 with nothing to parse, which is what a listing that
             # renders its rows in JavaScript looks like from here.
