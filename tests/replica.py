@@ -130,6 +130,29 @@ var css="/build/app.css",img="/img/logo.png",help="https://example.org/help";
 
 API_TOKEN = "tok-bearer-99"
 
+# The listing's Export button. Its headers are the site's own spellings,
+# not the dashboard's, and it arrives with a filename rather than a
+# useful content type -- both of which is how real exports turn up.
+EXPORT_HEADER = (
+    "S.No,Sighting Date,Sighting Time,Latitude,Longitude,Division Name,"
+    "Range Name,Beat Name,Total Elephants,Tuskers,Crop Damage,Human Death"
+)
+
+
+def _export_row(row):
+    return ",".join(str(part) for part in (
+        row["id"],
+        f"{(row['id'] - 99):02d}-10-2025",
+        f"07:0{row['id'] % 10} PM",
+        row["lat"], row["lng"],
+        row["division"], row["range"], row["beat"],
+        row["total"], row["male"], row["crop"], row["death"],
+    ))
+
+
+def export_csv_text():
+    return "\n".join([EXPORT_HEADER, *(_export_row(row) for row in ROWS)]) + "\n"
+
 
 def _api_row(row):
     """A sighting as an API returns one: nested lookups, mixed types."""
@@ -164,6 +187,8 @@ class Handler(BaseHTTPRequestHandler):
     login_html = None      # override the login page body
     api_requests = []      # every API query the scraper sent
     api_needs_token = True # whether /api/sightings checks Authorization
+    export_requests = []   # every export query the scraper sent
+    export_as = "csv"      # what the Export button hands back
 
     def log_message(self, *args):  # keep pytest output clean
         pass
@@ -198,6 +223,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(SPA_SHELL)
         if parsed.path == "/api/sightings":
             return self._api_sightings(query)
+        if parsed.path == "/admin/sightings/export":
+            return self._export(query)
         if parsed.path == self.login_path:
             return self._send(self.login_html or LOGIN_PAGE)
         if parsed.path in ("/login", "/admin/login", "/auth/login", "/"):
@@ -226,6 +253,32 @@ class Handler(BaseHTTPRequestHandler):
             # rather than returning an empty table.
             rows = ROWS[-PAGE_SIZE:]
         return self._send(_listing(page, rows, advertise=self.advertise))
+
+    def _export(self, query):
+        if not (self._authenticated()
+                or f"Bearer {API_TOKEN}" == (self.headers.get("Authorization") or "")):
+            return self._send_json({"message": "Unauthenticated."}, status=401)
+        type(self).export_requests.append(query)
+
+        if self.export_as == "xlsx":
+            body = _xlsx_bytes()
+            name = "sightings.xlsx"
+            # Served with no useful type, which is common enough that
+            # guessing from the header alone would fail here.
+            content_type = "application/octet-stream"
+        elif self.export_as == "html":
+            body = b"<html><body><h1>Session expired</h1></body></html>"
+            name, content_type = "login.html", "text/html"
+        else:
+            body = export_csv_text().encode("utf-8")
+            name, content_type = "sightings.csv", "application/octet-stream"
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _api_sightings(self, query):
         authorised = (
@@ -270,3 +323,16 @@ class Handler(BaseHTTPRequestHandler):
             headers=[("Set-Cookie", f"{SESSION_COOKIE}; Path=/"),
                      ("Location", "/admin/sightings")],
         )
+
+
+def _xlsx_bytes():
+    """The same rows as a real .xlsx, so the spreadsheet path is exercised
+    rather than described."""
+    import io
+
+    import pandas as pd
+
+    frame = pd.read_csv(io.StringIO(export_csv_text()), dtype=str)
+    buffer = io.BytesIO()
+    frame.to_excel(buffer, index=False, engine="openpyxl")
+    return buffer.getvalue()

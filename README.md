@@ -58,11 +58,13 @@ reach session state, where they go through the same cached load as an upload.
 `tests/test_app_fetch.py` asserts the password is absent from session state
 after a real round trip rather than merely unrendered.
 
-Because the site renders in the browser, the page also carries a **Rows
-endpoint** field and a **Sign-in endpoint** field: the API paths found on the
-Network tab. Set `FORESTALERTS_API_PATH` and `FORESTALERTS_API_LOGIN_PATH` as
-environment variables or in `.streamlit/secrets.toml` and they are pre-filled,
-so a division configures them once rather than per session.
+Because the site renders in the browser, the page also carries an **Export
+endpoint** field, a **Rows endpoint** field and a **Sign-in endpoint** field:
+the addresses found on the Network tab. The export wins when both are given.
+Set `FORESTALERTS_EXPORT_PATH`, `FORESTALERTS_API_PATH` and
+`FORESTALERTS_API_LOGIN_PATH` as environment variables or in
+`.streamlit/secrets.toml` and they are pre-filled, so a division configures
+them once rather than per session.
 
 If the sign-in needs a one-time code, goes through SSO, or is a form built in
 JavaScript, paste a browser session cookie into the cookie field instead of the
@@ -96,10 +98,31 @@ no table and zero characters of visible text, and `/admin/login` and
 no HTML to scrape — **the rows come from a JSON API the page calls after it
 boots, and that API is the only thing there is to read.**
 
-So the scraper takes either source. `--api-path` points it at the JSON
-endpoint; without one it parses the HTML listing as before, which still serves
-any deployment that renders server-side. Both paths converge on the same
-column mapping, the same CSV and the same `core.data_loader`.
+**The listing's Export button is the best source, and the one to try first.**
+Whatever it returns is the register as the department itself publishes it: one
+request, no pagination to walk, no row shape to infer, and the columns the
+people who run the system chose.
+
+```bash
+python -m tools.scrape_sightings \
+  --export-path /admin/sightings/export \
+  --cookie 'laravel_session=...' \
+  -o data/sightings_scraped.csv
+```
+
+What comes back is not known in advance, so the format is detected rather than
+assumed — from the filename the server suggests, then the content type, then
+the first bytes, because a download served as `application/octet-stream` is
+common enough that trusting the header alone would fail on it. CSV, TSV, JSON,
+`.xlsx` and `.xls` are all read. A spreadsheet goes through pandas, which reads
+cell *types* rather than printed strings: an Excel date is a serial number, and
+reading it by hand is how every date in a file ends up wrong. An HTML page
+where a file was expected is reported as a failed download rather than an
+export of no rows — that is what a lapsed session looks like.
+
+Failing an export, `--api-path` points the scraper at the JSON endpoint the
+page calls to fill its table; failing that, it parses the HTML listing as
+before, which still serves any deployment that renders server-side.
 
 ```bash
 python -m tools.scrape_sightings \
@@ -107,6 +130,9 @@ python -m tools.scrape_sightings \
   --header 'Authorization: Bearer ...' \
   -o data/sightings_scraped.csv
 ```
+
+All three sources converge on the same column mapping, the same CSV and the
+same `core.data_loader`.
 
 The payload's wrapper is read rather than assumed — a bare list, `data`,
 `results`, `rows`, `items`, or Laravel's doubly-nested `{"data": {"data":
@@ -117,12 +143,12 @@ it. Booleans become 1/0, because `crop_damage: true` has to be countable.
 Where the API reports `next_page_url: null` the walk stops on its word;
 otherwise it falls back to the same no-new-rows rule as the HTML path.
 
-**Finding the endpoint.** It cannot be discovered from outside a browser —
+**Finding the endpoints.** Neither can be discovered from outside a browser —
 open the listing with developer tools on the Network tab, filter to Fetch/XHR,
-and read the request the page makes. `--probe` narrows the search by fetching
-the page's own script bundles and listing the API routes quoted inside them,
-ranked with the ones naming sightings first. Those are leads, not answers: a
-route in a bundle may be one the app never calls.
+**click Export**, and read the request it makes. `--probe` narrows the search
+by fetching the page's own script bundles and listing the API routes quoted
+inside them, export routes first and then the ones naming sightings. Those are
+leads, not answers: a route in a bundle may be one the app never calls.
 
 **Signing in.** There is no form to post, so `--cookie` (a session cookie from
 a signed-in browser) or `--header 'Authorization: Bearer ...'` is the way in.
@@ -173,9 +199,9 @@ about 110 m — enough to place someone in a village, not at a house. Only
 per-village counts reach the page, the brief or any download. Neither file is
 stored, and both file shapes are in `.gitignore`.
 
-**Forest Alerts API paths (optional).** `FORESTALERTS_API_PATH` and
-`FORESTALERTS_API_LOGIN_PATH`, in the environment or `.streamlit/secrets.toml`,
-pre-fill the landing page's endpoint fields. They are configuration rather than
+**Forest Alerts endpoints (optional).** `FORESTALERTS_EXPORT_PATH`,
+`FORESTALERTS_API_PATH` and `FORESTALERTS_API_LOGIN_PATH`, in the environment
+or `.streamlit/secrets.toml`, pre-fill the landing page's endpoint fields. They are configuration rather than
 secrets; the credentials are never stored.
 
 **MapTiler key (optional).** Set `MAPTILER_KEY` in `.streamlit/secrets.toml`
@@ -380,6 +406,7 @@ assets/              Hero photograph and partner logos
 data/boundaries/     Division, range, beat and reserve outlines
 data/centroids.csv   Bundled village centroids
 tools/api_source.py  JSON payload shapes, and API routes read from bundles
+tools/export_source.py  The Export button's download, whatever format it is
 tools/               Data preparation and the scraper, not imported by the app
 tests/replica.py     A local stand-in for the Forest Alerts admin site
 tests/               Unit tests, run with `pytest -q`
@@ -395,8 +422,9 @@ and were set against a 1,761-row Anuppur/Bandhavgarh export.
 uploads at 10 MB and disables usage stats.
 
 The landing-page fetch makes the deployment's only outbound request, so
-`requests` is a runtime dependency rather than a tools-only one, and the host
-has to be able to reach `mpforest.forestalerts.com`. Where it cannot, the fetch
+`requests` is a runtime dependency rather than a tools-only one, and `openpyxl`
+alongside it because an admin panel's Export button usually returns `.xlsx`.
+The host has to be able to reach `mpforest.forestalerts.com`. Where it cannot, the fetch
 fails with that reason on screen and the uploader still works.
 
 **Reboot after adding a constant to `core/config.py`.** Streamlit re-executes

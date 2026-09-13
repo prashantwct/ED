@@ -87,8 +87,9 @@ SOURCE_URL = "https://mpforest.forestalerts.com/admin/sightings"
 BROWSER_NOTE = (
     "Forest Alerts renders in the browser: its pages are a script shell with "
     "nothing in the HTML, so there is no form to sign into and no table to "
-    "read. The rows come from an API the page calls, and the app needs to be "
-    "told where that is."
+    "read. The rows come from an API the page calls. The listing's own Export "
+    "button is the best way to them -- one request for the register as the "
+    "department publishes it -- and the app needs to be told its address."
 )
 
 CREDENTIAL_NOTE = (
@@ -198,6 +199,7 @@ class FetchRequest:
     email: str
     password: str
     cookie: str
+    export_path: str = ""
     api_path: str = ""
     api_login_path: str = ""
 
@@ -223,6 +225,7 @@ def fetch_panel(
     end_date: str,
     api_path: str = "",
     api_login_path: str = "",
+    export_path: str = "",
 ) -> Optional[FetchRequest]:
     """The sign-in that pulls the register instead of uploading it.
 
@@ -259,13 +262,24 @@ def fetch_panel(
                      "here instead of the email and password.",
             )
             st.caption(
-                "Where the site serves its rows over an API rather than in the "
-                "page -- which Forest Alerts does -- the endpoint goes here. "
-                "Read it off the browser's Network tab, or from "
-                "`python -m tools.scrape_sightings --probe`."
+                "Forest Alerts serves its rows over an API rather than in the "
+                "page, so the app has to be told where to ask. Open the "
+                "sightings screen with the browser's Network tab showing and "
+                "read the addresses off it."
+            )
+            export = st.text_input(
+                "Export endpoint", value=export_path,
+                placeholder="/admin/sightings/export",
+                help="What the listing's Export button requests -- click it "
+                     "with the Network tab open. This is the best source "
+                     "there is: one request for the register as the "
+                     "department publishes it. Given this, the rows endpoint "
+                     "below is not used.",
             )
             api = st.text_input("Rows endpoint", value=api_path,
-                                placeholder="/api/sightings")
+                                placeholder="/api/sightings",
+                                help="What the page requests to fill its "
+                                     "table. Used when there is no export.")
             api_login = st.text_input(
                 "Sign-in endpoint", value=api_login_path,
                 placeholder="/api/login",
@@ -280,8 +294,8 @@ def fetch_panel(
     if not submitted:
         return None
     return FetchRequest(email=email.strip(), password=password,
-                        cookie=cookie.strip(), api_path=api.strip(),
-                        api_login_path=api_login.strip())
+                        cookie=cookie.strip(), export_path=export.strip(),
+                        api_path=api.strip(), api_login_path=api_login.strip())
 
 
 def source_note(label: str, detail: str) -> None:
