@@ -107,6 +107,27 @@ def test_a_rejected_sign_in_shows_the_reason_and_stays_on_the_landing_page(app):
     assert at.button[0].label == "Fetch the register"
 
 
+def test_a_login_the_app_cannot_fill_shows_the_page_report(site, monkeypatch):
+    """The diagnosis is several lines long. Markdown would run them into
+    one another, so the detail has to reach the screen as a block."""
+    from replica import APP_SHELL_PAGE, Handler
+    import core.fetch
+
+    Handler.login_html = APP_SHELL_PAGE
+    real = core.fetch.fetch_sightings
+    monkeypatch.setattr(
+        core.fetch, "fetch_sightings",
+        lambda **kw: real(**{**kw, "base_url": site, "delay": 0}),
+    )
+    at = _sign_in(AppTest.from_file(APP, default_timeout=TIMEOUT).run())
+
+    assert not at.exception
+    assert any("No login form" in e.value for e in at.error), [e.value for e in at.error]
+    blocks = " ".join(c.value for c in at.code)
+    assert "application shell" in blocks
+    assert "--cookie" in blocks
+
+
 def test_clearing_the_fetch_returns_to_the_landing_page(app):
     at = _sign_in(app.run())
     clear = next(b for b in at.button if b.label == "Clear")

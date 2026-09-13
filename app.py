@@ -167,7 +167,12 @@ def _fetch(request: landing.FetchRequest):
             )
         except FetchError as exc:
             status.update(label="Could not fetch the register", state="error")
-            st.error(str(exc))
+            # The diagnosis is several lines of page report; markdown
+            # would run them together, so it goes in a block.
+            headline, _, detail = str(exc).partition("\n")
+            st.error(headline)
+            if detail.strip():
+                st.code(detail.strip())
             return None
         status.update(
             label=f"Fetched {result.rows:,} row(s) from {result.pages} page(s)",
