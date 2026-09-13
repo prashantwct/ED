@@ -58,8 +58,14 @@ reach session state, where they go through the same cached load as an upload.
 `tests/test_app_fetch.py` asserts the password is absent from session state
 after a real round trip rather than merely unrendered.
 
+Because the site renders in the browser, the page also carries a **Rows
+endpoint** field and a **Sign-in endpoint** field: the API paths found on the
+Network tab. Set `FORESTALERTS_API_PATH` and `FORESTALERTS_API_LOGIN_PATH` as
+environment variables or in `.streamlit/secrets.toml` and they are pre-filled,
+so a division configures them once rather than per session.
+
 If the sign-in needs a one-time code, goes through SSO, or is a form built in
-JavaScript, paste a browser session cookie into the third field instead of the
+JavaScript, paste a browser session cookie into the cookie field instead of the
 email and password. The app shows the same page report the CLI does when it
 cannot find a form to fill.
 
@@ -83,10 +89,48 @@ The run finishes by loading its own output back through `core.data_loader`,
 which is the only check worth making — the scrape is correct when the dashboard
 accepts it, not when it parsed. `--no-verify` skips it.
 
-**When the login is not where or what this expects.** The first real run
-against the site failed with "no password field found at /login", which has
-several ordinary causes and only one of them is the site being a JavaScript
-app. So the login is no longer a single guess: `/login`, `/admin/login`,
+**Forest Alerts renders in the browser.** `--probe` settled it: `/` and
+`/login` both return a four-script shell around `<div id="app">` with no form,
+no table and zero characters of visible text, and `/admin/login` and
+`/auth/login` are not served at all. Nothing renders server-side, so there is
+no HTML to scrape — **the rows come from a JSON API the page calls after it
+boots, and that API is the only thing there is to read.**
+
+So the scraper takes either source. `--api-path` points it at the JSON
+endpoint; without one it parses the HTML listing as before, which still serves
+any deployment that renders server-side. Both paths converge on the same
+column mapping, the same CSV and the same `core.data_loader`.
+
+```bash
+python -m tools.scrape_sightings \
+  --api-path /api/sightings \
+  --header 'Authorization: Bearer ...' \
+  -o data/sightings_scraped.csv
+```
+
+The payload's wrapper is read rather than assumed — a bare list, `data`,
+`results`, `rows`, `items`, or Laravel's doubly-nested `{"data": {"data":
+[...]}}` — and a named wrapper wins over some other list in the same payload.
+Nested lookups give up their label, so `{"division": {"id": 3, "name":
+"Shahdol"}}` becomes a `Division` of "Shahdol" with `division.id` kept beside
+it. Booleans become 1/0, because `crop_damage: true` has to be countable.
+Where the API reports `next_page_url: null` the walk stops on its word;
+otherwise it falls back to the same no-new-rows rule as the HTML path.
+
+**Finding the endpoint.** It cannot be discovered from outside a browser —
+open the listing with developer tools on the Network tab, filter to Fetch/XHR,
+and read the request the page makes. `--probe` narrows the search by fetching
+the page's own script bundles and listing the API routes quoted inside them,
+ranked with the ones naming sightings first. Those are leads, not answers: a
+route in a bundle may be one the app never calls.
+
+**Signing in.** There is no form to post, so `--cookie` (a session cookie from
+a signed-in browser) or `--header 'Authorization: Bearer ...'` is the way in.
+Where the app's own sign-in endpoint is known, `--api-login-path` posts
+`{email, password}` as JSON to it and uses whatever comes back — a bearer
+token if it returns one, the session cookie if it sets one.
+
+**The login form, where a site has one.** `/login`, `/admin/login`,
 `/auth/login` and `/` are tried in turn, a password box is recognised whether
 or not it has a `name` attribute and whether or not it sits inside a `<form>`,
 and the failure reports what each candidate page actually held rather than
@@ -106,8 +150,7 @@ alongside it.
 
 A password box with no `name`, or one outside any `<form>`, is a form wired up
 in JavaScript: the server never receives a nameless field, so no script can
-sign in. That is what `--cookie` is for — sign in with a browser, copy the
-session cookie, and pass it instead of the email and password.
+sign in. That is what `--cookie` is for.
 
 On the command line, prefer the environment variables over `--password`, which
 is visible in `ps` and shell history.
@@ -129,6 +172,11 @@ than by having been anticipated. Coordinates are rounded to three decimals,
 about 110 m — enough to place someone in a village, not at a house. Only
 per-village counts reach the page, the brief or any download. Neither file is
 stored, and both file shapes are in `.gitignore`.
+
+**Forest Alerts API paths (optional).** `FORESTALERTS_API_PATH` and
+`FORESTALERTS_API_LOGIN_PATH`, in the environment or `.streamlit/secrets.toml`,
+pre-fill the landing page's endpoint fields. They are configuration rather than
+secrets; the credentials are never stored.
 
 **MapTiler key (optional).** Set `MAPTILER_KEY` in `.streamlit/secrets.toml`
 locally, or under Manage app → Settings → Secrets on Streamlit Cloud. See
@@ -331,6 +379,7 @@ core/ui.py           Design tokens, SVG icons, shared components
 assets/              Hero photograph and partner logos
 data/boundaries/     Division, range, beat and reserve outlines
 data/centroids.csv   Bundled village centroids
+tools/api_source.py  JSON payload shapes, and API routes read from bundles
 tools/               Data preparation and the scraper, not imported by the app
 tests/replica.py     A local stand-in for the Forest Alerts admin site
 tests/               Unit tests, run with `pytest -q`

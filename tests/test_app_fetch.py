@@ -37,10 +37,29 @@ def app(site, monkeypatch):
     return AppTest.from_file(APP, default_timeout=TIMEOUT)
 
 
-def _sign_in(at, email=EMAIL, password=PASSWORD, cookie=""):
-    at.text_input[0].set_value(email)
-    at.text_input[1].set_value(password)
-    at.text_input[2].set_value(cookie)
+FIELDS = {
+    "email": "Email",
+    "password": "Password",
+    "cookie": "Session cookie (only if your sign-in needs a one-time code)",
+    "api_path": "Rows endpoint",
+    "api_login_path": "Sign-in endpoint",
+}
+
+
+def _field(at, key):
+    """Address the form by label: it has grown fields, and an index that
+    silently means something else is worse than no test."""
+    label = FIELDS[key]
+    return next(w for w in at.text_input if w.label == label)
+
+
+def _sign_in(at, email=EMAIL, password=PASSWORD, cookie="",
+             api_path="", api_login_path=""):
+    for key, value in (
+        ("email", email), ("password", password), ("cookie", cookie),
+        ("api_path", api_path), ("api_login_path", api_login_path),
+    ):
+        _field(at, key).set_value(value)
     at.button[0].click().run()
     return at
 
@@ -48,16 +67,30 @@ def _sign_in(at, email=EMAIL, password=PASSWORD, cookie=""):
 def test_the_landing_page_offers_a_sign_in_beside_the_uploader(app):
     at = app.run()
     assert not at.exception
-    assert [w.label for w in at.text_input] == [
-        "Email",
-        "Password",
-        "Session cookie (only if your sign-in needs a one-time code)",
-    ]
+    assert [w.label for w in at.text_input] == list(FIELDS.values())
     assert at.button[0].label == "Fetch the register"
     # proto.type 1 is PASSWORD: both secrets are masked on screen, and
     # the cookie is a credential exactly as much as the password is.
-    assert at.text_input[1].proto.type == 1
-    assert at.text_input[2].proto.type == 1
+    assert _field(at, "password").proto.type == 1
+    assert _field(at, "cookie").proto.type == 1
+    # The endpoints are configuration, not secrets.
+    assert _field(at, "api_path").proto.type == 0
+
+
+def test_the_landing_page_says_the_site_renders_in_the_browser(app):
+    """The first real run failed because the site is a script shell. The
+    page has to say so before someone types a password into it."""
+    at = app.run()
+    markdown = " ".join(m.value for m in at.markdown)
+    assert "renders in the browser" in markdown
+    assert "API" in markdown
+
+
+def test_the_rows_endpoint_can_be_given_on_the_page(app):
+    at = _sign_in(app.run(), api_path="/api/sightings", api_login_path="/api/login")
+    assert not at.exception
+    assert any(f"Loaded {TOTAL_ROWS:,} valid rows" in s.value for s in at.success), \
+        [s.value for s in at.success]
 
 
 def test_the_landing_page_states_the_window_it_will_pull(app):

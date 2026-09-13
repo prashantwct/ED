@@ -123,5 +123,10 @@ def test_a_complete_sign_in_is_accepted():
     assert FetchRequest(email="a@b.c", password="p", cookie="").is_usable() is None
 
 
+def test_an_endpoint_without_credentials_is_still_refused():
+    assert FetchRequest(email="", password="", cookie="",
+                        api_path="/api/sightings").is_usable()
+
+
 def test_an_empty_form_is_refused():
     assert FetchRequest(email="", password="", cookie="").is_usable()

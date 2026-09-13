@@ -181,8 +181,11 @@ def test_a_session_that_lapses_mid_walk_is_re_established(site):
 
 
 def test_a_page_with_no_table_says_so_rather_than_writing_nothing(site):
-    with pytest.raises(ScrapeError, match="No data table"):
+    with pytest.raises(ScrapeError, match="no table in the HTML") as caught:
         _scrape(site, sightings_path="/admin/no-table")
+    # The live site turned out to be exactly this case, so the message
+    # has to point at the way through rather than just name the symptom.
+    assert "--api-path" in str(caught.value)
 
 
 def test_a_pasted_cookie_is_accepted_instead_of_a_login(site):
