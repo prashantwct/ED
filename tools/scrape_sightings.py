@@ -57,6 +57,16 @@ from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 
+from tools.api_source import (
+    ApiShapeError,
+    find_api_paths,
+    has_next_page,
+    last_page_from_json,
+    looks_like_json,
+    parse_json,
+    records_from_json,
+)
+
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://mpforest.forestalerts.com"
@@ -65,6 +75,10 @@ SIGHTINGS_PATH = "/admin/sightings"
 # cheap; failing with "no form at /login" when the form is at
 # /admin/login is a dead end the user has to diagnose themselves.
 LOGIN_PATHS = ("/login", "/admin/login", "/auth/login", "/")
+
+# Where a single-page application's own JavaScript is worth reading for
+# the routes it calls. Set --api-path once one is known.
+API_LOGIN_TOKEN_KEYS = ("token", "access_token", "accessToken", "api_token", "jwt")
 LOGIN_PATH = LOGIN_PATHS[0]
 
 # The register opens on 1 October 2025; there is nothing before it to
@@ -455,6 +469,7 @@ class _PageProbe(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.title = ""
         self.scripts = 0
+        self.script_srcs: List[str] = []
         self.mounts: List[str] = []
         self._text: List[str] = []
         self._in_title = False
@@ -466,6 +481,8 @@ class _PageProbe(HTMLParser):
             self._in_title = True
         elif tag == "script":
             self.scripts += 1
+            if values.get("src"):
+                self.script_srcs.append(values["src"])
             self._skipping += 1
         elif tag == "style":
             self._skipping += 1
@@ -499,6 +516,7 @@ class PageReport:
     forms: List[Form]
     loose: Form
     scripts: int
+    script_srcs: List[str]
     mounts: List[str]
     text_length: int
     mentions_password: bool
@@ -574,6 +592,7 @@ def diagnose(html: str, url: str = "", status: int = 200) -> PageReport:
         forms=forms,
         loose=loose,
         scripts=probe.scripts,
+        script_srcs=probe.script_srcs,
         mounts=probe.mounts,
         text_length=len(probe.text),
         mentions_password="password" in html.lower(),
@@ -587,6 +606,24 @@ COOKIE_ADVICE = (
     "-> Cookies), and pass that instead of --email/--password. Run with "
     "--probe to see this report again, or --dump-dir to keep the HTML."
 )
+
+SPA_ADVICE = (
+    "This site renders in the browser, so there is no HTML table to read and "
+    "no form to post: the rows come from an API the page calls after it "
+    "loads. Two things are needed.\n"
+    "  1. The endpoint. Open the listing in a browser with developer tools on "
+    "the Network tab, filter to Fetch/XHR, and read the request the page "
+    "makes; pass its path as --api-path. The routes --probe found in the "
+    "site's own JavaScript are leads towards it.\n"
+    "  2. Whatever authorises that request. Copy it from the same request: a "
+    "session cookie goes in --cookie, an Authorization header in "
+    "--header 'Authorization: Bearer ...'."
+)
+
+
+def _looks_like_sightings(path: str) -> bool:
+    lowered = path.lower()
+    return "sight" in lowered or "conflict" in lowered
 
 
 def _has_listing(html: str) -> bool:
@@ -766,6 +803,9 @@ class ForestAlertsScraper:
         *,
         sightings_path: str = SIGHTINGS_PATH,
         login_path: Optional[str] = None,
+        api_path: Optional[str] = None,
+        api_login_path: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
         timeout: float = 30.0,
         delay: float = 1.0,
         dump_dir: Optional[Path] = None,
@@ -776,12 +816,28 @@ class ForestAlertsScraper:
         self.login_urls = [
             urljoin(self.base_url + "/", path.lstrip("/")) for path in paths
         ]
+        # When the listing is an API rather than a page, this is what
+        # gets walked and the HTML path is never entered.
+        self.api_url = (
+            urljoin(self.base_url + "/", api_path.lstrip("/")) if api_path else None
+        )
+        self.api_login_url = (
+            urljoin(self.base_url + "/", api_login_path.lstrip("/"))
+            if api_login_path else None
+        )
         self.timeout = timeout
         self.delay = delay
         self.dump_dir = dump_dir
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT})
+        if headers:
+            self.session.headers.update(headers)
         self._credentials: Optional[Tuple[str, str]] = None
+
+    @property
+    def listing_url(self) -> str:
+        """Whichever of the two is actually being read."""
+        return self.api_url or self.sightings_url
 
     @property
     def login_url(self) -> str:
@@ -863,6 +919,83 @@ class ForestAlertsScraper:
             + COOKIE_ADVICE
         )
 
+    def api_login(self, email: str, password: str) -> None:
+        """Sign in by posting JSON, the way the page itself would.
+
+        A single-page application has no form to fill, so the only way in
+        with credentials is the endpoint its own script posts to. The
+        response may authorise by cookie, by token, or by both; a token
+        is put on the session as a bearer header because that is what the
+        page would do with it.
+        """
+        assert self.api_login_url is not None
+        self._credentials = (email, password)
+        response = self._request(
+            "POST",
+            self.api_login_url,
+            json={"email": email, "password": password},
+            headers={"Accept": "application/json"},
+        )
+        self._dump("api-login.json", response.text)
+        if response.status_code >= 400:
+            raise ScrapeError(
+                f"The sign-in at {self.api_login_url} returned HTTP "
+                f"{response.status_code}: {response.text[:300]}"
+            )
+        token = self._token_from(response.text)
+        if token:
+            self.session.headers["Authorization"] = f"Bearer {token}"
+            logger.info("Signed in; using the bearer token it returned")
+        elif not self.session.cookies:
+            raise ScrapeError(
+                f"{self.api_login_url} accepted the post but returned neither a "
+                "token this recognises nor a cookie. Sign in with a browser and "
+                "pass what its own request sends, via --cookie or --header."
+            )
+        else:
+            logger.info("Signed in; using the session cookie it set")
+
+    @staticmethod
+    def _token_from(body: str) -> Optional[str]:
+        if not looks_like_json(body):
+            return None
+        try:
+            payload = parse_json(body)
+        except ApiShapeError:
+            return None
+        stack = [payload]
+        while stack:
+            current = stack.pop(0)
+            if not isinstance(current, dict):
+                continue
+            for key in API_LOGIN_TOKEN_KEYS:
+                value = current.get(key)
+                if isinstance(value, str) and value:
+                    return value
+            stack.extend(v for v in current.values() if isinstance(v, dict))
+        return None
+
+    def discover_api(self, report: PageReport) -> List[str]:
+        """API routes named in the page's own JavaScript bundles.
+
+        Leads, not answers: a route quoted in a bundle may be one the app
+        never calls. It beats guessing, and it is the only thing readable
+        from outside a browser.
+        """
+        found: set = set()
+        for src in report.script_srcs[:12]:
+            url = urljoin(report.url, src)
+            try:
+                response = self._request("GET", url)
+            except ScrapeError as error:
+                logger.info("Could not read %s: %s", url, error)
+                continue
+            if response.status_code >= 400:
+                continue
+            self._dump(f"script-{_slug(url)}.js", response.text)
+            found.update(find_api_paths(response.text))
+        return sorted(found, key=lambda path: (not _looks_like_sightings(path), path))
+
     def probe(self) -> List[PageReport]:
         """Report what the candidate pages contain, without signing in.
 
@@ -870,7 +1003,10 @@ class ForestAlertsScraper:
         login that is not where or what it was expected to be.
         """
         reports = []
-        for url in [*self.login_urls, self.sightings_url]:
+        targets = [*self.login_urls, self.sightings_url]
+        if self.api_url:
+            targets.append(self.api_url)
+        for url in targets:
             response = self._request("GET", url)
             self._dump(f"probe-{_slug(url)}.html", response.text)
             reports.append(
@@ -931,14 +1067,24 @@ class ForestAlertsScraper:
         return params
 
     def fetch_page(self, page: int, start_date: str, end_date: str) -> str:
-        response = self._request(
-            "GET", self.sightings_url, params=self.page_params(page, start_date, end_date)
-        )
-        self._dump(f"page-{page:04d}.html", response.text)
+        response = self._get_listing(page, start_date, end_date)
+        suffix = "json" if self.api_url else "html"
+        self._dump(f"page-{page:04d}.{suffix}", response.text)
+
+        if response.status_code == 401 or response.status_code == 403:
+            raise ScrapeError(
+                f"{self.listing_url} refused the request with HTTP "
+                f"{response.status_code}. Whatever authorises it has expired or "
+                "was never sent -- refresh --cookie, or --header with the "
+                "Authorization the browser sends."
+            )
         if response.status_code >= 400:
             raise ScrapeError(
-                f"{self.sightings_url} page {page} returned HTTP {response.status_code}."
+                f"{self.listing_url} page {page} returned HTTP {response.status_code}."
             )
+        if self.api_url:
+            return response.text
+
         # A password box on a page that also carries the listing is a
         # profile widget, not an expired session.
         if looks_like_login(response.text) and not _has_listing(response.text):
@@ -949,12 +1095,37 @@ class ForestAlertsScraper:
                 )
             logger.warning("Session expired on page %s; logging in again", page)
             self.login(*self._credentials)
-            response = self._request(
-                "GET", self.sightings_url, params=self.page_params(page, start_date, end_date)
-            )
+            response = self._get_listing(page, start_date, end_date)
             if looks_like_login(response.text) and not _has_listing(response.text):
                 raise ScrapeError("Session expired and could not be re-established.")
         return response.text
+
+    def _get_listing(self, page: int, start_date: str, end_date: str) -> requests.Response:
+        headers = {"Accept": "application/json"} if self.api_url else {}
+        return self._request(
+            "GET",
+            self.listing_url,
+            params=self.page_params(page, start_date, end_date),
+            headers=headers,
+        )
+
+    def _rows_from(self, body: str, page: int) -> Tuple[List[Dict[str, str]], Optional[int], Optional[bool]]:
+        """One page's rows, from JSON or from HTML, plus what it says
+        about how many more there are."""
+        if self.api_url or looks_like_json(body):
+            payload = parse_json(body)
+            try:
+                raw = records_from_json(payload)
+            except ApiShapeError as error:
+                raise ScrapeError(
+                    f"{self.listing_url} page {page}: {error}"
+                ) from None
+            return raw, last_page_from_json(payload), has_next_page(payload)
+
+        table = choose_table(extract_tables(body))
+        if table is None:
+            return [], last_page_number(body), None
+        return table_records(table), last_page_number(body), None
 
     def iter_rows(
         self,
@@ -976,25 +1147,30 @@ class ForestAlertsScraper:
         for page in range(1, max_pages + 1):
             if page > 1 and self.delay:
                 time.sleep(self.delay)
-            html = self.fetch_page(page, start_date, end_date)
-            advertised = last_page_number(html)
+            body = self.fetch_page(page, start_date, end_date)
+            raw_rows, advertised, more = self._rows_from(body, page)
             if advertised and advertised > (expected_last or 0):
                 expected_last = advertised
                 if page == 1:
                     logger.info("Pagination reports %s page(s)", expected_last)
 
-            table = choose_table(extract_tables(html))
-            if table is None:
+            if not raw_rows:
                 if page == 1:
                     raise ScrapeError(
-                        "No data table found on the first page. The listing may "
-                        "render its rows in JavaScript; re-run with --dump-dir to "
-                        "capture the HTML and check."
+                        "No rows found on the first page. " + (
+                            "The API returned an empty list -- check the window "
+                            "and the filters."
+                            if self.api_url else
+                            "There is no table in the HTML, which is what a "
+                            "listing rendered in the browser looks like. Run "
+                            "--probe to confirm, then read the endpoint off the "
+                            "Network tab and pass it as --api-path."
+                        )
                     )
-                logger.info("Page %s has no table; stopping", page)
+                logger.info("Page %s is empty; stopping", page)
                 break
 
-            records = [map_record(raw) for raw in table_records(table)]
+            records = [map_record(raw) for raw in raw_rows]
             fresh: List[Dict[str, str]] = []
             for record in records:
                 mark = fingerprint(record)
@@ -1021,6 +1197,10 @@ class ForestAlertsScraper:
             if progress is not None:
                 progress(page, total)
             yield from fresh
+
+            if more is False:
+                logger.info("The API reports no further pages; stopping")
+                break
         else:
             logger.warning(
                 "Stopped at the --max-pages limit of %s; the pull may be short.",
@@ -1046,6 +1226,9 @@ def scrape(
     cookie: Optional[str] = None,
     login_path: Optional[str] = None,
     sightings_path: str = SIGHTINGS_PATH,
+    api_path: Optional[str] = None,
+    api_login_path: Optional[str] = None,
+    headers: Optional[Dict[str, str]] = None,
     max_pages: int = 500,
     delay: float = 1.0,
     timeout: float = 30.0,
@@ -1063,6 +1246,9 @@ def scrape(
         base_url,
         sightings_path=sightings_path,
         login_path=login_path,
+        api_path=api_path,
+        api_login_path=api_login_path,
+        headers=headers,
         timeout=timeout,
         delay=delay,
         dump_dir=dump_dir,
@@ -1070,17 +1256,36 @@ def scrape(
     if cookie:
         scraper.use_cookie(cookie)
     if email and password:
-        scraper.login(email, password)
-    elif not cookie:
+        # A site with no form to post can still be signed into through
+        # the endpoint its own page uses, when that endpoint is known.
+        if api_login_path:
+            scraper.api_login(email, password)
+        else:
+            scraper.login(email, password)
+    elif not (cookie or (headers or {}).get("Authorization")):
         raise ScrapeError(
             "No credentials. Set FORESTALERTS_EMAIL and FORESTALERTS_PASSWORD, "
-            "or pass --cookie with a browser session cookie."
+            "or pass --cookie with a browser session cookie, or --header with "
+            "the Authorization the browser sends."
         )
 
-    logger.info("Scraping %s from %s to %s", scraper.sightings_url, start_date, end_date)
+    logger.info("Scraping %s from %s to %s", scraper.listing_url, start_date, end_date)
     return list(
         scraper.iter_rows(start_date, end_date, max_pages=max_pages, progress=progress)
     )
+
+
+def parse_headers(values: Sequence[str]) -> Dict[str, str]:
+    """``Name: Value`` strings from the command line, as a header dict."""
+    headers: Dict[str, str] = {}
+    for value in values or ():
+        name, separator, content = value.partition(":")
+        if not separator or not name.strip():
+            raise ScrapeError(
+                f"--header must be 'Name: Value', got {value!r}"
+            )
+        headers[name.strip()] = content.strip()
+    return headers
 
 
 def today() -> str:
@@ -1177,6 +1382,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                              "credentials, and is the place to start when the "
                              "login is not where this expects it.")
     parser.add_argument("--sightings-path", default=SIGHTINGS_PATH)
+    parser.add_argument("--api-path", default=os.environ.get("FORESTALERTS_API_PATH"),
+                        help="Read the rows from this JSON endpoint instead of "
+                             "the HTML listing. Required when the site renders "
+                             "in the browser; find it on the Network tab, or "
+                             "start from what --probe reads out of the bundles.")
+    parser.add_argument("--api-login-path",
+                        default=os.environ.get("FORESTALERTS_API_LOGIN_PATH"),
+                        help="Sign in by posting {email, password} as JSON here, "
+                             "for a site with no form to submit.")
+    parser.add_argument("--header", action="append", default=[], metavar="NAME: VALUE",
+                        help="An extra request header, repeatable. Use it for a "
+                             "bearer token: --header 'Authorization: Bearer ...'.")
     parser.add_argument("--max-pages", type=int, default=500)
     parser.add_argument("--delay", type=float, default=1.0,
                         help="Seconds between page requests (default: %(default)s)")
@@ -1186,12 +1403,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--no-verify", action="store_true",
                         help="Skip loading the result back through core.data_loader.")
     args = parser.parse_args(argv)
+    try:
+        headers = parse_headers(args.header)
+    except ScrapeError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
 
     if args.probe:
         scraper = ForestAlertsScraper(
             args.base_url,
             sightings_path=args.sightings_path,
             login_path=args.login_path,
+            api_path=args.api_path,
+            headers=headers,
             timeout=args.timeout,
             dump_dir=args.dump_dir,
         )
@@ -1206,7 +1430,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for line in report.lines():
                 print(line)
             print()
-        print(COOKIE_ADVICE)
+
+        shells = [r for r in reports if r.looks_like_an_app_shell]
+        if shells:
+            routes = scraper.discover_api(shells[0])
+            if routes:
+                print("API routes named in the site's own JavaScript:")
+                for route in routes[:40]:
+                    print(f"  {route}")
+                if len(routes) > 40:
+                    print(f"  ... and {len(routes) - 40} more")
+                print("\nThese are leads, not answers -- a route quoted in a "
+                      "bundle may be one the app never calls.\n")
+            else:
+                print("No API routes were readable in the page's scripts.\n")
+            print(SPA_ADVICE)
+        else:
+            print(COOKIE_ADVICE)
         return 0
 
     try:
@@ -1219,6 +1459,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             cookie=args.cookie,
             login_path=args.login_path,
             sightings_path=args.sightings_path,
+            api_path=args.api_path,
+            api_login_path=args.api_login_path,
+            headers=headers,
             max_pages=args.max_pages,
             delay=args.delay,
             timeout=args.timeout,

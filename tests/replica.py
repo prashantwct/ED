@@ -13,6 +13,7 @@ past the end re-serves the last one -- each of which is a way a real
 admin panel has of breaking a parser that assumed its own output.
 """
 
+import json
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
@@ -111,6 +112,47 @@ APP_SHELL_PAGE = """<!doctype html><html><head><title>Forest Alerts</title>
 <body><div id="app"></div><script>window.boot();</script></body></html>"""
 
 
+# What the real site turned out to be: a shell around a mount point,
+# with the rows arriving over an API after the page boots.
+SPA_SHELL = """<!doctype html><html><head><title>Forest Alerts</title>
+<script src="/build/app.js"></script></head>
+<body><div id="app"></div></body></html>"""
+
+# A bundle, with its routes surviving minification as string literals and
+# plenty of near-misses around them.
+APP_BUNDLE = """
+var e={LOGIN:"/api/login",ME:"/api/me"};
+function t(){return r.get("/api/sightings",{params:n})}
+function o(){return r.get("/api/divisions")}
+var i="/api/ranges",s="/api/beats/list";
+var css="/build/app.css",img="/img/logo.png",help="https://example.org/help";
+"""
+
+API_TOKEN = "tok-bearer-99"
+
+
+def _api_row(row):
+    """A sighting as an API returns one: nested lookups, mixed types."""
+    return {
+        "id": row["id"],
+        # ISO, the way an API sends a timestamp -- the HTML listing
+        # above sends a 12-hour clock in the date cell instead, so both
+        # shapes are covered.
+        "sighting_date": f"2025-10-{(row['id'] - 99):02d}T19:0{row['id'] % 10}:00",
+        "latitude": row["lat"],
+        "longitude": row["lng"],
+        "division": {"id": 1, "name": row["division"]},
+        "range": {"id": 2, "name": row["range"]},
+        "beat": {"id": 3, "name": row["beat"]},
+        "total_elephants": row["total"],
+        "tuskers": row["male"],
+        "crop_damage": bool(row["crop"]),
+        "human_death": row["death"],
+        "photos": ["a.jpg", "b.jpg"],
+        "reporter": {"id": 7},
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     """A small, deliberately awkward stand-in for the admin site."""
 
@@ -120,14 +162,24 @@ class Handler(BaseHTTPRequestHandler):
     advertise = (1, 2, 3)  # what the paginator links to
     login_path = "/login"  # where the login form is served, if anywhere
     login_html = None      # override the login page body
+    api_requests = []      # every API query the scraper sent
+    api_needs_token = True # whether /api/sightings checks Authorization
 
     def log_message(self, *args):  # keep pytest output clean
         pass
 
-    def _send(self, body, status=200, headers=()):
+    def _send_json(self, payload, status=200):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send(self, body, status=200, headers=(), content_type="text/html; charset=utf-8"):
         payload = body.encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         for key, value in headers:
             self.send_header(key, value)
@@ -140,6 +192,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query, keep_blank_values=True)
+        if parsed.path == "/build/app.js":
+            return self._send(APP_BUNDLE, content_type="application/javascript")
+        if parsed.path == "/spa":
+            return self._send(SPA_SHELL)
+        if parsed.path == "/api/sightings":
+            return self._api_sightings(query)
         if parsed.path == self.login_path:
             return self._send(self.login_html or LOGIN_PAGE)
         if parsed.path in ("/login", "/admin/login", "/auth/login", "/"):
@@ -169,9 +227,39 @@ class Handler(BaseHTTPRequestHandler):
             rows = ROWS[-PAGE_SIZE:]
         return self._send(_listing(page, rows, advertise=self.advertise))
 
+    def _api_sightings(self, query):
+        authorised = (
+            not self.api_needs_token
+            or f"Bearer {API_TOKEN}" == (self.headers.get("Authorization") or "")
+            or SESSION_COOKIE in (self.headers.get("Cookie") or "")
+        )
+        if not authorised:
+            return self._send_json({"message": "Unauthenticated."}, status=401)
+
+        page = int(query.get("page", ["1"])[0])
+        type(self).api_requests.append(query)
+        start = (page - 1) * PAGE_SIZE
+        rows = ROWS[start:start + PAGE_SIZE]
+        last = -(-TOTAL_ROWS // PAGE_SIZE)
+        return self._send_json({
+            "data": {
+                "current_page": page,
+                "last_page": last,
+                "total": TOTAL_ROWS,
+                "next_page_url": f"/api/sightings?page={page + 1}" if page < last else None,
+                "data": [_api_row(row) for row in rows],
+            }
+        })
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
-        form = parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
+        raw = self.rfile.read(length).decode("utf-8")
+        if urlparse(self.path).path == "/api/login":
+            sent = json.loads(raw)
+            if sent.get("email") != EMAIL or sent.get("password") != PASSWORD:
+                return self._send_json({"message": "Invalid credentials."}, status=422)
+            return self._send_json({"data": {"token": API_TOKEN}})
+        form = parse_qs(raw, keep_blank_values=True)
         if form.get("_token", [""])[0] != CSRF:
             return self._send("<h1>419 Page Expired</h1>", status=419)
         if form.get("email", [""])[0] != EMAIL or form.get("password", [""])[0] != PASSWORD:

@@ -6,6 +6,13 @@ logs in, walks the listing, and hands back the same CSV bytes the
 uploader would have produced, so everything downstream is unchanged.
 Both paths end in ``core.data_loader``, and there is no second parser.
 
+**The site renders in the browser.** Its login page is a script shell
+around an empty mount point, so there is no form to post and no table to
+read; the rows come from an API the page calls after it boots. Which
+endpoint that is cannot be discovered from outside a browser, so it is
+configuration: :func:`api_settings` reads it, and the form carries it.
+Until it is set, a fetch fails with the page report saying exactly that.
+
 **Credentials are a request parameter and nothing else.** They are read
 off the form, used for one sign-in, and never written to session state,
 a cache, a log or disk. That is why this module returns bytes rather
@@ -27,9 +34,10 @@ without the fetch button.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import date
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +49,27 @@ PAGE_DELAY_SECONDS = 0.5
 # Only used to describe the window when the scraper cannot be imported at
 # all; the real value is read from it below.
 FALLBACK_START_DATE = "2025-10-01"
+
+
+def api_settings() -> Tuple[str, str]:
+    """The API endpoints to pre-fill the form with, if any are known.
+
+    The site renders in the browser, so its rows arrive over an API
+    rather than in the page. Which endpoint that is has to be read off
+    the Network tab once and then kept: set FORESTALERTS_API_PATH (and
+    FORESTALERTS_API_LOGIN_PATH where signing in needs one), or put them
+    in .streamlit/secrets.toml, and the form is pre-filled from there.
+    """
+    listing = os.environ.get("FORESTALERTS_API_PATH", "")
+    login = os.environ.get("FORESTALERTS_API_LOGIN_PATH", "")
+    try:
+        import streamlit as st
+
+        listing = listing or str(st.secrets.get("FORESTALERTS_API_PATH", ""))
+        login = login or str(st.secrets.get("FORESTALERTS_API_LOGIN_PATH", ""))
+    except Exception:  # no secrets file, or no Streamlit context
+        pass
+    return listing.strip(), login.strip()
 
 
 def window(end_date: Optional[str] = None) -> Tuple[str, str]:
@@ -79,6 +108,9 @@ def fetch_sightings(
     password: str = "",
     *,
     cookie: str = "",
+    api_path: str = "",
+    api_login_path: str = "",
+    headers: Optional[Dict[str, str]] = None,
     end_date: Optional[str] = None,
     base_url: Optional[str] = None,
     delay: float = PAGE_DELAY_SECONDS,
@@ -126,6 +158,9 @@ def fetch_sightings(
             email=email or None,
             password=password or None,
             cookie=cookie or None,
+            api_path=api_path or None,
+            api_login_path=api_login_path or None,
+            headers=headers or None,
             start_date=START_DATE,
             end_date=window_end,
             delay=delay,

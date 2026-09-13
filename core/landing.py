@@ -84,6 +84,13 @@ OPTIONAL_COLUMNS = (
 
 SOURCE_URL = "https://mpforest.forestalerts.com/admin/sightings"
 
+BROWSER_NOTE = (
+    "Forest Alerts renders in the browser: its pages are a script shell with "
+    "nothing in the HTML, so there is no form to sign into and no table to "
+    "read. The rows come from an API the page calls, and the app needs to be "
+    "told where that is."
+)
+
 CREDENTIAL_NOTE = (
     "Your sign-in is used once, for this fetch, and is not stored: not in "
     "the session, not in a cache, not in a log. The app signs in as you, so "
@@ -191,9 +198,18 @@ class FetchRequest:
     email: str
     password: str
     cookie: str
+    api_path: str = ""
+    api_login_path: str = ""
 
     def is_usable(self) -> Optional[str]:
-        """The reason this cannot be submitted, or None."""
+        """The reason this cannot be submitted, or None.
+
+        Only the absence of any credential is refused here. An email and
+        password with no sign-in endpoint will not work against a site
+        that renders in the browser, but it works against one that does
+        not, and the fetch comes back with a report saying which this is
+        -- better than a form that refuses to try.
+        """
         if self.cookie:
             return None
         if not self.email or not self.password:
@@ -202,7 +218,12 @@ class FetchRequest:
         return None
 
 
-def fetch_panel(start_date: str, end_date: str) -> Optional[FetchRequest]:
+def fetch_panel(
+    start_date: str,
+    end_date: str,
+    api_path: str = "",
+    api_login_path: str = "",
+) -> Optional[FetchRequest]:
     """The sign-in that pulls the register instead of uploading it.
 
     Returns the submitted credentials once, on the rerun that follows the
@@ -222,6 +243,8 @@ def fetch_panel(start_date: str, end_date: str) -> Optional[FetchRequest]:
             f'{escape(end_date)}, into the same CSV the uploader takes.</div>',
             unsafe_allow_html=True,
         )
+        st.markdown(f'<div class="lp-note">{escape(BROWSER_NOTE)}</div>',
+                    unsafe_allow_html=True)
         with st.form("forestalerts_signin", clear_on_submit=True):
             email = st.text_input("Email", autocomplete="username",
                                   placeholder="you@mpforest.gov.in")
@@ -235,6 +258,20 @@ def fetch_panel(start_date: str, end_date: str) -> Optional[FetchRequest]:
                      "cookie from a browser already signed in and paste it "
                      "here instead of the email and password.",
             )
+            st.caption(
+                "Where the site serves its rows over an API rather than in the "
+                "page -- which Forest Alerts does -- the endpoint goes here. "
+                "Read it off the browser's Network tab, or from "
+                "`python -m tools.scrape_sightings --probe`."
+            )
+            api = st.text_input("Rows endpoint", value=api_path,
+                                placeholder="/api/sightings")
+            api_login = st.text_input(
+                "Sign-in endpoint", value=api_login_path,
+                placeholder="/api/login",
+                help="Only needed to use an email and password. Leave it empty "
+                     "and sign in with a session cookie instead.",
+            )
             submitted = st.form_submit_button("Fetch the register",
                                               type="primary")
         st.markdown(f'<div class="lp-note">{escape(CREDENTIAL_NOTE)}</div>',
@@ -243,7 +280,8 @@ def fetch_panel(start_date: str, end_date: str) -> Optional[FetchRequest]:
     if not submitted:
         return None
     return FetchRequest(email=email.strip(), password=password,
-                        cookie=cookie.strip())
+                        cookie=cookie.strip(), api_path=api.strip(),
+                        api_login_path=api_login.strip())
 
 
 def source_note(label: str, detail: str) -> None:

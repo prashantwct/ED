@@ -17,6 +17,8 @@ def site():
     Handler.advertise = (1, 2, 3)
     Handler.login_path = "/login"
     Handler.login_html = None
+    Handler.api_requests = []
+    Handler.api_needs_token = True
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
