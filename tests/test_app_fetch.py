@@ -41,6 +41,7 @@ FIELDS = {
     "email": "Email",
     "password": "Password",
     "cookie": "Session cookie (only if your sign-in needs a one-time code)",
+    "export_path": "Export endpoint",
     "api_path": "Rows endpoint",
     "api_login_path": "Sign-in endpoint",
 }
@@ -54,9 +55,10 @@ def _field(at, key):
 
 
 def _sign_in(at, email=EMAIL, password=PASSWORD, cookie="",
-             api_path="", api_login_path=""):
+             api_path="", api_login_path="", export_path=""):
     for key, value in (
         ("email", email), ("password", password), ("cookie", cookie),
+        ("export_path", export_path),
         ("api_path", api_path), ("api_login_path", api_login_path),
     ):
         _field(at, key).set_value(value)
@@ -84,6 +86,27 @@ def test_the_landing_page_says_the_site_renders_in_the_browser(app):
     markdown = " ".join(m.value for m in at.markdown)
     assert "renders in the browser" in markdown
     assert "API" in markdown
+
+
+def test_the_export_endpoint_can_be_given_on_the_page(app):
+    """The best source there is, reachable without editing config."""
+    from replica import SESSION_COOKIE
+
+    at = _sign_in(app.run(), email="", password="", cookie=SESSION_COOKIE,
+                  export_path="/admin/sightings/export")
+    assert not at.exception
+    assert any(f"Loaded {TOTAL_ROWS:,} valid rows" in s.value for s in at.success), \
+        [s.value for s in at.success]
+
+
+def test_the_export_is_preferred_over_the_rows_endpoint(app):
+    """Given both, the one request against a published file wins."""
+    from replica import Handler, SESSION_COOKIE
+
+    _sign_in(app.run(), email="", password="", cookie=SESSION_COOKIE,
+             export_path="/admin/sightings/export", api_path="/api/sightings")
+    assert len(Handler.export_requests) == 1
+    assert Handler.api_requests == []
 
 
 def test_the_rows_endpoint_can_be_given_on_the_page(app):

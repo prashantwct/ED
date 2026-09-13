@@ -6,6 +6,12 @@ logs in, walks the listing, and hands back the same CSV bytes the
 uploader would have produced, so everything downstream is unchanged.
 Both paths end in ``core.data_loader``, and there is no second parser.
 
+**The Export button is the best source.** The listing has one, and
+whatever it returns is the register as the department publishes it: one
+request, no pagination, and the columns the people who run the system
+chose. Where its endpoint is known it is used in preference to
+everything else here.
+
 **The site renders in the browser.** Its login page is a script shell
 around an empty mount point, so there is no form to post and no table to
 read; the rows come from an API the page calls after it boots. Which
@@ -51,6 +57,23 @@ PAGE_DELAY_SECONDS = 0.5
 FALLBACK_START_DATE = "2025-10-01"
 
 
+def export_setting() -> str:
+    """The Export button's endpoint, if it has been found and kept."""
+    return _setting("FORESTALERTS_EXPORT_PATH")
+
+
+def _setting(name: str) -> str:
+    value = os.environ.get(name, "")
+    if value:
+        return value.strip()
+    try:
+        import streamlit as st
+
+        return str(st.secrets.get(name, "")).strip()
+    except Exception:  # no secrets file, or no Streamlit context
+        return ""
+
+
 def api_settings() -> Tuple[str, str]:
     """The API endpoints to pre-fill the form with, if any are known.
 
@@ -60,16 +83,7 @@ def api_settings() -> Tuple[str, str]:
     FORESTALERTS_API_LOGIN_PATH where signing in needs one), or put them
     in .streamlit/secrets.toml, and the form is pre-filled from there.
     """
-    listing = os.environ.get("FORESTALERTS_API_PATH", "")
-    login = os.environ.get("FORESTALERTS_API_LOGIN_PATH", "")
-    try:
-        import streamlit as st
-
-        listing = listing or str(st.secrets.get("FORESTALERTS_API_PATH", ""))
-        login = login or str(st.secrets.get("FORESTALERTS_API_LOGIN_PATH", ""))
-    except Exception:  # no secrets file, or no Streamlit context
-        pass
-    return listing.strip(), login.strip()
+    return _setting("FORESTALERTS_API_PATH"), _setting("FORESTALERTS_API_LOGIN_PATH")
 
 
 def window(end_date: Optional[str] = None) -> Tuple[str, str]:
@@ -110,6 +124,7 @@ def fetch_sightings(
     cookie: str = "",
     api_path: str = "",
     api_login_path: str = "",
+    export_path: str = "",
     headers: Optional[Dict[str, str]] = None,
     end_date: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -160,6 +175,7 @@ def fetch_sightings(
             cookie=cookie or None,
             api_path=api_path or None,
             api_login_path=api_login_path or None,
+            export_path=export_path or None,
             headers=headers or None,
             start_date=START_DATE,
             end_date=window_end,

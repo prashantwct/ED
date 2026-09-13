@@ -57,6 +57,13 @@ from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 
+from tools.export_source import (
+    ExportFormatError,
+    detect_format,
+    records_from_csv_text,
+    suggested_filename,
+    to_csv_text,
+)
 from tools.api_source import (
     ApiShapeError,
     find_api_paths,
@@ -609,21 +616,33 @@ COOKIE_ADVICE = (
 
 SPA_ADVICE = (
     "This site renders in the browser, so there is no HTML table to read and "
-    "no form to post: the rows come from an API the page calls after it "
-    "loads. Two things are needed.\n"
-    "  1. The endpoint. Open the listing in a browser with developer tools on "
-    "the Network tab, filter to Fetch/XHR, and read the request the page "
-    "makes; pass its path as --api-path. The routes --probe found in the "
-    "site's own JavaScript are leads towards it.\n"
+    "no form to post. Open the listing in a browser with developer tools on "
+    "the Network tab, filtered to Fetch/XHR, and read two things off it.\n"
+    "  1. Where the rows come from. Click the listing's Export button and use "
+    "the request it makes: --export-path is one request against the file the "
+    "department already publishes, with no pagination to walk and no row "
+    "shape to infer, so it is the best source there is. Failing that, the "
+    "request the page makes to fill its table, as --api-path. The routes "
+    "--probe read out of the site's own JavaScript are leads towards both.\n"
     "  2. Whatever authorises that request. Copy it from the same request: a "
     "session cookie goes in --cookie, an Authorization header in "
     "--header 'Authorization: Bearer ...'."
 )
 
 
+# Words that mark a route as the Export button's, which is the lead
+# worth following before any other.
+_EXPORT_WORDS = ("export", "download", "csv", "excel", "xlsx")
+
+
 def _looks_like_sightings(path: str) -> bool:
     lowered = path.lower()
     return "sight" in lowered or "conflict" in lowered
+
+
+def _looks_like_export(path: str) -> bool:
+    lowered = path.lower()
+    return any(word in lowered for word in _EXPORT_WORDS)
 
 
 def _has_listing(html: str) -> bool:
@@ -805,6 +824,8 @@ class ForestAlertsScraper:
         login_path: Optional[str] = None,
         api_path: Optional[str] = None,
         api_login_path: Optional[str] = None,
+        export_path: Optional[str] = None,
+        export_method: str = "GET",
         headers: Optional[Dict[str, str]] = None,
         timeout: float = 30.0,
         delay: float = 1.0,
@@ -825,6 +846,14 @@ class ForestAlertsScraper:
             urljoin(self.base_url + "/", api_login_path.lstrip("/"))
             if api_login_path else None
         )
+        # The site's own Export button, which is one request against a
+        # file the department already publishes -- better than either
+        # walking its pages or inferring the shape of its API.
+        self.export_url = (
+            urljoin(self.base_url + "/", export_path.lstrip("/"))
+            if export_path else None
+        )
+        self.export_method = (export_method or "GET").upper()
         self.timeout = timeout
         self.delay = delay
         self.dump_dir = dump_dir
@@ -873,6 +902,18 @@ class ForestAlertsScraper:
         self.dump_dir.mkdir(parents=True, exist_ok=True)
         (self.dump_dir / name).write_text(text, encoding="utf-8")
 
+    def _dump_bytes(self, name: str, content: bytes) -> None:
+        """A download kept exactly as it arrived.
+
+        Writing converted text under the original extension would leave a
+        file called .xlsx holding CSV, and a debugging aid that lies
+        about what it holds is worse than none.
+        """
+        if self.dump_dir is None:
+            return
+        self.dump_dir.mkdir(parents=True, exist_ok=True)
+        (self.dump_dir / name).write_bytes(content)
+
     # -- auth -------------------------------------------------------------
 
     def use_cookie(self, cookie: str) -> None:
@@ -918,6 +959,58 @@ class ForestAlertsScraper:
             + "\n\n"
             + COOKIE_ADVICE
         )
+
+    def fetch_export(self, start_date: str, end_date: str) -> List[Dict[str, str]]:
+        """Download the site's export and read it as rows.
+
+        The same window and the same empty filters the listing gets, so
+        the file is the register over the period asked for rather than
+        whatever the screen last had selected.
+        """
+        assert self.export_url is not None
+        params = self.page_params(1, start_date, end_date)
+        params.pop("page", None)
+        logger.info("Downloading the export from %s", self.export_url)
+
+        if self.export_method == "POST":
+            response = self._request(self.export_method, self.export_url, data=params)
+        else:
+            response = self._request(self.export_method, self.export_url, params=params)
+
+        if response.status_code in (401, 403):
+            raise ScrapeError(
+                f"{self.export_url} refused the download with HTTP "
+                f"{response.status_code}. Refresh --cookie, or --header with "
+                "the Authorization the browser sends."
+            )
+        if response.status_code >= 400:
+            raise ScrapeError(
+                f"{self.export_url} returned HTTP {response.status_code}."
+            )
+
+        filename = suggested_filename(response.headers.get("Content-Disposition", ""))
+        content_type = response.headers.get("Content-Type", "")
+        # Kept as it arrived, before anything is made of it: if the parse
+        # is wrong, this is the file that says why.
+        self._dump_bytes(filename or "export.bin", response.content)
+
+        try:
+            fmt = detect_format(response.content, content_type, filename)
+            text = to_csv_text(response.content, fmt)
+        except ExportFormatError as error:
+            raise ScrapeError(str(error)) from None
+
+        logger.info("The export is %s%s, %s bytes",
+                    fmt, f" ({filename})" if filename else "", len(response.content))
+        self._dump("export-converted.csv", text)
+
+        records = records_from_csv_text(text)
+        if not records:
+            raise ScrapeError(
+                f"The export from {self.export_url} held no rows. Check the "
+                "window, and use --dump-dir to keep the file."
+            )
+        return records
 
     def api_login(self, email: str, password: str) -> None:
         """Sign in by posting JSON, the way the page itself would.
@@ -994,7 +1087,17 @@ class ForestAlertsScraper:
                 continue
             self._dump(f"script-{_slug(url)}.js", response.text)
             found.update(find_api_paths(response.text))
-        return sorted(found, key=lambda path: (not _looks_like_sightings(path), path))
+        # An export route first: it is one request against the file the
+        # site already publishes, so it beats every other lead here.
+        return sorted(
+            found,
+            key=lambda path: (
+                not (_looks_like_export(path) and _looks_like_sightings(path)),
+                not _looks_like_export(path),
+                not _looks_like_sightings(path),
+                path,
+            ),
+        )
 
     def probe(self) -> List[PageReport]:
         """Report what the candidate pages contain, without signing in.
@@ -1228,6 +1331,8 @@ def scrape(
     sightings_path: str = SIGHTINGS_PATH,
     api_path: Optional[str] = None,
     api_login_path: Optional[str] = None,
+    export_path: Optional[str] = None,
+    export_method: str = "GET",
     headers: Optional[Dict[str, str]] = None,
     max_pages: int = 500,
     delay: float = 1.0,
@@ -1248,6 +1353,8 @@ def scrape(
         login_path=login_path,
         api_path=api_path,
         api_login_path=api_login_path,
+        export_path=export_path,
+        export_method=export_method,
         headers=headers,
         timeout=timeout,
         delay=delay,
@@ -1268,6 +1375,14 @@ def scrape(
             "or pass --cookie with a browser session cookie, or --header with "
             "the Authorization the browser sends."
         )
+
+    if scraper.export_url:
+        # One request against the register as the department publishes
+        # it, so there is nothing to paginate and no shape to infer.
+        raw = scraper.fetch_export(start_date, end_date)
+        if progress is not None:
+            progress(1, len(raw))
+        return [map_record(row) for row in raw]
 
     logger.info("Scraping %s from %s to %s", scraper.listing_url, start_date, end_date)
     return list(
@@ -1387,6 +1502,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                              "the HTML listing. Required when the site renders "
                              "in the browser; find it on the Network tab, or "
                              "start from what --probe reads out of the bundles.")
+    parser.add_argument("--export-path", default=os.environ.get("FORESTALERTS_EXPORT_PATH"),
+                        help="The URL behind the listing's Export button. This "
+                             "is the best source there is -- one request, the "
+                             "register as the department publishes it. Click "
+                             "Export with the browser's Network tab open to "
+                             "read it.")
+    parser.add_argument("--export-method", default="GET", choices=["GET", "POST"],
+                        help="How the Export button sends its request "
+                             "(default: %(default)s).")
     parser.add_argument("--api-login-path",
                         default=os.environ.get("FORESTALERTS_API_LOGIN_PATH"),
                         help="Sign in by posting {email, password} as JSON here, "
@@ -1461,6 +1585,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             sightings_path=args.sightings_path,
             api_path=args.api_path,
             api_login_path=args.api_login_path,
+            export_path=args.export_path,
+            export_method=args.export_method,
             headers=headers,
             max_pages=args.max_pages,
             delay=args.delay,
