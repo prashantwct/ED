@@ -208,11 +208,40 @@ def _fetch(request: landing.FetchRequest):
     return result
 
 
+def _epicollect(force: bool = False):
+    """Sync the Epicollect5 damage projects behind a status panel.
+
+    The module keeps what it has synced for the life of the process and
+    only asks for entries uploaded since, so this is cheap after the
+    first pull; ``force`` asks even inside the resync interval.
+    """
+    from core.epicollect import EpicollectError, fetch_damage_reports
+
+    with st.status("Reading the Epicollect5 damage reports...", expanded=False) as status:
+        try:
+            result = fetch_damage_reports(
+                force=force, progress=lambda note: status.update(label=note)
+            )
+        except EpicollectError as exc:
+            status.update(label="Could not read Epicollect5", state="error")
+            st.error(str(exc))
+            return None
+        status.update(
+            label=f"Epicollect5: {result.rows:,} damage report(s), "
+            f"{result.requests} request(s) to the server",
+            state="complete",
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # 1. Upload, or fetch, & load
 # ---------------------------------------------------------------------------
 # A fetch survives reruns under this key; nothing else about it does.
 FETCHED_KEY = "fetched_register"
+# The Epicollect5 toggle, and the last pull it produced.
+EPICOLLECT_ON = "epicollect_on"
+EPICOLLECT_KEY = "epicollect_result"
 
 # The masthead sits above the uploader but depends on whether a file
 # arrived, which is only known after the widget is created. A container
@@ -222,14 +251,15 @@ uploaded = st.file_uploader(
     "Upload the Gajrakshak sightings export (CSV)", type="csv"
 )
 fetched = st.session_state.get(FETCHED_KEY)
+use_epicollect = bool(st.session_state.get(EPICOLLECT_ON))
 
 with masthead:
-    if uploaded or fetched:
+    if uploaded or fetched or use_epicollect:
         landing.header()
     else:
         landing.hero()
 
-if not uploaded and not fetched:
+if not uploaded and not fetched and not use_epicollect:
     request = landing.fetch_panel(*fetch_window(), *api_settings(),
                                   export_setting())
     if request is not None:
@@ -241,8 +271,42 @@ if not uploaded and not fetched:
             if result is not None:
                 st.session_state[FETCHED_KEY] = result
                 st.rerun()
+    if st.button(
+        "Open the Epicollect5 crop and house damage reports",
+        help="Reads the public herd-crop-damage and herd-house-damage "
+        "projects. No sign-in needed.",
+    ):
+        st.session_state[EPICOLLECT_ON] = True
+        st.rerun()
     landing.details()
     st.stop()
+
+# Drawn before the load so switching the source off never depends on
+# the source having loaded.
+with st.sidebar.expander("Epicollect5 damage reports", expanded=use_epicollect):
+    st.caption(
+        "Crop and house damage reported through the herd-crop-damage and "
+        "herd-house-damage Epicollect5 projects. Division, range and beat are "
+        "read from the form where it asks, else from the forest boundary map."
+    )
+    st.checkbox("Include these reports", key=EPICOLLECT_ON)
+    refresh_epicollect = st.button(
+        "Check for new reports", disabled=not st.session_state.get(EPICOLLECT_ON),
+        help="Asks only for entries uploaded since the last check.",
+    )
+use_epicollect = bool(st.session_state.get(EPICOLLECT_ON))
+
+epicollect = None
+if use_epicollect:
+    epicollect = st.session_state.get(EPICOLLECT_KEY)
+    # False marks a pull that failed: it is retried from the button, not
+    # on every rerun, which would spend the API's rate limit on clicks.
+    if epicollect is None or refresh_epicollect:
+        result = _epicollect(force=refresh_epicollect)
+        st.session_state[EPICOLLECT_KEY] = epicollect = result or False
+    elif epicollect is False:
+        st.sidebar.warning("Epicollect5 could not be read. Use 'Check for new reports' to retry.")
+    epicollect = epicollect or None
 
 # A fetch is the source until it is cleared, and an upload overrides it.
 # The escape hatch is drawn before the load so that a fetch the loader
@@ -271,14 +335,49 @@ if fetched:
 
 if uploaded:
     source_bytes, source_name = uploaded.getvalue(), uploaded.name
-else:
+elif fetched:
     source_bytes, source_name = fetched.data, fetched.name
+else:
+    source_bytes = source_name = None
 
+frames, load_warnings = [], []
 try:
-    raw_df, load_warnings = _load(source_bytes, source_name)
+    if source_bytes is not None:
+        register, notes = _load(source_bytes, source_name)
+        if "Source" not in register.columns:
+            register = register.assign(Source="Gajrakshak register")
+        frames.append(register)
+        load_warnings += notes
+    if epicollect is not None and epicollect.rows:
+        damage, notes = _load(epicollect.data, "epicollect5.csv")
+        frames.append(damage)
+        load_warnings += [f"Epicollect5: {note}" for note in notes]
 except DataValidationError as exc:
     st.error(f"Could not load the file: {exc}")
     st.stop()
+
+if not frames:
+    st.info(
+        "No reports to show yet. Upload or fetch the Gajrakshak register, or "
+        "check the Epicollect5 panel in the sidebar."
+    )
+    st.stop()
+
+raw_df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+
+if epicollect is not None:
+    landing.source_note(
+        "Epicollect5",
+        f"{epicollect.rows:,} damage report(s) ("
+        + ", ".join(f"{slug}: {n:,}" for slug, n in epicollect.per_project.items())
+        + f"), checked {epicollect.fetched_at}.",
+    )
+    if len(frames) > 1:
+        st.caption(
+            "Damage reports and register entries are counted separately. An "
+            "incident reported through both counts twice, so the Source column "
+            "in the filtered data shows where each row came from."
+        )
 
 if load_warnings:
     with st.expander(f"{len(load_warnings)} data quality note(s)", expanded=False):
@@ -1087,7 +1186,7 @@ section("table", "Filtered data", f"{len(filtered):,} rows after filters")
 preview_cols = [
     c
     for c in [
-        "Date", "Division", "Range", "Beat", "Latitude", "Longitude",
+        "Date", "Source", "Division", "Range", "Beat", "Latitude", "Longitude",
         "Severity Score", "Is_Night", "Nearest Village", "Distance to Village (km)",
         "Crop Damage", "Grain Damage", "House Damage", "Injury", "Death",
     ]

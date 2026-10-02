@@ -34,6 +34,24 @@ Dates are parsed by trying each candidate format against the whole column,
 day-first first. Genuinely ambiguous files (every day ≤ 12) are read day-first
 and flagged. Non-UTF-8 files fall back to cp1252 then Latin-1.
 
+**Epicollect5 damage reports.** Crop and house damage reported through the
+public [herd-crop-damage](https://five.epicollect.net/project/herd-crop-damage)
+and [herd-house-damage](https://five.epicollect.net/project/herd-house-damage)
+projects can be read alongside the register, or on their own from the landing
+page. `core/epicollect.py` reads each project's form first and maps fields by
+input type (date, time, location) and question wording (division, beat,
+village, injured, killed, number of elephants), so it does not depend on how
+the questions are numbered or phrased. Each project fixes its damage type.
+Where a form records no division, range or beat, the point is placed in the
+vendored boundary polygons; a report on farmland outside every beat says so
+rather than borrowing the nearest. The API allows 5 requests a minute and asks
+for half that, so requests are spaced 24 s apart, pages are 500 entries, and
+after the first pull only entries uploaded since are requested -- what was
+fetched is kept for the life of the server. A report sent through both
+Epicollect and Gajrakshak counts twice; the `Source` column shows which is
+which. Private projects need `EPICOLLECT_CLIENT_ID` and
+`EPICOLLECT_CLIENT_SECRET` in secrets.
+
 **Fetching the export instead of uploading it.** Where no export button
 exists, the same rows can be pulled off the Forest Alerts admin listing — from
 the landing page, or from the command line:
@@ -406,6 +424,7 @@ core/config.py       Every tunable parameter
 core/csv_io.py       Encoding-tolerant CSV reading
 core/data_loader.py  Schema validation, date/time parsing, data-quality warnings
 core/fetch.py        The landing-page sign-in, bridged to the scraper
+core/epicollect.py   Epicollect5 crop and house damage projects
 core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief
