@@ -258,6 +258,17 @@ it is picked up automatically; the same applies to any partner added to
 
 ## What it produces
 
+**Conflict trends.** Directly under the assessment, before any ranking: monthly
+conflict stacked by type (fatality darkest, at the base, so a growing dark band
+reads before a growing total) with a three-month average and the escalation
+window shaded; the monthly conflict rate against the period average, so more
+patrolling is not mistaken for more conflict; people killed and injured per
+month; a year-by-month heatmap for seasonality; and each division's monthly
+conflict, labelled at the line end. The headline numbers carry monthly
+sparklines and their change over the escalation window, where a rise reads red.
+Escalating beats are drawn as prior-to-recent dumbbells rather than a "7 vs 2"
+column, and division conflict rates as ranked bars against the landscape rate.
+
 **Beat priorities.** Every beat gets a decision tier — Critical, High, Watch,
 Routine — with the evidence behind it: reports, conflict events, adjusted
 conflict rate, casualties recent and total, night share, village proximity,
@@ -391,7 +402,8 @@ core/config.py       Every tunable parameter
 core/csv_io.py       Encoding-tolerant CSV reading
 core/data_loader.py  Schema validation, date/time parsing, data-quality warnings
 core/fetch.py        The landing-page sign-in, bridged to the scraper
-core/analytics.py    Severity, conflict classification, KPIs, filters
+core/analytics.py    Severity, conflict classification, KPIs, filters, trends
+core/charts.py       Plotly figures for the trend views
 core/intelligence.py Beat priorities, escalation, timing, the brief
 core/hotspots.py     DBSCAN clustering and village risk
 core/coverage.py     Early-warning enrolment, de-identified at load
