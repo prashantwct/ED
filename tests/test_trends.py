@@ -121,3 +121,66 @@ def test_division_colours_are_distinct_and_order_independent():
     backward = charts.division_colors(["Shahdol", "Anuppur", "Umaria"])
     assert forward == backward
     assert len(set(forward.values())) == 3
+
+
+def _year_of_reports():
+    return _frame([
+        {"Date": f"2025-{m:02d}-10", "Crop Damage": m % 2, "Death": int(m == 4),
+         "Injury": int(m == 9), "Division": "North" if m % 3 else "South<script>",
+         "Hour": m, "Range": "R", "Beat": f"B{m % 4}", "Latitude": 23.0,
+         "Longitude": 81.0}
+        for m in range(1, 13)
+    ])
+
+
+def test_brief_draws_the_trend_charts_inline():
+    from core.analytics import compute_is_night, compute_severity
+    from core.report import generate_html_report
+
+    df = _year_of_reports()
+    df["Severity Score"] = compute_severity(df)
+    df["Is_Night"] = compute_is_night(df)
+    html = generate_html_report(df, df["Date"].min(), df["Date"].max())
+
+    assert "Conflict Trends" in html
+    assert "Conflict events per month by type" in html  # the stacked chart
+    assert "class='heatmap'" in html
+    assert "could not be drawn" not in html
+    # Division names come from the CSV and reach SVG text.
+    assert "<script>" not in html
+    # Self-contained: no script tags and no remote chart library.
+    assert "plotly" not in html.lower()
+
+
+def test_brief_svg_charts_are_well_formed():
+    import xml.etree.ElementTree as ET
+
+    from core import report_charts
+
+    df = _year_of_reports()
+    monthly = monthly_conflict_breakdown(df)
+    colors = charts.division_colors(df["Division"].unique())
+    beats = pd.DataFrame({"Beat": ["A&B", "C"], "Division": ["N", "S"],
+                          "Recent Conflicts": [9, 4], "Prior Conflicts": [2, 3]})
+    rates = pd.DataFrame({"Sightings": [10, 5], "Conflict Events": [5, 1],
+                          "Human Deaths": [0, 0], "Conflict Rate %": [50.0, 20.0]},
+                         index=["North", "South"])
+    hourly = pd.Series(range(24), index=range(24))
+    for svg in (
+        report_charts.conflict_type_trend_svg(monthly, 90, pd.Timestamp("2025-12-31")),
+        report_charts.conflict_rate_svg(monthly, 40.0),
+        report_charts.casualty_svg(monthly),
+        report_charts.division_trend_svg(division_monthly_conflict(df), colors),
+        report_charts.escalation_svg(beats),
+        report_charts.hourly_svg(hourly, 18, 6),
+        report_charts.division_rate_svg(rates, 40.0, colors),
+    ):
+        ET.fromstring(svg)  # raises on unescaped names or broken markup
+
+
+def test_heatmap_leaves_months_without_data_blank():
+    from core import report_charts
+
+    df = _frame([{"Date": "2024-11-02", "Crop Damage": 1}, {"Date": "2025-02-02"}])
+    html = report_charts.seasonal_heatmap_html(seasonal_matrix(df))
+    assert html.count("heat-na") == 24 - 4  # Nov 2024 to Feb 2025 are covered

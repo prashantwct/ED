@@ -337,6 +337,10 @@ cannot drift apart. The brief names the divisions it covers in its header and
 embeds both maps as inline SVG over a basemap stitched from map tiles at
 generation time and inlined as a JPEG, so it stays a single self-contained file
 that prints.
+The trend charts, escalation dumbbells, hourly profile and division rates are
+drawn into the brief as inline SVG in the dashboard's colours -- no chart
+library, no script -- with the seasonal grid as a shaded table, so the brief
+still opens offline and prints as it looks on screen.
 
 ## Design rules
 
@@ -404,6 +408,7 @@ core/data_loader.py  Schema validation, date/time parsing, data-quality warnings
 core/fetch.py        The landing-page sign-in, bridged to the scraper
 core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/charts.py       Plotly figures for the trend views
+core/report_charts.py The same views as static SVG for the brief
 core/intelligence.py Beat priorities, escalation, timing, the brief
 core/hotspots.py     DBSCAN clustering and village risk
 core/coverage.py     Early-warning enrolment, de-identified at load
