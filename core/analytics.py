@@ -390,3 +390,162 @@ def hourly_conflict_profile(df: pd.DataFrame) -> pd.Series:
     observed = hours.astype(int).value_counts()
     counts.update(observed.reindex(range(24)).dropna().astype(int))
     return counts
+
+
+# --- Trend views ------------------------------------------------------------
+# Conflict types drawn in the trend charts, most severe first. Presence is
+# not conflict, so it is left out rather than stacked under the rest.
+TREND_CATEGORIES = ["Death", "Injury", "House", "Crop"]
+
+
+def _month_index(dates: pd.Series) -> pd.PeriodIndex:
+    """Every month from the first report to the last, gaps included.
+
+    A month with no conflict is a zero, not a missing point: dropping it
+    draws a line straight across the quiet spell and hides it.
+    """
+    months = dates.dt.to_period("M")
+    return pd.period_range(months.min(), months.max(), freq="M", name="Month")
+
+
+def monthly_conflict_breakdown(df: pd.DataFrame) -> pd.DataFrame:
+    """Conflict events per month by type, with rate and casualties.
+
+    One row per calendar month, zero-filled. Columns: one per
+    ``TREND_CATEGORIES`` entry, ``Conflict Events``, ``Sightings``,
+    ``Conflict Rate %``, ``Human Deaths``, ``People Injured`` and
+    ``Rolling Conflicts`` (a trailing three-month mean, which is what
+    separates a trend from a noisy month).
+    """
+    columns = TREND_CATEGORIES + [
+        "Conflict Events", "Sightings", "Conflict Rate %",
+        "Human Deaths", "People Injured", "Rolling Conflicts",
+    ]
+    if df.empty or "Date" not in df.columns or df["Date"].isna().all():
+        return pd.DataFrame(columns=columns)
+
+    dated = df[df["Date"].notna()]
+    index = _month_index(dated["Date"])
+    month = dated["Date"].dt.to_period("M")
+
+    category = classify_conflict(dated)
+    out = (
+        pd.crosstab(month, category)
+        .reindex(index=index, columns=TREND_CATEGORIES, fill_value=0)
+        .astype(int)
+    )
+    out["Conflict Events"] = out[TREND_CATEGORIES].sum(axis=1)
+    out["Sightings"] = month.value_counts().reindex(index, fill_value=0).astype(int)
+    out["Conflict Rate %"] = (
+        (out["Conflict Events"] / out["Sightings"].where(out["Sightings"] > 0) * 100)
+        .round(1)
+    )
+    out["Human Deaths"] = human_deaths(dated).groupby(month).sum().reindex(index, fill_value=0)
+    out["People Injured"] = (
+        human_injuries(dated).groupby(month).sum().reindex(index, fill_value=0)
+    )
+    out["Rolling Conflicts"] = out["Conflict Events"].rolling(3, min_periods=1).mean().round(1)
+    out.columns.name = None
+    out.index = out.index.to_timestamp()
+    out.index.name = "Month"
+    return out[columns]
+
+
+def seasonal_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    """Conflict events by year (rows) and calendar month (columns).
+
+    Reading down a column compares the same month across years, which is
+    the only fair comparison for a seasonal species. Months outside the
+    data's span are NaN, not zero, so they are not read as quiet.
+    """
+    month_names = [pd.Timestamp(2000, m, 1).strftime("%b") for m in range(1, 13)]
+    if df.empty or "Date" not in df.columns or df["Date"].isna().all():
+        return pd.DataFrame(columns=month_names)
+
+    dated = df[df["Date"].notna()]
+    conflicts = dated[conflict_mask(dated)]
+    span = _month_index(dated["Date"])
+    years = sorted(span.year.unique())
+
+    counts = (
+        pd.crosstab(conflicts["Date"].dt.year, conflicts["Date"].dt.month)
+        if not conflicts.empty
+        else pd.DataFrame()
+    )
+    matrix = pd.DataFrame(np.nan, index=years, columns=range(1, 13))
+    for period in span:
+        value = 0
+        if period.year in counts.index and period.month in counts.columns:
+            value = int(counts.loc[period.year, period.month])
+        matrix.loc[period.year, period.month] = value
+    matrix.columns = month_names
+    matrix.index.name = "Year"
+    return matrix
+
+
+def division_monthly_conflict(df: pd.DataFrame) -> pd.DataFrame:
+    """Conflict events per month per division, long form, zero-filled."""
+    columns = ["Month", "Division", "Conflict Events"]
+    if df.empty or "Division" not in df.columns or "Date" not in df.columns:
+        return pd.DataFrame(columns=columns)
+
+    dated = df[df["Date"].notna()]
+    if dated.empty:
+        return pd.DataFrame(columns=columns)
+
+    index = _month_index(dated["Date"])
+    conflicts = dated[conflict_mask(dated)]
+    divisions = sorted(dated["Division"].astype(str).unique())
+    grid = (
+        pd.crosstab(
+            conflicts["Date"].dt.to_period("M"), conflicts["Division"].astype(str)
+        )
+        if not conflicts.empty
+        else pd.DataFrame()
+    ).reindex(index=index, columns=divisions, fill_value=0)
+    grid.index = grid.index.to_timestamp()
+    grid.index.name = "Month"
+    return (
+        grid.reset_index()
+        .melt(id_vars="Month", var_name="Division", value_name="Conflict Events")
+        .astype({"Conflict Events": int})[columns]
+    )
+
+
+def window_comparison(
+    df: pd.DataFrame, days: int, as_of: Optional[pd.Timestamp] = None
+) -> Dict[str, float]:
+    """Conflict, casualties and rate in the last ``days`` against the ``days`` before.
+
+    Anchored to ``as_of`` (default: the last report) so the headline
+    change matches the period the reader selected. Returns NaN prior
+    figures when the data does not reach back a full prior window,
+    rather than comparing against a half-empty one.
+    """
+    keys = ["conflicts", "casualties", "rate"]
+    blank = {f"{k}_{w}": float("nan") for k in keys for w in ("recent", "prior")}
+    if df.empty or "Date" not in df.columns or df["Date"].isna().all():
+        return blank
+
+    end = pd.Timestamp(as_of) if as_of is not None else df["Date"].max()
+    end = end.normalize() + pd.Timedelta(days=1)
+    recent_start = end - pd.Timedelta(days=days)
+    prior_start = recent_start - pd.Timedelta(days=days)
+
+    def figures(frame: pd.DataFrame) -> Dict[str, float]:
+        conflicts = float(conflict_mask(frame).sum()) if len(frame) else 0.0
+        return {
+            "conflicts": conflicts,
+            "casualties": float(human_deaths(frame).sum() + human_injuries(frame).sum())
+            if len(frame) else 0.0,
+            "rate": conflicts / len(frame) * 100 if len(frame) else float("nan"),
+        }
+
+    recent = figures(df[(df["Date"] >= recent_start) & (df["Date"] < end)])
+    out = {f"{k}_recent": v for k, v in recent.items()}
+    if df["Date"].min() > prior_start:
+        out.update({f"{k}_prior": float("nan") for k in keys})
+    else:
+        prior = figures(df[(df["Date"] >= prior_start) & (df["Date"] < recent_start)])
+        out.update({f"{k}_prior": v for k, v in prior.items()})
+    return out

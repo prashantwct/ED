@@ -7,18 +7,26 @@ evidence beside each claim, and closes with the data's limits.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from html import escape
 from typing import Dict, List, Optional
 
 import pandas as pd
 
+from core import report_charts
 from core.analytics import (
     classify_conflict,
     division_conflict_rate,
+    division_monthly_conflict,
+    monthly_conflict_breakdown,
     night_day_comparison,
+    seasonal_matrix,
     severity_distribution,
+    window_comparison,
 )
+from core.charts import division_colors
+from core.config import NIGHT_HOUR_END, NIGHT_HOUR_START
 from core.map_export import (
     filter_summary,
     sightings_map_svg,
@@ -32,6 +40,8 @@ from core.intelligence import (
     management_brief,
 )
 from core.map_engine import DEFAULT_BASEMAP
+
+logger = logging.getLogger(__name__)
 
 _CSS = """
     body { font-family: 'Segoe UI', Arial, sans-serif; color: #222; margin: 0; background: #f4f6f5; }
@@ -80,6 +90,20 @@ _CSS = """
     .map-figure { margin: 12px 0 20px 0; border: 1px solid #dce8e0; border-radius: 8px;
                   overflow: hidden; background: #fff; }
     .map-figure svg { display: block; width: 100%; height: auto; }
+    .chart { margin: 10px 0 6px 0; break-inside: avoid; page-break-inside: avoid; }
+    .chart svg { display: block; width: 100%; height: auto; }
+    .chart-title { font-size: 13.5px; font-weight: 600; color: #16221c; margin: 18px 0 2px 0; }
+    .chart-grid { display: flex; gap: 20px; flex-wrap: wrap; }
+    .chart-grid > div { flex: 1 1 400px; min-width: 0; }
+    .kpi-card .change { font-size: 12px; margin-top: 4px; color: #5a6b62; }
+    .kpi-card .change b.up { color: #b3261e; }
+    .kpi-card .change b.down { color: #1f5f3f; }
+    table.heatmap { font-size: 12px; }
+    table.heatmap td.heat { text-align: center; padding: 7px 4px;
+                            -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    table.heatmap td.heat-na { background: #fafbfa; }
+    @media print { .header, .kpi-card, .chart svg { -webkit-print-color-adjust: exact;
+                   print-color-adjust: exact; } }
 """
 
 _TIER_CLASSES = {
@@ -133,6 +157,8 @@ def generate_html_report(
     """
     brief = management_brief(df, recent_days=recent_days)
     kpis = brief["kpis"]
+    as_of = None if end_date is None or pd.isna(end_date) else pd.Timestamp(end_date)
+    change = window_comparison(df, recent_days, as_of=as_of)
 
     period_str = _format_period(start_date, end_date)
     night_pct_str = (
@@ -164,11 +190,13 @@ def generate_html_report(
 
     <div class="kpi-grid">
       <div class="kpi-card"><div class="label">Reports</div><div class="value">{kpis['entries']:,}</div></div>
-      <div class="kpi-card"><div class="label">Conflict Events</div><div class="value">{kpis['conflicts']:,}</div></div>
+      <div class="kpi-card"><div class="label">Conflict Events</div><div class="value">{kpis['conflicts']:,}</div>{_change_html(change, "conflicts", recent_days)}</div>
       <div class="{casualty_class}"><div class="label">People Killed</div><div class="value">{deaths}</div></div>
-      <div class="{casualty_class}"><div class="label">People Injured</div><div class="value">{injuries}</div></div>
+      <div class="{casualty_class}"><div class="label">People Injured</div><div class="value">{injuries}</div>{_change_html(change, "casualties", recent_days, noun="casualties")}</div>
       <div class="kpi-card"><div class="label">Night Share</div><div class="value">{night_pct_str}</div></div>
     </div>
+
+    {_trend_section(df, kpis, recent_days, as_of)}
 
     <h2>Priority Beats <span class="sub">tier set by fixed rules; score orders within tier</span></h2>
     {_beat_table_html(brief["beats"])}
@@ -189,6 +217,7 @@ def generate_html_report(
     {_coverage_section(coverage, coverage_stats)}
 
     <h2>Escalating Beats <span class="sub">last {brief['coverage']['recent_days']} days vs the window before</span></h2>
+    {_escalation_chart(brief["escalating"])}
     {_escalation_html(brief["escalating"])}
 
     <h2>Timing <span class="sub">when to staff</span></h2>
@@ -198,6 +227,7 @@ def generate_html_report(
     {_conflict_breakdown_table(df)}
 
     <h2>Conflict Rate by Division</h2>
+    {_division_chart(df, kpis)}
     {_division_html(division_conflict_rate(df))}
 
     <h2>Severity Distribution</h2>
@@ -476,6 +506,9 @@ def _temporal_html(temporal: Dict[str, object]) -> str:
 
     hourly = temporal.get("hourly")
     if hourly is not None and len(hourly) and float(hourly.sum()) > 0:
+        parts.append(_chart(report_charts.hourly_svg(
+            hourly, NIGHT_HOUR_START, NIGHT_HOUR_END
+        )))
         cells = "".join(
             f"<td class='num'>{int(v)}</td>" for v in hourly.to_numpy()
         )
@@ -564,6 +597,103 @@ def _conflict_breakdown_table(df: pd.DataFrame) -> str:
         "<table><thead><tr><th>Conflict type</th><th class='num'>Reports</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
+
+
+def _chart(svg: str, title: str = "") -> str:
+    head = f"<div class='chart-title'>{escape(title)}</div>" if title else ""
+    return f"{head}<div class='chart'>{svg}</div>"
+
+
+def _change_html(change: Dict[str, float], key: str, days: int,
+                 noun: str = "") -> str:
+    """Recent window against the one before, for a KPI card."""
+    recent, prior = change.get(f"{key}_recent"), change.get(f"{key}_prior")
+    if recent is None or prior is None or pd.isna(recent) or pd.isna(prior):
+        return ""
+    diff = recent - prior
+    css = "up" if diff > 0 else "down" if diff < 0 else ""
+    pct = f" ({diff / prior:+.0%})" if prior > 0 else ""
+    what = f" {noun}" if noun else ""
+    return (
+        f"<div class='change'><b class='{css}'>{diff:+,.0f}{pct}</b>{what} "
+        f"last {days} days vs the {days} before</div>"
+    )
+
+
+def _trend_section(df: pd.DataFrame, kpis: Dict[str, float], recent_days: int,
+                   as_of: Optional[pd.Timestamp]) -> str:
+    """The trend charts, drawn as inline SVG so the brief stays one file.
+
+    Never allowed to take the brief down: a chart that cannot be drawn is
+    replaced by a note, and the tables further down still carry the data.
+    """
+    try:
+        monthly = monthly_conflict_breakdown(df)
+        if len(monthly) < 2:
+            return (
+                "<h2>Conflict Trends</h2><p class='empty-note'>The period covers "
+                "less than two months, so there is no trend to draw.</p>"
+            )
+        parts = [
+            "<h2>Conflict Trends <span class='sub'>is it getting worse, where, "
+            "and when in the year</span></h2>",
+            _chart(report_charts.conflict_type_trend_svg(monthly, recent_days, as_of),
+                   "Conflict events per month, by type"),
+            "<p class='table-note'>Darkest at the base is the most severe. A rising "
+            "dark band matters more than a rising total. The shaded band is the "
+            "escalation window.</p>",
+            "<div class='chart-grid'><div>",
+            _chart(report_charts.conflict_rate_svg(monthly, kpis["conflict_rate"]),
+                   "Conflict rate"),
+            "</div><div>",
+        ]
+        if float((monthly["Human Deaths"] + monthly["People Injured"]).sum()) > 0:
+            parts.append(_chart(report_charts.casualty_svg(monthly), "Casualties"))
+        else:
+            parts.append("<div class='chart-title'>Casualties</div>"
+                         "<p class='empty-note'>None recorded in the period.</p>")
+        parts.append("</div></div>")
+        parts.append("<div class='chart-title'>Seasonal pattern -- conflict events "
+                     "by month and year</div>")
+        parts.append(report_charts.seasonal_heatmap_html(seasonal_matrix(df)))
+        divisions = division_monthly_conflict(df)
+        if divisions["Division"].nunique() >= 2:
+            parts.append(_chart(
+                report_charts.division_trend_svg(
+                    divisions, division_colors(df["Division"].unique())
+                ),
+                "By division",
+            ))
+        return "".join(parts)
+    except Exception:  # noqa: BLE001 - report generation must never crash
+        logger.exception("Trend charts failed; brief generated without them")
+        return (
+            "<h2>Conflict Trends</h2><p class='empty-note'>The trend charts could "
+            "not be drawn for this selection.</p>"
+        )
+
+
+def _escalation_chart(escalating: pd.DataFrame) -> str:
+    if escalating.empty or "Recent Conflicts" not in escalating.columns:
+        return ""
+    try:
+        return _chart(report_charts.escalation_svg(escalating))
+    except Exception:  # noqa: BLE001 - the table below carries the same figures
+        logger.exception("Escalation chart failed")
+        return ""
+
+
+def _division_chart(df: pd.DataFrame, kpis: Dict[str, float]) -> str:
+    rates = division_conflict_rate(df)
+    if rates.empty:
+        return ""
+    try:
+        return _chart(report_charts.division_rate_svg(
+            rates, kpis["conflict_rate"], division_colors(df["Division"].unique())
+        ))
+    except Exception:  # noqa: BLE001 - the table below carries the same figures
+        logger.exception("Division chart failed")
+        return ""
 
 
 # ---------------------------------------------------------------------------

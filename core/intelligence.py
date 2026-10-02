@@ -288,6 +288,8 @@ def beat_intelligence(
     table = table.merge(trend, on=key_cols, how="left")
     table["Trend"] = table["Trend"].fillna(TREND_UNKNOWN)
     table["Recent vs Prior"] = table["Recent vs Prior"].fillna("n/a")
+    for col in ("Recent Conflicts", "Prior Conflicts"):
+        table[col] = table[col].fillna(0).astype(int)
 
     table["Confidence"] = table["Reports"].map(_confidence_label)
     table["Priority Score"] = _priority_score(table)
@@ -343,6 +345,8 @@ def _beat_columns() -> List[str]:
         "Bull-Type Conflict %",
         "Trend",
         "Recent vs Prior",
+        "Recent Conflicts",
+        "Prior Conflicts",
         "Recommended Action",
     ]
 
@@ -426,7 +430,10 @@ def _beat_trends(
     datasets shrink both to half the span; below ``MIN_WINDOW_DAYS`` no
     trend is claimed.
     """
-    empty = pd.DataFrame(columns=key_cols + ["Trend", "Recent vs Prior"])
+    empty = pd.DataFrame(
+        columns=key_cols
+        + ["Trend", "Recent vs Prior", "Recent Conflicts", "Prior Conflicts"]
+    )
     if "Date" not in df.columns or df["Date"].isna().all():
         return empty
 
@@ -476,7 +483,10 @@ def _beat_trends(
         f"{int(r)} vs {int(p)}" for r, p in zip(out["_recent"], out["_prior"])
     ]
 
-    return out.drop(columns=["_recent", "_prior"]).reset_index()
+    # Kept as numbers as well as the label, so the dashboard can draw
+    # the change rather than make the reader parse "7 vs 2".
+    out = out.rename(columns={"_recent": "Recent Conflicts", "_prior": "Prior Conflicts"})
+    return out.reset_index()
 
 
 def _confidence_label(reports: float) -> str:

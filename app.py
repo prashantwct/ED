@@ -20,13 +20,17 @@ from core.analytics import (
     compute_kpis,
     compute_severity,
     division_conflict_rate,
+    division_monthly_conflict,
     filter_dataframe,
+    monthly_conflict_breakdown,
     monthly_trend,
     night_day_comparison,
+    seasonal_matrix,
     severity_distribution,
+    window_comparison,
 )
-from core import boundaries, landing
-from core.config import LOG_PATH
+from core import boundaries, charts, landing
+from core.config import LOG_PATH, NIGHT_HOUR_END, NIGHT_HOUR_START
 from core.data_loader import load_and_validate_csv
 from core.exceptions import DataValidationError, SpatialEnrichmentError
 from core.fetch import api_settings, export_setting, window as fetch_window
@@ -96,6 +100,26 @@ FILTER_KEYS = ["flt_dates", "flt_divisions", "flt_ranges", "flt_beats", "flt_sev
 # Plot colours drawn from the shared tokens so charts, map and report agree.
 BRAND = "#1f5f3f"
 BRAND_ALT = "#C2570C"
+
+# Hover stays, the toolbar goes: field staff never use it and it covers
+# the legend on a narrow screen.
+CHART_CONFIG = {"displayModeBar": False}
+
+
+def _plot(fig) -> None:
+    st.plotly_chart(fig, width="stretch", config=CHART_CONFIG)
+
+
+def _change(recent: float, prior: float, unit: str = "") -> str | None:
+    """Signed change for a metric delta, or None when there is no prior."""
+    if prior != prior or recent != recent:
+        return None
+    diff = recent - prior
+    if unit == "pt":
+        return f"{diff:+.1f} pts"
+    if prior > 0:
+        return f"{diff:+,.0f} ({diff / prior:+.0%})"
+    return f"{diff:+,.0f}"
 
 
 def _frame_key(frame: pd.DataFrame) -> str:
@@ -184,11 +208,40 @@ def _fetch(request: landing.FetchRequest):
     return result
 
 
+def _epicollect(force: bool = False):
+    """Sync the Epicollect5 damage projects behind a status panel.
+
+    The module keeps what it has synced for the life of the process and
+    only asks for entries uploaded since, so this is cheap after the
+    first pull; ``force`` asks even inside the resync interval.
+    """
+    from core.epicollect import EpicollectError, fetch_damage_reports
+
+    with st.status("Reading the Epicollect5 damage reports...", expanded=False) as status:
+        try:
+            result = fetch_damage_reports(
+                force=force, progress=lambda note: status.update(label=note)
+            )
+        except EpicollectError as exc:
+            status.update(label="Could not read Epicollect5", state="error")
+            st.error(str(exc))
+            return None
+        status.update(
+            label=f"Epicollect5: {result.rows:,} damage report(s), "
+            f"{result.requests} request(s) to the server",
+            state="complete",
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # 1. Upload, or fetch, & load
 # ---------------------------------------------------------------------------
 # A fetch survives reruns under this key; nothing else about it does.
 FETCHED_KEY = "fetched_register"
+# The Epicollect5 toggle, and the last pull it produced.
+EPICOLLECT_ON = "epicollect_on"
+EPICOLLECT_KEY = "epicollect_result"
 
 # The masthead sits above the uploader but depends on whether a file
 # arrived, which is only known after the widget is created. A container
@@ -198,14 +251,15 @@ uploaded = st.file_uploader(
     "Upload the Gajrakshak sightings export (CSV)", type="csv"
 )
 fetched = st.session_state.get(FETCHED_KEY)
+use_epicollect = bool(st.session_state.get(EPICOLLECT_ON))
 
 with masthead:
-    if uploaded or fetched:
+    if uploaded or fetched or use_epicollect:
         landing.header()
     else:
         landing.hero()
 
-if not uploaded and not fetched:
+if not uploaded and not fetched and not use_epicollect:
     request = landing.fetch_panel(*fetch_window(), *api_settings(),
                                   export_setting())
     if request is not None:
@@ -217,8 +271,42 @@ if not uploaded and not fetched:
             if result is not None:
                 st.session_state[FETCHED_KEY] = result
                 st.rerun()
+    if st.button(
+        "Open the Epicollect5 crop and house damage reports",
+        help="Reads the public herd-crop-damage and herd-house-damage "
+        "projects. No sign-in needed.",
+    ):
+        st.session_state[EPICOLLECT_ON] = True
+        st.rerun()
     landing.details()
     st.stop()
+
+# Drawn before the load so switching the source off never depends on
+# the source having loaded.
+with st.sidebar.expander("Epicollect5 damage reports", expanded=use_epicollect):
+    st.caption(
+        "Crop and house damage reported through the herd-crop-damage and "
+        "herd-house-damage Epicollect5 projects. Division, range and beat are "
+        "read from the form where it asks, else from the forest boundary map."
+    )
+    st.checkbox("Include these reports", key=EPICOLLECT_ON)
+    refresh_epicollect = st.button(
+        "Check for new reports", disabled=not st.session_state.get(EPICOLLECT_ON),
+        help="Asks only for entries uploaded since the last check.",
+    )
+use_epicollect = bool(st.session_state.get(EPICOLLECT_ON))
+
+epicollect = None
+if use_epicollect:
+    epicollect = st.session_state.get(EPICOLLECT_KEY)
+    # False marks a pull that failed: it is retried from the button, not
+    # on every rerun, which would spend the API's rate limit on clicks.
+    if epicollect is None or refresh_epicollect:
+        result = _epicollect(force=refresh_epicollect)
+        st.session_state[EPICOLLECT_KEY] = epicollect = result or False
+    elif epicollect is False:
+        st.sidebar.warning("Epicollect5 could not be read. Use 'Check for new reports' to retry.")
+    epicollect = epicollect or None
 
 # A fetch is the source until it is cleared, and an upload overrides it.
 # The escape hatch is drawn before the load so that a fetch the loader
@@ -247,14 +335,49 @@ if fetched:
 
 if uploaded:
     source_bytes, source_name = uploaded.getvalue(), uploaded.name
-else:
+elif fetched:
     source_bytes, source_name = fetched.data, fetched.name
+else:
+    source_bytes = source_name = None
 
+frames, load_warnings = [], []
 try:
-    raw_df, load_warnings = _load(source_bytes, source_name)
+    if source_bytes is not None:
+        register, notes = _load(source_bytes, source_name)
+        if "Source" not in register.columns:
+            register = register.assign(Source="Gajrakshak register")
+        frames.append(register)
+        load_warnings += notes
+    if epicollect is not None and epicollect.rows:
+        damage, notes = _load(epicollect.data, "epicollect5.csv")
+        frames.append(damage)
+        load_warnings += [f"Epicollect5: {note}" for note in notes]
 except DataValidationError as exc:
     st.error(f"Could not load the file: {exc}")
     st.stop()
+
+if not frames:
+    st.info(
+        "No reports to show yet. Upload or fetch the Gajrakshak register, or "
+        "check the Epicollect5 panel in the sidebar."
+    )
+    st.stop()
+
+raw_df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+
+if epicollect is not None:
+    landing.source_note(
+        "Epicollect5",
+        f"{epicollect.rows:,} damage report(s) ("
+        + ", ".join(f"{slug}: {n:,}" for slug, n in epicollect.per_project.items())
+        + f"), checked {epicollect.fetched_at}.",
+    )
+    if len(frames) > 1:
+        st.caption(
+            "Damage reports and register entries are counted separately. An "
+            "incident reported through both counts twice, so the Source column "
+            "in the filtered data shows where each row came from."
+        )
 
 if load_warnings:
     with st.expander(f"{len(load_warnings)} data quality note(s)", expanded=False):
@@ -460,30 +583,67 @@ filtered = filter_dataframe(
 # ---------------------------------------------------------------------------
 kpis = compute_kpis(filtered)
 
+# Anchor casualty recency to the selected period's end, not to whatever
+# the current Division/Beat selection happens to end at.
+period_end = pd.Timestamp(date_range[1]) if len(date_range) == 2 else df["Date"].max()
+
+monthly = monthly_conflict_breakdown(filtered)
+change = window_comparison(filtered, recent_days, as_of=period_end)
+window_note = f"vs prior {recent_days}d"
+
+
+def _spark(column: str):
+    """Monthly series behind a headline number, when there is a trend to show."""
+    return monthly[column].tolist() if len(monthly) >= 3 else None
+
+
+# Each headline carries its monthly sparkline and the change over the
+# escalation window. Rises in conflict are bad news, so they read red.
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Reports", f"{kpis['entries']:,}")
+c1.metric("Reports", f"{kpis['entries']:,}", chart_data=_spark("Sightings"),
+          chart_type="bar", border=True)
 c2.metric(
     "Conflict events",
     f"{kpis['conflicts']:,}",
-    delta=None if pd.isna(kpis["conflict_rate"]) else f"{kpis['conflict_rate']:.1f}% of reports",
-    delta_color="off",
+    delta=_change(change["conflicts_recent"], change["conflicts_prior"]),
+    delta_color="inverse",
+    delta_description=window_note,
+    chart_data=_spark("Conflict Events"),
+    chart_type="area",
+    border=True,
 )
-c3.metric("People killed", f"{int(kpis['human_deaths'])}")
-c4.metric("People injured", f"{int(kpis['human_injuries'])}")
+c3.metric(
+    "Conflict rate",
+    "N/A" if pd.isna(kpis["conflict_rate"]) else f"{kpis['conflict_rate']:.1f}%",
+    delta=_change(change["rate_recent"], change["rate_prior"], unit="pt"),
+    delta_color="inverse",
+    delta_description=window_note,
+    chart_data=_spark("Conflict Rate %") if len(monthly) >= 3
+    and monthly["Conflict Rate %"].notna().all() else None,
+    border=True,
+)
+c4.metric(
+    "Killed / injured",
+    f"{int(kpis['human_deaths'])} / {int(kpis['human_injuries'])}",
+    delta=_change(change["casualties_recent"], change["casualties_prior"]),
+    delta_color="inverse",
+    delta_description=window_note,
+    chart_data=(monthly["Human Deaths"] + monthly["People Injured"]).tolist()
+    if len(monthly) >= 3 else None,
+    chart_type="bar",
+    border=True,
+)
 c5.metric(
     "Night share",
     "N/A" if pd.isna(kpis["night_pct"]) else f"{kpis['night_pct']:.1f}%",
     delta=f"of {kpis['night_known']:,} timed reports" if kpis["night_known"] else None,
     delta_color="off",
+    border=True,
 )
 
 if filtered.empty:
     st.warning("No rows match the current filters. Adjust the filters in the sidebar.")
     st.stop()
-
-# Anchor casualty recency to the selected period's end, not to whatever
-# the current Division/Beat selection happens to end at.
-period_end = pd.Timestamp(date_range[1]) if len(date_range) == 2 else df["Date"].max()
 
 brief = management_brief(filtered, recent_days=recent_days, as_of=period_end)
 
@@ -497,6 +657,54 @@ findings(brief["headlines"])
 with st.expander("How to read this", expanded=False):
     for caveat in brief["caveats"]:
         st.markdown(f"- {caveat}")
+
+
+# ---------------------------------------------------------------------------
+# 4b. Conflict trends
+# ---------------------------------------------------------------------------
+section(
+    "trend",
+    "Conflict trends",
+    "Is it getting worse, where, and when in the year. The shaded band is "
+    "the escalation window set in the sidebar.",
+)
+
+if len(monthly) < 2:
+    st.info("The selected period covers less than two months, so there is no trend to draw.")
+else:
+    st.markdown("**Conflict events per month, by type**")
+    _plot(charts.conflict_type_trend(monthly, recent_days=recent_days, as_of=period_end))
+    st.caption(
+        "Darkest at the base is the most severe. A rising dark band matters "
+        "more than a rising total."
+    )
+
+    rate_col, casualty_col = st.columns(2)
+    with rate_col:
+        st.markdown("**Conflict rate** -- share of reports that were conflict")
+        _plot(charts.conflict_rate_trend(monthly, kpis["conflict_rate"]))
+    with casualty_col:
+        st.markdown("**People killed and injured per month**")
+        if float((monthly["Human Deaths"] + monthly["People Injured"]).sum()) == 0:
+            st.success("No casualties recorded in the selected period.")
+        else:
+            _plot(charts.casualty_trend(monthly))
+
+    season_col, division_col = st.columns(2)
+    with season_col:
+        st.markdown("**Seasonal pattern** -- conflict events by month and year")
+        _plot(charts.seasonal_heatmap(seasonal_matrix(filtered)))
+        st.caption("Read down a column to compare the same month across years.")
+    with division_col:
+        st.markdown("**By division** -- conflict events per month")
+        division_long = division_monthly_conflict(filtered)
+        if division_long["Division"].nunique() < 2:
+            st.info("One division selected. Widen the Division filter to compare.")
+        else:
+            _plot(charts.division_trend(
+                division_long, charts.division_colors(df["Division"].unique())
+            ))
+            st.caption("Three-month average, so one busy month does not read as a trend.")
 
 
 # ---------------------------------------------------------------------------
@@ -843,13 +1051,20 @@ with esc_col:
     if escalating.empty:
         st.info("No beat shows a materially higher conflict count than the prior window.")
     else:
-        st.dataframe(
-            escalating[
-                ["Beat", "Division", "Recent vs Prior", "Human Deaths", "People Injured"]
-            ],
-            width="stretch",
-            hide_index=True,
+        _plot(charts.escalation_dumbbell(escalating))
+        st.caption(
+            f"Grey is the earlier window, red the recent one. "
+            f"{len(escalating)} beat(s) escalating; the largest rises are shown."
         )
+        with st.expander("Escalating beats as a table", expanded=False):
+            st.dataframe(
+                escalating[
+                    ["Beat", "Division", "Recent vs Prior", "Human Deaths",
+                     "People Injured"]
+                ],
+                width="stretch",
+                hide_index=True,
+            )
 
 with time_col:
     section("clock", "Timing", "When to staff the shift")
@@ -863,18 +1078,7 @@ with time_col:
     )
     hourly = temporal["hourly"]
     if float(hourly.sum()) > 0:
-        fig = px.bar(
-            x=hourly.index.astype(str),
-            y=hourly.to_numpy(),
-            labels={"x": "Hour of day (24h)", "y": "Conflict events"},
-        )
-        fig.update_traces(marker_color=BRAND)
-        fig.update_layout(
-            height=260,
-            margin=dict(t=10, b=10, l=10, r=10),
-            yaxis_gridcolor="rgba(128,128,128,0.2)",
-        )
-        st.plotly_chart(fig, width="stretch")
+        _plot(charts.hourly_profile(hourly, NIGHT_HOUR_START, NIGHT_HOUR_END))
     else:
         st.info("No timed conflict records, so no risk window can be identified.")
 
@@ -932,10 +1136,14 @@ with trend_col2:
     if rates.empty:
         st.info("No division data for the current filters.")
     else:
-        st.dataframe(rates, width="stretch")
+        _plot(charts.division_rate_bars(
+            rates, kpis["conflict_rate"], charts.division_colors(df["Division"].unique())
+        ))
         st.caption(
             "Rate, not raw volume: sighting counts mostly track reporting effort."
         )
+        with st.expander("Division figures as a table", expanded=False):
+            st.dataframe(rates, width="stretch")
 
 dist_col1, dist_col2 = st.columns(2)
 
@@ -978,7 +1186,7 @@ section("table", "Filtered data", f"{len(filtered):,} rows after filters")
 preview_cols = [
     c
     for c in [
-        "Date", "Division", "Range", "Beat", "Latitude", "Longitude",
+        "Date", "Source", "Division", "Range", "Beat", "Latitude", "Longitude",
         "Severity Score", "Is_Night", "Nearest Village", "Distance to Village (km)",
         "Crop Damage", "Grain Damage", "House Damage", "Injury", "Death",
     ]

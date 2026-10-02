@@ -34,6 +34,24 @@ Dates are parsed by trying each candidate format against the whole column,
 day-first first. Genuinely ambiguous files (every day ≤ 12) are read day-first
 and flagged. Non-UTF-8 files fall back to cp1252 then Latin-1.
 
+**Epicollect5 damage reports.** Crop and house damage reported through the
+public [herd-crop-damage](https://five.epicollect.net/project/herd-crop-damage)
+and [herd-house-damage](https://five.epicollect.net/project/herd-house-damage)
+projects can be read alongside the register, or on their own from the landing
+page. `core/epicollect.py` reads each project's form first and maps fields by
+input type (date, time, location) and question wording (division, beat,
+village, injured, killed, number of elephants), so it does not depend on how
+the questions are numbered or phrased. Each project fixes its damage type.
+Where a form records no division, range or beat, the point is placed in the
+vendored boundary polygons; a report on farmland outside every beat says so
+rather than borrowing the nearest. The API allows 5 requests a minute and asks
+for half that, so requests are spaced 24 s apart, pages are 500 entries, and
+after the first pull only entries uploaded since are requested -- what was
+fetched is kept for the life of the server. A report sent through both
+Epicollect and Gajrakshak counts twice; the `Source` column shows which is
+which. Private projects need `EPICOLLECT_CLIENT_ID` and
+`EPICOLLECT_CLIENT_SECRET` in secrets.
+
 **Fetching the export instead of uploading it.** Where no export button
 exists, the same rows can be pulled off the Forest Alerts admin listing — from
 the landing page, or from the command line:
@@ -258,6 +276,17 @@ it is picked up automatically; the same applies to any partner added to
 
 ## What it produces
 
+**Conflict trends.** Directly under the assessment, before any ranking: monthly
+conflict stacked by type (fatality darkest, at the base, so a growing dark band
+reads before a growing total) with a three-month average and the escalation
+window shaded; the monthly conflict rate against the period average, so more
+patrolling is not mistaken for more conflict; people killed and injured per
+month; a year-by-month heatmap for seasonality; and each division's monthly
+conflict, labelled at the line end. The headline numbers carry monthly
+sparklines and their change over the escalation window, where a rise reads red.
+Escalating beats are drawn as prior-to-recent dumbbells rather than a "7 vs 2"
+column, and division conflict rates as ranked bars against the landscape rate.
+
 **Beat priorities.** Every beat gets a decision tier — Critical, High, Watch,
 Routine — with the evidence behind it: reports, conflict events, adjusted
 conflict rate, casualties recent and total, night share, village proximity,
@@ -326,6 +355,10 @@ cannot drift apart. The brief names the divisions it covers in its header and
 embeds both maps as inline SVG over a basemap stitched from map tiles at
 generation time and inlined as a JPEG, so it stays a single self-contained file
 that prints.
+The trend charts, escalation dumbbells, hourly profile and division rates are
+drawn into the brief as inline SVG in the dashboard's colours -- no chart
+library, no script -- with the seasonal grid as a shaded table, so the brief
+still opens offline and prints as it looks on screen.
 
 ## Design rules
 
@@ -391,7 +424,10 @@ core/config.py       Every tunable parameter
 core/csv_io.py       Encoding-tolerant CSV reading
 core/data_loader.py  Schema validation, date/time parsing, data-quality warnings
 core/fetch.py        The landing-page sign-in, bridged to the scraper
-core/analytics.py    Severity, conflict classification, KPIs, filters
+core/epicollect.py   Epicollect5 crop and house damage projects
+core/analytics.py    Severity, conflict classification, KPIs, filters, trends
+core/charts.py       Plotly figures for the trend views
+core/report_charts.py The same views as static SVG for the brief
 core/intelligence.py Beat priorities, escalation, timing, the brief
 core/hotspots.py     DBSCAN clustering and village risk
 core/coverage.py     Early-warning enrolment, de-identified at load
