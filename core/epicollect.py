@@ -28,9 +28,16 @@ fetched is kept for the life of the server process, so reruns and other
 sessions reuse it instead of asking again.
 
 **Private projects** need a client app made by the project's creator or
-manager. Its id and secret are read from ``EPICOLLECT_CLIENT_ID`` and
-``EPICOLLECT_CLIENT_SECRET`` (environment or Streamlit secrets) and
-exchanged for a bearer token; the public projects need neither.
+a manager, and a client app opens only the project it was made in. So
+each project reads its own pair, named from its slug --
+``EPICOLLECT_HERD_CROP_DAMAGE_CLIENT_ID`` and ``..._CLIENT_SECRET`` --
+from the environment or Streamlit secrets, falling back to a shared
+``EPICOLLECT_CLIENT_ID``/``EPICOLLECT_CLIENT_SECRET``. The pair is
+exchanged for a bearer token, kept until shortly before it expires
+because the API issues only 10 an hour. A public project needs none.
+
+One project failing does not stop the other: what loaded is returned,
+and the failure is reported beside it.
 """
 
 from __future__ import annotations
@@ -106,8 +113,36 @@ def _setting(name: str) -> str:
         return ""
 
 
+def credential_names(slug: str) -> Tuple[str, str]:
+    """The secret names holding one project's client app credentials.
+
+    Epicollect5 client apps belong to a single project, so each private
+    project needs its own pair: herd-crop-damage reads
+    EPICOLLECT_HERD_CROP_DAMAGE_CLIENT_ID and ..._CLIENT_SECRET.
+    """
+    stem = "EPICOLLECT_" + re.sub(r"[^A-Z0-9]+", "_", slug.upper()).strip("_")
+    return f"{stem}_CLIENT_ID", f"{stem}_CLIENT_SECRET"
+
+
+def _credentials(slug: str) -> Optional[Tuple[str, str]]:
+    """The project's own pair, else the shared one, else None."""
+    for id_name, secret_name in (credential_names(slug),
+                                 ("EPICOLLECT_CLIENT_ID", "EPICOLLECT_CLIENT_SECRET")):
+        client_id, secret = _setting(id_name), _setting(secret_name)
+        if client_id and secret:
+            return client_id, secret
+    return None
+
+
+# slug -> (bearer token, monotonic expiry). Tokens last two hours and
+# the API issues at most 10 an hour, so one is reused until near expiry
+# rather than requested per pull.
+_TOKENS: Dict[str, Tuple[str, float]] = {}
+TOKEN_MARGIN_SECONDS = 300
+
+
 class _Client:
-    """One pull's HTTP session: paced, optionally authenticated."""
+    """One pull's HTTP session: paced, authenticated per project."""
 
     def __init__(self, base_url: str, interval: float,
                  sleep: Callable[[float], None] = time.sleep) -> None:
@@ -119,7 +154,6 @@ class _Client:
         self.session = requests.Session()
         self.session.headers["Accept"] = "application/json"
         self.requests = 0
-        self._token_tried = False
 
     def _pace(self, kind: str) -> None:
         with _LOCK:
@@ -129,54 +163,63 @@ class _Client:
                 self.sleep(wait)
             _LAST_REQUEST[kind] = time.monotonic()
 
-    def _authenticate(self) -> bool:
-        """Swap a configured client id and secret for a bearer token."""
-        if self._token_tried:
-            return "Authorization" in self.session.headers
-        self._token_tried = True
-        client_id = _setting("EPICOLLECT_CLIENT_ID")
-        secret = _setting("EPICOLLECT_CLIENT_SECRET")
-        if not (client_id and secret):
-            return False
+    def _token(self, slug: str, renew: bool = False) -> Optional[str]:
+        """A bearer token for this project, if credentials are configured."""
+        cached = _TOKENS.get(slug)
+        if cached and not renew and time.monotonic() < cached[1]:
+            return cached[0]
+        credentials = _credentials(slug)
+        if credentials is None:
+            return None
         self._pace("token")
         response = self.session.post(
             f"{self.base_url}/api/oauth/token",
-            json={"grant_type": "client_credentials", "client_id": client_id,
-                  "client_secret": secret},
+            json={"grant_type": "client_credentials", "client_id": credentials[0],
+                  "client_secret": credentials[1]},
             timeout=TIMEOUT_SECONDS,
         )
         if response.status_code != 200:
+            id_name, _ = credential_names(slug)
             raise EpicollectError(
-                "Epicollect5 refused the configured client id and secret "
-                f"(HTTP {response.status_code})."
+                f"Epicollect5 refused the client id and secret configured for "
+                f"{slug} (HTTP {response.status_code}). Check {id_name} and its "
+                "secret against the client app on that project's details page; "
+                "a client app only opens the project it was made in."
             )
-        self.session.headers["Authorization"] = (
-            f"Bearer {response.json()['access_token']}"
-        )
-        return True
+        payload = response.json()
+        lifetime = float(payload.get("expires_in") or 7200)
+        token = str(payload["access_token"])
+        _TOKENS[slug] = (token, time.monotonic() + lifetime - TOKEN_MARGIN_SECONDS)
+        return token
 
-    def get(self, kind: str, path: str, params: Optional[dict] = None) -> dict:
+    def get(self, kind: str, path: str, params: Optional[dict] = None,
+            slug: str = "") -> dict:
+        # Configured credentials are used from the first request, not
+        # after a refusal: a wasted call costs a twelfth of the minute.
+        token = self._token(slug) if slug else None
         for attempt in range(2):
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
             self._pace(kind)
             self.requests += 1
             response = self.session.get(
-                f"{self.base_url}{path}", params=params, timeout=TIMEOUT_SECONDS
+                f"{self.base_url}{path}", params=params, headers=headers,
+                timeout=TIMEOUT_SECONDS,
             )
             if response.status_code == 429:
                 raise EpicollectError(
                     "Epicollect5 is rate-limiting this server. Wait a few "
                     "minutes and refresh; what was already fetched is kept."
                 )
-            if response.status_code in (401, 403, 404) and attempt == 0 \
-                    and self._authenticate():
+            if response.status_code in (401, 403, 404) and attempt == 0 and token:
+                token = self._token(slug, renew=True)  # expired or revoked
                 continue
             if response.status_code != 200:
-                raise EpicollectError(_error_message(response, path))
+                raise EpicollectError(_error_message(response, path, slug, bool(token)))
             return response.json()
-        raise EpicollectError(_error_message(response, path))
+        raise EpicollectError(_error_message(response, path, slug, bool(token)))
 
 
-def _error_message(response, path: str) -> str:
+def _error_message(response, path: str, slug: str = "", authenticated: bool = False) -> str:
     detail = ""
     try:
         errors = response.json().get("errors") or []
@@ -185,11 +228,20 @@ def _error_message(response, path: str) -> str:
     except ValueError:
         pass
     if response.status_code in (401, 403, 404):
+        id_name, secret_name = credential_names(slug or "project")
+        if authenticated:
+            return (
+                f"Epicollect5 would not return {path} (HTTP {response.status_code}"
+                f"{detail}) even with the configured client app. Check that "
+                f"{id_name} belongs to a client app made in {slug}, not another "
+                "project."
+            )
         return (
             f"Epicollect5 would not return {path} (HTTP {response.status_code}"
-            f"{detail}). If the project is private, its creator or manager "
-            "has to make a client app and the app needs EPICOLLECT_CLIENT_ID "
-            "and EPICOLLECT_CLIENT_SECRET."
+            f"{detail}). {slug or 'The project'} is private: its creator or a "
+            "manager has to add a client app on the project's details page, and "
+            f"this app needs that app's id and secret as {id_name} and "
+            f"{secret_name} in its secrets."
         )
     return f"Epicollect5 returned HTTP {response.status_code} for {path}{detail}."
 
@@ -482,7 +534,8 @@ def _sync(client: _Client, slug: str, force: bool,
     if not store.structure:
         if progress:
             progress(f"Reading the {slug} form")
-        store.structure = client.get("project", f"/api/export/project/{slug}")
+        store.structure = client.get("project", f"/api/export/project/{slug}",
+                                     slug=slug)
 
     forms = _forms(store.structure)
     if not forms:
@@ -499,7 +552,8 @@ def _sync(client: _Client, slug: str, force: bool,
             progress(f"Fetching {slug}, page {page}"
                      + (f" of {last_page}" if last_page > 1 else ""))
         payload = client.get(
-            "entries", f"/api/export/entries/{slug}", {**params, "page": page}
+            "entries", f"/api/export/entries/{slug}", {**params, "page": page},
+            slug=slug,
         )
         entries, last_page = _entries_page(payload)
         for entry in entries:
@@ -523,6 +577,7 @@ class EpicollectResult:
     per_project: Dict[str, int]
     requests: int
     fetched_at: str
+    errors: Dict[str, str] = field(default_factory=dict)
 
 
 def fetch_damage_reports(
@@ -535,9 +590,13 @@ def fetch_damage_reports(
 ) -> EpicollectResult:
     """Sync the damage projects and return them in dashboard columns.
 
+    A project that cannot be read is reported in ``errors`` and the
+    others still load.
+
     Raises:
-        EpicollectError: with a message for the screen. Entries already
-            synced are kept, so a later retry only asks for what is new.
+        EpicollectError: with a message for the screen, when no project
+            could be read. Entries already synced are kept, so a later
+            retry only asks for what is new.
     """
     projects = projects or PROJECTS
     try:
@@ -547,30 +606,37 @@ def fetch_damage_reports(
             f"Fetching from Epicollect5 needs the 'requests' package ({error})."
         ) from error
 
-    frames, counts = [], {}
-    try:
-        for slug, damage_column in projects.items():
+    frames, counts, errors = [], {}, {}
+    for slug, damage_column in projects.items():
+        try:
             store = _sync(client, slug, force, progress)
-            frame = entries_to_frame(
-                store.structure, store.entries.values(), slug, damage_column
-            )
-            counts[slug] = len(frame)
-            frames.append(frame)
-    except EpicollectError:
-        raise
-    except Exception as error:  # noqa: BLE001 - the network is the world
-        logger.exception("Epicollect5 fetch failed")
-        import requests
+        except EpicollectError as error:
+            errors[slug] = str(error)
+            continue
+        except Exception as error:  # noqa: BLE001 - the network is the world
+            logger.exception("Epicollect5 fetch failed for %s", slug)
+            import requests
 
-        if isinstance(error, requests.ConnectionError):
-            raise EpicollectError(
-                f"Could not reach {base_url} from this server. It may be "
-                "offline, or outbound access to it may be blocked where the "
-                "app is hosted."
-            ) from error
-        raise EpicollectError(
-            f"Could not read Epicollect5: {type(error).__name__}: {error}"
-        ) from error
+            if isinstance(error, requests.ConnectionError):
+                errors[slug] = (
+                    f"Could not reach {base_url} from this server. It may be "
+                    "offline, or outbound access to it may be blocked where "
+                    "the app is hosted."
+                )
+            else:
+                errors[slug] = (
+                    f"Could not read Epicollect5: {type(error).__name__}: {error}"
+                )
+            continue
+        frame = entries_to_frame(
+            store.structure, store.entries.values(), slug, damage_column
+        )
+        counts[slug] = len(frame)
+        frames.append(frame)
+
+    if errors and not frames:
+        messages = list(dict.fromkeys(errors.values()))
+        raise EpicollectError("\n\n".join(messages))
 
     combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=COLUMNS)
     combined = place_in_boundaries(combined)
@@ -582,6 +648,7 @@ def fetch_damage_reports(
         per_project=counts,
         requests=client.requests,
         fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        errors=errors,
     )
 
 
@@ -589,3 +656,4 @@ def reset() -> None:
     """Forget everything synced (tests, and a full re-pull)."""
     _STORES.clear()
     _LAST_REQUEST.clear()
+    _TOKENS.clear()

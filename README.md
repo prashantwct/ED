@@ -49,8 +49,17 @@ for half that, so requests are spaced 24 s apart, pages are 500 entries, and
 after the first pull only entries uploaded since are requested -- what was
 fetched is kept for the life of the server. A report sent through both
 Epicollect and Gajrakshak counts twice; the `Source` column shows which is
-which. Private projects need `EPICOLLECT_CLIENT_ID` and
-`EPICOLLECT_CLIENT_SECRET` in secrets.
+which.
+
+Private projects answer `404 Access denied.` until the app has a client app's
+credentials. An Epicollect5 client app opens only the project it was made in,
+so each project takes its own pair, named from its slug:
+`EPICOLLECT_HERD_CROP_DAMAGE_CLIENT_ID` / `..._CLIENT_SECRET` and
+`EPICOLLECT_HERD_HOUSE_DAMAGE_CLIENT_ID` / `..._CLIENT_SECRET` (a shared
+`EPICOLLECT_CLIENT_ID` / `EPICOLLECT_CLIENT_SECRET` is the fallback). The
+project's creator or a manager makes the app under the project's Details ->
+Apps. Tokens are reused until near expiry, as the API issues ten an hour. A
+project that cannot be read is reported and the other still loads.
 
 **Fetching the export instead of uploading it.** Where no export button
 exists, the same rows can be pulled off the Forest Alerts admin listing — from
