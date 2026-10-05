@@ -356,6 +356,11 @@ except DataValidationError as exc:
     st.error(f"Could not load the file: {exc}")
     st.stop()
 
+# Before the empty-data stop, so a project that failed says why even
+# when nothing else loaded.
+for slug, message in (epicollect.errors if epicollect is not None else {}).items():
+    st.warning(f"**{slug} was not loaded.** {message}")
+
 if not frames:
     st.info(
         "No reports to show yet. Upload or fetch the Gajrakshak register, or "

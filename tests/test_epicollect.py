@@ -66,6 +66,11 @@ def _crop_entry(i, uploaded, location=INSIDE):
 class Api(BaseHTTPRequestHandler):
     projects = {}
     log = []
+    # slug -> the bearer token that opens it; absent means public.
+    private = {}
+    # client_id -> (secret, token it is issued). A client app opens one project.
+    clients = {}
+    token_requests = 0
 
     def log_message(self, *args):
         pass
@@ -75,6 +80,11 @@ class Api(BaseHTTPRequestHandler):
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
         Api.log.append((url.path, query))
         parts = url.path.strip("/").split("/")
+        slug = parts[3] if len(parts) > 3 else ""
+        needed = Api.private.get(slug)
+        if needed and self.headers.get("Authorization") != f"Bearer {needed}":
+            # What the live API answers for a private project.
+            return self._json({"errors": [{"code": "ec5_77", "title": "Access denied."}]}, 404)
         if parts[:3] == ["api", "export", "project"] and parts[3] in Api.projects:
             name, form, _ = Api.projects[parts[3]]
             return self._json({"data": {"project": {"name": name, "forms": [form]}}})
@@ -94,6 +104,17 @@ class Api(BaseHTTPRequestHandler):
             })
         self._json({"errors": [{"code": "ec5_11", "title": "Project does not exist"}]}, 404)
 
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        Api.token_requests += 1
+        if urlparse(self.path).path != "/api/oauth/token" \
+                or body.get("grant_type") != "client_credentials":
+            return self._json({"errors": [{"code": "ec5_1"}]}, 400)
+        secret, token = Api.clients.get(str(body.get("client_id")), (None, None))
+        if secret is None or body.get("client_secret") != secret:
+            return self._json({"errors": [{"code": "ec5_257", "title": "Bad client"}]}, 400)
+        self._json({"token_type": "Bearer", "expires_in": 7200, "access_token": token})
+
     def _json(self, payload, status=200):
         body = json.dumps(payload).encode()
         self.send_response(status)
@@ -108,6 +129,11 @@ def api(monkeypatch):
     epicollect.reset()
     monkeypatch.setattr(epicollect, "PER_PAGE", 3)
     Api.log = []
+    Api.private, Api.clients, Api.token_requests = {}, {}, 0
+    for name in ("EPICOLLECT_CLIENT_ID", "EPICOLLECT_CLIENT_SECRET",
+                 *epicollect.credential_names("herd-crop-damage"),
+                 *epicollect.credential_names("herd-house-damage")):
+        monkeypatch.delenv(name, raising=False)
     Api.projects = {
         "herd-crop-damage": ("Herd Crop Damage", CROP_FORM, [
             _crop_entry(i, f"2025-12-01T00:00:0{i}.000Z") for i in range(5)
@@ -204,7 +230,7 @@ def test_requests_of_one_kind_are_spaced(api):
 
 
 def test_missing_project_explains_private_access(api):
-    with pytest.raises(epicollect.EpicollectError, match="EPICOLLECT_CLIENT_ID"):
+    with pytest.raises(epicollect.EpicollectError, match="EPICOLLECT_NO_SUCH_PROJECT_CLIENT_ID"):
         epicollect.fetch_damage_reports(
             {"no-such-project": "Crop Damage"}, base_url=api, interval=0
         )
@@ -232,3 +258,98 @@ def test_app_runs_on_epicollect_reports_alone(api, monkeypatch):
     assert not at.exception, at.exception
     assert any("7 valid rows" in s.value for s in at.success)
     assert any("Beat priorities" in m.value for m in at.markdown)
+
+
+# --- Private projects -------------------------------------------------------
+def test_credential_names_follow_the_slug():
+    assert epicollect.credential_names("herd-crop-damage") == (
+        "EPICOLLECT_HERD_CROP_DAMAGE_CLIENT_ID",
+        "EPICOLLECT_HERD_CROP_DAMAGE_CLIENT_SECRET",
+    )
+
+
+def test_private_project_without_credentials_does_not_block_the_other(api):
+    Api.private["herd-crop-damage"] = "crop-token"
+    result, frame = _fetch(api)
+
+    assert result.per_project == {"herd-house-damage": 1}
+    message = result.errors["herd-crop-damage"]
+    assert "Access denied." in message
+    assert "EPICOLLECT_HERD_CROP_DAMAGE_CLIENT_ID" in message
+    assert Api.token_requests == 0  # nothing configured, nothing asked
+    assert len(frame) == 1
+
+
+def test_each_private_project_uses_its_own_client_app(api, monkeypatch):
+    Api.private = {"herd-crop-damage": "crop-token", "herd-house-damage": "house-token"}
+    Api.clients = {"11": ("crop-secret", "crop-token"), "22": ("house-secret", "house-token")}
+    crop_id, crop_secret = epicollect.credential_names("herd-crop-damage")
+    house_id, house_secret = epicollect.credential_names("herd-house-damage")
+    monkeypatch.setenv(crop_id, "11")
+    monkeypatch.setenv(crop_secret, "crop-secret")
+    monkeypatch.setenv(house_id, "22")
+    monkeypatch.setenv(house_secret, "house-secret")
+
+    result, frame = _fetch(api)
+    assert result.errors == {}
+    assert result.per_project == {"herd-crop-damage": 6, "herd-house-damage": 1}
+    assert Api.token_requests == 2
+
+    # The tokens last two hours and the API issues ten an hour: reused.
+    _fetch(api, force=True)
+    assert Api.token_requests == 2
+
+
+def test_shared_credentials_are_the_fallback(api, monkeypatch):
+    Api.private["herd-crop-damage"] = "crop-token"
+    Api.clients = {"11": ("crop-secret", "crop-token")}
+    monkeypatch.setenv("EPICOLLECT_CLIENT_ID", "11")
+    monkeypatch.setenv("EPICOLLECT_CLIENT_SECRET", "crop-secret")
+
+    result, _ = _fetch(api)
+    assert result.errors == {}
+    assert result.per_project["herd-crop-damage"] == 6
+
+
+def test_rejected_credentials_say_which_project(api, monkeypatch):
+    Api.private["herd-crop-damage"] = "crop-token"
+    crop_id, crop_secret = epicollect.credential_names("herd-crop-damage")
+    monkeypatch.setenv(crop_id, "11")
+    monkeypatch.setenv(crop_secret, "wrong")
+
+    result, _ = _fetch(api)
+    assert "refused" in result.errors["herd-crop-damage"]
+    assert crop_id in result.errors["herd-crop-damage"]
+    assert result.per_project == {"herd-house-damage": 1}
+
+
+def test_everything_private_raises_with_each_reason(api):
+    Api.private = {"herd-crop-damage": "a", "herd-house-damage": "b"}
+    with pytest.raises(epicollect.EpicollectError) as caught:
+        epicollect.fetch_damage_reports(base_url=api, interval=0)
+    assert "EPICOLLECT_HERD_CROP_DAMAGE_CLIENT_ID" in str(caught.value)
+    assert "EPICOLLECT_HERD_HOUSE_DAMAGE_CLIENT_ID" in str(caught.value)
+
+
+def test_app_shows_the_private_project_and_loads_the_rest(api, monkeypatch):
+    from pathlib import Path
+
+    from streamlit.testing.v1 import AppTest
+
+    Api.private["herd-crop-damage"] = "crop-token"
+    real = epicollect.fetch_damage_reports
+
+    def against_stand_in(**kwargs):
+        kwargs.update(base_url=api, interval=0)
+        return real(**kwargs)
+
+    monkeypatch.setattr(epicollect, "fetch_damage_reports", against_stand_in)
+    app = Path(__file__).resolve().parent.parent / "app.py"
+    at = AppTest.from_file(str(app), default_timeout=120).run()
+    at = next(b for b in at.button if "Epicollect5" in b.label).click().run()
+
+    assert not at.exception, at.exception
+    warnings = " ".join(w.value for w in at.warning)
+    assert "herd-crop-damage was not loaded" in warnings
+    assert "EPICOLLECT_HERD_CROP_DAMAGE_CLIENT_ID" in warnings
+    assert any("1 valid rows" in s.value for s in at.success)
