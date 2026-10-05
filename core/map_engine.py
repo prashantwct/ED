@@ -19,6 +19,7 @@ import os
 from functools import wraps
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import pydeck as pdk
 import streamlit as st
@@ -925,3 +926,75 @@ def _adaptive_view_state(df: pd.DataFrame) -> pdk.ViewState:
         zoom=zoom,
         pitch=0,
     )
+
+
+# ---------------------------------------------------------------------------
+# Damage surveys
+# ---------------------------------------------------------------------------
+@_never_breaks_the_page
+def render_damage_map(
+    surveys: pd.DataFrame,
+    status_colors: Dict[str, str],
+    style_name: str = DEFAULT_BASEMAP,
+    show_boundaries: bool = True,
+) -> None:
+    """Surveyed households: size is estimated loss, colour the claim's status.
+
+    Shape carries the kind -- a house is ringed, a field is solid -- so
+    the two read apart without a second colour scale.
+    """
+    from core.damage import HOUSE, rupees
+
+    points = surveys.dropna(subset=["Latitude", "Longitude"]).copy()
+    if points.empty:
+        st.info("No surveys with a position to map.")
+        return
+    view_state = _adaptive_view_state(points)
+    loss = points["Estimated Loss"].fillna(0).clip(lower=0)
+    # Area, not radius, scales with loss, so a Rs 3 lakh field is not
+    # drawn a hundred times the size of a Rs 3,000 one.
+    points["_r"] = 60 + np.sqrt(loss) * 1.6
+    rgb = points["Compensation"].map(lambda s: list(_hex_to_rgb(status_colors.get(s, "#9AA5A0"))))
+    points["_fill"] = [c + [215] for c in rgb]
+    points["_line"] = [c + [255] for c in rgb]
+    house = points["Kind"] == HOUSE
+    points["_filled"] = ~house
+
+    tips = []
+    for row in points.to_dict("records"):
+        tips.append(_slots(
+            title=f"{row['Kind']} damage - {_clean(row['Village'])}",
+            accent=_hex_to_rgb(status_colors.get(row["Compensation"], "#9AA5A0")),
+            subtitle=(f"{row['Damage Date']:%d %b %Y}" if pd.notna(row["Damage Date"]) else ""),
+            rows=[
+                ("Estimated loss", rupees(row["Estimated Loss"])
+                 if pd.notna(row["Estimated Loss"]) else None),
+                ("Compensation", row["Compensation"]),
+                ("Elephants", _count(row["Elephants"])),
+                ("Beat", _trail(row["Beat"], f"{row['Beat Distance (km)']:.1f} km away"
+                                if row.get("Beat Distance (km)", 0) else "")),
+                ("Gaj Rakshak", row["Register Remark"] or None),
+            ],
+            footer="Damaged more than once" if row["Repeat Household"] else "",
+        ))
+    points = pd.concat([points.reset_index(drop=True), pd.DataFrame(tips)], axis=1)
+    keep = ["Latitude", "Longitude", "_r", "_fill", "_line", "_filled", *TOOLTIP_FIELDS]
+
+    layers = list(boundary_layers(view_state, "beat")) if show_boundaries else []
+    for filled, frame in points[keep].groupby("_filled"):
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=frame,
+            get_position="[Longitude, Latitude]",
+            get_radius="_r",
+            radius_min_pixels=3,
+            radius_max_pixels=28,
+            get_fill_color="_fill" if filled else [255, 255, 255, 60],
+            get_line_color="_line",
+            line_width_min_pixels=1.2 if filled else 2.4,
+            stroked=True,
+            filled=True,
+            pickable=True,
+        ))
+    _render_deck(layers, view_state, style_name)
+    _basemap_note()

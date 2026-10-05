@@ -34,32 +34,47 @@ Dates are parsed by trying each candidate format against the whole column,
 day-first first. Genuinely ambiguous files (every day ≤ 12) are read day-first
 and flagged. Non-UTF-8 files fall back to cp1252 then Latin-1.
 
-**Epicollect5 damage reports.** Crop and house damage reported through the
-public [herd-crop-damage](https://five.epicollect.net/project/herd-crop-damage)
-and [herd-house-damage](https://five.epicollect.net/project/herd-house-damage)
-projects can be read alongside the register, or on their own from the landing
-page. `core/epicollect.py` reads each project's form first and maps fields by
-input type (date, time, location) and question wording (division, beat,
-village, injured, killed, number of elephants), so it does not depend on how
-the questions are numbered or phrased. Each project fixes its damage type.
-Where a form records no division, range or beat, the point is placed in the
-vendored boundary polygons; a report on farmland outside every beat says so
-rather than borrowing the nearest. The API allows 5 requests a minute and asks
-for half that, so requests are spaced 24 s apart, pages are 500 entries, and
-after the first pull only entries uploaded since are requested -- what was
-fetched is kept for the life of the server. A report sent through both
-Epicollect and Gajrakshak counts twice; the `Source` column shows which is
-which.
+**Damage and compensation surveys (a separate view).** The Epicollect5
+[herd-crop-damage](https://five.epicollect.net/project/herd-crop-damage) and
+[herd-house-damage](https://five.epicollect.net/project/herd-house-damage)
+projects are household surveys, not sightings: what each household lost, its
+estimated rupee value, where its compensation claim stands, and how long the
+survey came after the damage. They get their own view (sidebar -> View, or the
+button on the landing page) rather than being folded into the sighting
+statistics, and it answers different questions:
 
-Private projects answer `404 Access denied.` until the app has a client app's
-credentials. An Epicollect5 client app opens only the project it was made in,
-so each project takes its own pair, named from its slug:
-`EPICOLLECT_HERD_CROP_DAMAGE_CLIENT_ID` / `..._CLIENT_SECRET` and
-`EPICOLLECT_HERD_HOUSE_DAMAGE_CLIENT_ID` / `..._CLIENT_SECRET` (a shared
-`EPICOLLECT_CLIENT_ID` / `EPICOLLECT_CLIENT_SECRET` is the fallback). The
-project's creator or a manager makes the app under the project's Details ->
-Apps. Tokens are reused until near expiry, as the API issues ten an hour. A
-project that cannot be read is reported and the other still loads.
+- *Compensation* -- cases and loss by claim status, and a follow-up queue of
+  households that have not applied, largest loss first.
+- *Gaj Rakshak gap* -- surveys whose remarks say the incident is missing from
+  the register, and, when the register is loaded in the conflict view, every
+  survey checked against it by place and date (distance and days set in the
+  sidebar).
+- *Villages* -- loss, unclaimed cases and repeat households per village, with
+  the beat each point falls in or the nearest within 10 km (damaged fields
+  mostly sit on farmland between beat blocks), and a map sized by loss and
+  coloured by claim status.
+- *Crop and house detail* -- crops and crop stage, fencing at the damaged field,
+  the owner's claimed area against the surveyor's and the calculated one, house
+  type, rooms broken, light on or off, herd size and hour, and survey delay.
+
+Upload the CSV or ZIP export from each project's Data page, or fetch directly.
+Owner names, phone numbers, photos, surveyor emails and remark text are dropped
+as the file is read: a repeat household is recognised by a one-way hash of name
+and number, remarks are reduced to what they say about Gaj Rakshak, and
+downloads carry only the Epicollect5 entry ID, which opens the full record for
+someone with access to the project. `core/damage.py` finds fields by question
+wording rather than number, so a re-ordered form still reads.
+
+Fetching syncs over the export API within its limits: requests of one kind
+24 s apart (half the documented 5 a minute), 500-entry pages, and after the
+first pull only entries uploaded since. The projects are private, so each needs
+its own client app's credentials -- `EPICOLLECT_HERD_CROP_DAMAGE_CLIENT_ID` /
+`..._CLIENT_SECRET` and `EPICOLLECT_HERD_HOUSE_DAMAGE_CLIENT_ID` /
+`..._CLIENT_SECRET` (a shared `EPICOLLECT_CLIENT_ID` / `EPICOLLECT_CLIENT_SECRET`
+is the fallback). The project's creator or a manager makes the app under the
+project's Details -> Apps. Tokens are reused until near expiry, as the API
+issues ten an hour, and a project that cannot be read is reported while the
+other still loads.
 
 **Fetching the export instead of uploading it.** Where no export button
 exists, the same rows can be pulled off the Forest Alerts admin listing — from
@@ -433,7 +448,10 @@ core/config.py       Every tunable parameter
 core/csv_io.py       Encoding-tolerant CSV reading
 core/data_loader.py  Schema validation, date/time parsing, data-quality warnings
 core/fetch.py        The landing-page sign-in, bridged to the scraper
-core/epicollect.py   Epicollect5 crop and house damage projects
+core/epicollect.py   Syncing the Epicollect5 damage projects over the API
+core/damage.py       Damage surveys: reading, de-identifying, analysis
+core/damage_charts.py Figures for the damage view
+core/damage_view.py  The damage and compensation view
 core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief

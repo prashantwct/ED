@@ -1,22 +1,10 @@
-"""Crop and house damage reports from Epicollect5.
+"""Reading the herd damage survey projects from Epicollect5.
 
-Two public Epicollect5 projects collect damage reports in the field,
-separately from the Gajrakshak sighting register: ``herd-crop-damage``
-and ``herd-house-damage``. This reads them over the Epicollect5 export
-API and returns rows in the dashboard's own columns, so they go through
-``core.data_loader`` like any upload.
-
-**The form is read, not assumed.** Field names are whatever the project
-creator typed as questions, so nothing here hard-codes them. The
-project definition is fetched first; dates, times and coordinates are
-found by input type, and the rest by what the question says ("division",
-"beat", "injured", ...). Each project fixes its own damage type, so a
-crop report is a crop-damage event whatever its form calls the field.
-
-**Division, range and beat come from the map when the form lacks them.**
-A point is placed in the vendored forest boundary polygons, the same
-layers the map draws. A report on farmland outside every beat polygon is
-labelled as such rather than pinned to the nearest beat it is not in.
+Two Epicollect5 projects hold household damage surveys made in the
+field, separately from the Gaj Rakshak sighting register:
+``herd-crop-damage`` and ``herd-house-damage``. This syncs their entries
+over the export API and hands them, as the API returns them, to
+``core.damage``, which reads them the same way as the CSV export.
 
 **The API's limits are kept to.** Epicollect5 allows 5 requests a minute
 per kind and asks clients to stay near half that, and to fetch only what
@@ -42,9 +30,7 @@ and the failure is reported beside it.
 
 from __future__ import annotations
 
-import io
 import logging
-import math
 import re
 import threading
 import time
@@ -52,18 +38,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
-import numpy as np
-import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://five.epicollect.net"
 
-# Slug -> the damage type every report in that project records.
-PROJECTS: Dict[str, str] = {
-    "herd-crop-damage": "Crop Damage",
-    "herd-house-damage": "House Damage",
-}
+# The household damage survey projects.
+PROJECTS: Tuple[str, ...] = ("herd-crop-damage", "herd-house-damage")
 
 PER_PAGE = 500  # the API maximum
 # 5 requests/minute per kind is the cap; the docs ask for about half.
@@ -71,22 +52,6 @@ REQUEST_INTERVAL_SECONDS = 24.0
 # A sync newer than this is reused without asking the server at all.
 MIN_RESYNC_SECONDS = 15 * 60
 TIMEOUT_SECONDS = 60
-
-FIELD_TIMEZONE = "Asia/Kolkata"
-
-OUTSIDE_BEATS = "Outside Beat Boundaries"
-UNPLACED = "Unknown"
-
-SOURCE_COLUMN = "Source"
-
-# Output columns, in the dashboard's spelling.
-COLUMNS = [
-    "Date", "Hour", "Latitude", "Longitude", "Division", "Range", "Beat",
-    "Total Count", "Male Count", "Female Count", "Calf Count",
-    "Crop Damage", "Grain Damage", "House Damage", "Injury", "Death",
-    "Village (reported)", SOURCE_COLUMN,
-]
-
 
 class EpicollectError(RuntimeError):
     """A pull that failed, with a message meant for the screen."""
@@ -246,258 +211,9 @@ def _error_message(response, path: str, slug: str = "", authenticated: bool = Fa
     return f"Epicollect5 returned HTTP {response.status_code} for {path}{detail}."
 
 
-# ---------------------------------------------------------------------------
-# Project structure and field roles
-# ---------------------------------------------------------------------------
-@dataclass
-class _Field:
-    key: str  # the entry key, e.g. "3_Beat_name"
-    type: str
-    question: str
-
-
 def _forms(structure: dict) -> List[dict]:
     project = (structure.get("data") or structure).get("project") or {}
     return project.get("forms") or []
-
-
-def _project_name(structure: dict, slug: str) -> str:
-    project = (structure.get("data") or structure).get("project") or {}
-    return str(project.get("name") or slug)
-
-
-def _words(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip()
-
-
-# Question wording -> dashboard column. First match wins. Casualties come
-# before the animal counts, so "male persons injured" is an injury and
-# not a bull count; the counts need the question to be about elephants,
-# so "number of houses damaged" is not mistaken for herd size.
-_ROLE_PATTERNS: List[Tuple[str, re.Pattern]] = [
-    ("Division", re.compile(r"\bdivision\b")),
-    ("Range", re.compile(r"\brange\b")),
-    ("Beat", re.compile(r"\bbeat\b")),
-    ("Village (reported)", re.compile(r"\b(village|gram|gaon)\b")),
-    ("Death", re.compile(r"\b(death|deaths|died|dead|killed|fatal)")),
-    ("Injury", re.compile(r"\b(injur|hurt|wounded)")),
-    ("Grain Damage", re.compile(r"\b(grain|stored food|ration)")),
-    ("Calf Count", re.compile(r"\b(calf|calves|juvenile)")),
-    ("Female Count", re.compile(r"\b(female|cow|cows)\b.*\b(elephant|hathi)|\b(elephant|hathi).*\b(female|cow|cows)\b")),
-    ("Male Count", re.compile(r"\b(bull|bulls|tusker|tuskers)\b|\bmale\b.*\b(elephant|hathi)|\b(elephant|hathi).*\bmale\b")),
-    ("Total Count", re.compile(r"\b(elephants?|hathi|herd)\b")),
-]
-_NUMERIC_ROLES = {"Calf Count", "Female Count", "Male Count", "Total Count"}
-_TEXT_TYPES = {"text", "textarea", "dropdown", "radio", "searchsingle"}
-_NUMBER_TYPES = {"integer", "decimal"}
-
-
-def _field_roles(form: dict) -> Dict[str, _Field]:
-    """Which entry key carries each dashboard column, read off the form.
-
-    Entry keys are numbered by the input's position in the form, then
-    the question text; matching on the number keeps this independent of
-    how Epicollect shortens the question into a key.
-    """
-    roles: Dict[str, _Field] = {}
-    for position, item in enumerate(form.get("inputs") or [], start=1):
-        kind = str(item.get("type") or "").lower()
-        question = str(item.get("question") or "")
-        f = _Field(key=f"{position}_", type=kind, question=question)
-        if kind == "location":
-            roles.setdefault("_location", f)
-            continue
-        if kind == "date":
-            roles.setdefault("_date", f)
-            continue
-        if kind == "time":
-            roles.setdefault("_time", f)
-            continue
-        words = _words(question)
-        for role, pattern in _ROLE_PATTERNS:
-            if not pattern.search(words):
-                continue
-            if role in _NUMERIC_ROLES and kind not in _NUMBER_TYPES:
-                continue
-            if role in ("Division", "Range", "Beat", "Village (reported)") \
-                    and kind not in _TEXT_TYPES:
-                continue
-            roles.setdefault(role, f)
-            break
-    return roles
-
-
-def _value(entry: dict, f: Optional[_Field]):
-    """An entry's answer to a field, found by the field's position prefix."""
-    if f is None:
-        return None
-    for key, value in entry.items():
-        if key.startswith(f.key):
-            return value
-    return None
-
-
-# Hindi "haan" in both common spellings, escaped to keep the source ASCII.
-_YES = {"yes", "y", "true", "1", "haan", "han", "ha", "\u0939\u093e\u0901", "\u0939\u093e\u0902"}
-
-
-def _number(value) -> float:
-    if value is None or value == "":
-        return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
-    text = str(value).strip().lower()
-    if text in _YES:
-        return 1.0
-    match = re.search(r"-?\d+(\.\d+)?", text)
-    return float(match.group()) if match else 0.0
-
-
-def _parse_date(value, fallback) -> Optional[pd.Timestamp]:
-    for candidate in (value, fallback):
-        if not candidate:
-            continue
-        stamp = pd.to_datetime(str(candidate), errors="coerce", utc=True, dayfirst=False)
-        if not pd.isna(stamp):
-            # Upload stamps are UTC; the day that matters is the field's.
-            return stamp.tz_convert(FIELD_TIMEZONE).tz_localize(None)
-    return None
-
-
-def _hour(value) -> Optional[int]:
-    if not value:
-        return None
-    match = re.search(r"(?:T|\s|^)(\d{1,2}):(\d{2})", str(value))
-    return int(match.group(1)) if match else None
-
-
-def entries_to_frame(structure: dict, entries: Iterable[dict], slug: str,
-                     damage_column: str) -> pd.DataFrame:
-    """One project's entries in the dashboard's columns.
-
-    Division, Range and Beat are left blank where the form has no such
-    question; :func:`place_in_boundaries` fills them in afterwards.
-    """
-    forms = _forms(structure)
-    roles = _field_roles(forms[0]) if forms else {}
-    name = _project_name(structure, slug)
-
-    rows = []
-    for entry in entries:
-        location = _value(entry, roles.get("_location")) or {}
-        if not isinstance(location, dict):
-            location = {}
-        try:
-            lat = float(location.get("latitude"))
-            lon = float(location.get("longitude"))
-        except (TypeError, ValueError):
-            lat = lon = float("nan")
-
-        stamp = _parse_date(_value(entry, roles.get("_date")), entry.get("created_at"))
-        # Only a time question gives the hour. A date answer is midnight,
-        # and created_at is when the phone saved it, not when it happened.
-        hour = _hour(_value(entry, roles.get("_time")))
-
-        row = {
-            "Date": stamp.strftime("%Y-%m-%d") if stamp is not None else "",
-            "Hour": hour,
-            "Latitude": lat,
-            "Longitude": lon,
-            SOURCE_COLUMN: f"Epicollect5: {name}",
-            "Crop Damage": 0, "Grain Damage": 0, "House Damage": 0,
-            "Injury": 0.0, "Death": 0.0,
-        }
-        row[damage_column] = 1
-        for role in ("Division", "Range", "Beat", "Village (reported)"):
-            value = _value(entry, roles.get(role))
-            row[role] = str(value).strip() if value not in (None, "") else ""
-        for role in ("Total Count", "Male Count", "Female Count", "Calf Count"):
-            if role in roles:
-                row[role] = _number(_value(entry, roles[role]))
-        for role in ("Injury", "Death", "Grain Damage"):
-            if role in roles:
-                row[role] = _number(_value(entry, roles[role]))
-        rows.append(row)
-
-    frame = pd.DataFrame(rows, columns=COLUMNS)
-    if "Total Count" not in roles:
-        # A damage report is evidence elephants were there even when the
-        # form does not count them; presence scores off a non-zero count.
-        frame["Total Count"] = frame["Total Count"].fillna(1)
-    return frame
-
-
-# ---------------------------------------------------------------------------
-# Placing points in the forest boundaries
-# ---------------------------------------------------------------------------
-def _rings(geometry: dict) -> List[List[np.ndarray]]:
-    """Polygons as lists of rings (outer first), as arrays of lon/lat."""
-    coords = geometry.get("coordinates") or []
-    polys = coords if geometry.get("type") == "MultiPolygon" else [coords]
-    return [[np.asarray(ring, dtype=float) for ring in poly] for poly in polys]
-
-
-def _inside(ring: np.ndarray, lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
-    """Even-odd ray cast of many points against one ring."""
-    x, y = ring[:, 0], ring[:, 1]
-    x2, y2 = np.roll(x, -1), np.roll(y, -1)
-    inside = np.zeros(len(lon), dtype=bool)
-    for xa, ya, xb, yb in zip(x, y, x2, y2):
-        crosses = (ya > lat) != (yb > lat)
-        if not crosses.any():
-            continue
-        with np.errstate(divide="ignore", invalid="ignore"):
-            x_at = xa + (lat - ya) * (xb - xa) / (yb - ya)
-        inside ^= crosses & (lon < x_at)
-    return inside
-
-
-def _locate(level: str, lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
-    from core import boundaries
-
-    names = np.full(len(lon), "", dtype=object)
-    for feature in boundaries.load(level)["features"]:
-        for polygon in _rings(feature["geometry"]):
-            outer = polygon[0]
-            box = ((lon >= outer[:, 0].min()) & (lon <= outer[:, 0].max())
-                   & (lat >= outer[:, 1].min()) & (lat <= outer[:, 1].max())
-                   & (names == ""))
-            if not box.any():
-                continue
-            idx = np.flatnonzero(box)
-            hit = _inside(outer, lon[idx], lat[idx])
-            for hole in polygon[1:]:
-                hit &= ~_inside(hole, lon[idx], lat[idx])
-            names[idx[hit]] = str(feature["properties"].get("name") or "")
-    return names
-
-
-def place_in_boundaries(frame: pd.DataFrame) -> pd.DataFrame:
-    """Fill blank Division, Range and Beat from the boundary polygons."""
-    from core import boundaries
-
-    out = frame.copy()
-    if out.empty or not boundaries.available():
-        for col in ("Division", "Range", "Beat"):
-            out[col] = out[col].replace("", UNPLACED).fillna(UNPLACED)
-        return out
-
-    lon = pd.to_numeric(out["Longitude"], errors="coerce").to_numpy(float)
-    lat = pd.to_numeric(out["Latitude"], errors="coerce").to_numpy(float)
-    valid = np.isfinite(lon) & np.isfinite(lat)
-    for col, level, missing in (
-        ("Division", boundaries.DIVISION, UNPLACED),
-        ("Range", boundaries.RANGE, UNPLACED),
-        ("Beat", boundaries.BEAT, OUTSIDE_BEATS),
-    ):
-        blank = (out[col].fillna("").astype(str).str.strip() == "").to_numpy() & valid
-        if blank.any():
-            found = _locate(level, lon[blank], lat[blank])
-            values = out[col].to_numpy(dtype=object)
-            values[blank] = np.where(found == "", missing, found)
-            out[col] = values
-        out[col] = out[col].replace("", missing).fillna(missing)
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -569,26 +285,28 @@ def _sync(client: _Client, slug: str, force: bool,
 
 
 @dataclass(frozen=True)
-class EpicollectResult:
-    """A completed pull, as CSV bytes for the shared loader."""
+class EntriesResult:
+    """A completed sync: each project's entries, and what failed."""
 
-    data: bytes
-    rows: int
-    per_project: Dict[str, int]
+    entries: Dict[str, List[dict]]
     requests: int
     fetched_at: str
     errors: Dict[str, str] = field(default_factory=dict)
 
+    @property
+    def rows(self) -> int:
+        return sum(len(v) for v in self.entries.values())
 
-def fetch_damage_reports(
-    projects: Optional[Dict[str, str]] = None,
+
+def fetch_entries(
+    projects: Optional[Iterable[str]] = None,
     *,
     force: bool = False,
     base_url: str = BASE_URL,
     interval: float = REQUEST_INTERVAL_SECONDS,
     progress: Optional[Callable[[str], None]] = None,
-) -> EpicollectResult:
-    """Sync the damage projects and return them in dashboard columns.
+) -> EntriesResult:
+    """Sync the damage projects and return their entries as the API gives them.
 
     A project that cannot be read is reported in ``errors`` and the
     others still load.
@@ -598,7 +316,7 @@ def fetch_damage_reports(
             could be read. Entries already synced are kept, so a later
             retry only asks for what is new.
     """
-    projects = projects or PROJECTS
+    projects = list(projects or PROJECTS)
     try:
         client = _Client(base_url, interval)
     except ImportError as error:
@@ -606,8 +324,9 @@ def fetch_damage_reports(
             f"Fetching from Epicollect5 needs the 'requests' package ({error})."
         ) from error
 
-    frames, counts, errors = [], {}, {}
-    for slug, damage_column in projects.items():
+    entries: Dict[str, List[dict]] = {}
+    errors: Dict[str, str] = {}
+    for slug in projects:
         try:
             store = _sync(client, slug, force, progress)
         except EpicollectError as error:
@@ -628,24 +347,12 @@ def fetch_damage_reports(
                     f"Could not read Epicollect5: {type(error).__name__}: {error}"
                 )
             continue
-        frame = entries_to_frame(
-            store.structure, store.entries.values(), slug, damage_column
-        )
-        counts[slug] = len(frame)
-        frames.append(frame)
+        entries[slug] = list(store.entries.values())
 
-    if errors and not frames:
-        messages = list(dict.fromkeys(errors.values()))
-        raise EpicollectError("\n\n".join(messages))
-
-    combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=COLUMNS)
-    combined = place_in_boundaries(combined)
-    buffer = io.StringIO()
-    combined.to_csv(buffer, index=False)
-    return EpicollectResult(
-        data=buffer.getvalue().encode("utf-8"),
-        rows=len(combined),
-        per_project=counts,
+    if errors and not entries:
+        raise EpicollectError("\n\n".join(dict.fromkeys(errors.values())))
+    return EntriesResult(
+        entries=entries,
         requests=client.requests,
         fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         errors=errors,

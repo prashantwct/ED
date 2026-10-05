@@ -28,6 +28,8 @@ import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 BOUNDARY_DIR = Path(__file__).resolve().parent.parent / "data" / "boundaries"
@@ -188,3 +190,110 @@ def stats_by_name(
         if key and key not in indexed:
             indexed[key] = {c: row[c] for c in wanted}
     return indexed
+
+
+def _rings(geometry: dict) -> List[List[np.ndarray]]:
+    """Polygons as lists of rings (outer first), as arrays of lon/lat."""
+    coords = geometry.get("coordinates") or []
+    polys = coords if geometry.get("type") == "MultiPolygon" else [coords]
+    return [[np.asarray(ring, dtype=float) for ring in poly] for poly in polys]
+
+
+def _inside(ring: np.ndarray, lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
+    """Even-odd ray cast of many points against one ring."""
+    x, y = ring[:, 0], ring[:, 1]
+    x2, y2 = np.roll(x, -1), np.roll(y, -1)
+    inside = np.zeros(len(lon), dtype=bool)
+    for xa, ya, xb, yb in zip(x, y, x2, y2):
+        crosses = (ya > lat) != (yb > lat)
+        if not crosses.any():
+            continue
+        with np.errstate(divide="ignore", invalid="ignore"):
+            x_at = xa + (lat - ya) * (xb - xa) / (yb - ya)
+        inside ^= crosses & (lon < x_at)
+    return inside
+
+
+def locate(level: str, lon: Sequence[float], lat: Sequence[float]) -> np.ndarray:
+    """The name of the polygon at ``level`` holding each point, or "".
+
+    For sources that carry coordinates but no administrative unit. A
+    point outside every polygon -- farmland between beat blocks -- gets
+    "" rather than the nearest unit it is not in.
+    """
+    lon = np.asarray(lon, dtype=float)
+    lat = np.asarray(lat, dtype=float)
+    names = np.full(len(lon), "", dtype=object)
+    valid = np.isfinite(lon) & np.isfinite(lat)
+    for feature in load(level)["features"]:
+        for polygon in _rings(feature["geometry"]):
+            outer = polygon[0]
+            box = (valid & (names == "")
+                   & (lon >= outer[:, 0].min()) & (lon <= outer[:, 0].max())
+                   & (lat >= outer[:, 1].min()) & (lat <= outer[:, 1].max()))
+            if not box.any():
+                continue
+            idx = np.flatnonzero(box)
+            hit = _inside(outer, lon[idx], lat[idx])
+            for hole in polygon[1:]:
+                hit &= ~_inside(hole, lon[idx], lat[idx])
+            names[idx[hit]] = str(feature["properties"].get("name") or "")
+    return names
+
+
+_VERTICES: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
+
+def _vertices(level: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Every outer-ring vertex at a level, with the index of its polygon name."""
+    if level not in _VERTICES:
+        lons, lats, owners, names = [], [], [], []
+        for feature in load(level)["features"]:
+            names.append(str(feature["properties"].get("name") or ""))
+            for polygon in _rings(feature["geometry"]):
+                outer = polygon[0]
+                lons.append(outer[:, 0])
+                lats.append(outer[:, 1])
+                owners.append(np.full(len(outer), len(names) - 1))
+        _VERTICES[level] = (
+            np.concatenate(lons) if lons else np.empty(0),
+            np.concatenate(lats) if lats else np.empty(0),
+            np.concatenate(owners) if owners else np.empty(0, dtype=int),
+        )
+        _VERTICES[level + ":names"] = np.asarray(names, dtype=object)  # type: ignore[assignment]
+    return _VERTICES[level]
+
+
+# Beyond this a "nearest" unit is not the one responsible, just the
+# least far away: a point that far out is in a landscape the layers do
+# not cover, and says so.
+NEAREST_MAX_KM = 10.0
+
+
+def nearest(level: str, lon: Sequence[float], lat: Sequence[float],
+            max_km: float = NEAREST_MAX_KM) -> Tuple[np.ndarray, np.ndarray]:
+    """The unit each point lies in, else the closest within ``max_km``.
+
+    Distance is 0 inside a polygon and otherwise the kilometres to the
+    nearest boundary vertex -- close enough at beat scale, where the
+    vertices are tens of metres apart. Points without coordinates, or
+    farther than ``max_km`` from every unit, get "" and NaN.
+    """
+    lon = np.asarray(lon, dtype=float)
+    lat = np.asarray(lat, dtype=float)
+    names = locate(level, lon, lat)
+    km = np.where(names != "", 0.0, np.nan)
+    v_lon, v_lat, owner = _vertices(level)
+    labels = _VERTICES[level + ":names"]
+    if not len(v_lon):
+        return names, km
+    outside = np.flatnonzero((names == "") & np.isfinite(lon) & np.isfinite(lat))
+    for i in outside:
+        scale = np.cos(np.radians(lat[i]))
+        d2 = ((v_lon - lon[i]) * scale) ** 2 + (v_lat - lat[i]) ** 2
+        j = int(np.argmin(d2))
+        distance = float(np.sqrt(d2[j]) * 111.32)
+        if distance <= max_km:
+            names[i] = labels[owner[j]]
+            km[i] = distance
+    return names, km
