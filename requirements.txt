@@ -10,3 +10,7 @@ requests==2.33.1
 # The listing's Export button returns .xlsx from admin panels built on
 # maatwebsite/excel; pandas reads it through this.
 openpyxl==3.1.5
+# The damage study PDF: ReportLab lays it out, svglib turns the charts'
+# SVG into vector drawing, so the PDF is as sharp as the HTML.
+reportlab==5.0.1
+svglib==2.3.0

@@ -57,6 +57,14 @@ statistics, and it answers different questions:
   the owner's claimed area against the surveyor's and the calculated one, house
   type, rooms broken, light on or off, herd size and hour, and survey delay.
 
+The whole study downloads as an HTML file and an A4 PDF ("Prepare HTML and
+PDF" under the assessment). Both are vector throughout: every chart and the map
+is drawn as SVG -- inline in the HTML, and converted to PDF drawing operators by
+svglib and ReportLab rather than pasted in as a picture -- so they stay sharp at
+any zoom and print size. The map has no raster basemap for the same reason;
+forest boundary outlines, clipped to the frame, give the place. Long tables show
+their top 20 in the body and in full in an appendix.
+
 Upload the CSV or ZIP export from each project's Data page, or fetch directly.
 Owner names, phone numbers, photos, surveyor emails and remark text are dropped
 as the file is read: a repeat household is recognised by a one-way hash of name
@@ -452,6 +460,7 @@ core/epicollect.py   Syncing the Epicollect5 damage projects over the API
 core/damage.py       Damage surveys: reading, de-identifying, analysis
 core/damage_charts.py Figures for the damage view
 core/damage_view.py  The damage and compensation view
+core/damage_report.py The damage study as vector HTML and PDF
 core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief
