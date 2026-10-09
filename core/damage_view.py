@@ -24,8 +24,18 @@ FETCH_KEY = "damage_fetch"
 CHART_CONFIG = {"displayModeBar": False}
 
 
-def _plot(fig) -> None:
+def _plot(fig, df: Optional[pd.DataFrame] = None, key: str = "", name: str = "") -> None:
+    """A chart, and under it a Download menu for its SVG twin."""
     st.plotly_chart(fig, width="stretch", config=CHART_CONFIG)
+    if df is not None and key:
+        _download(df, key, name)
+
+
+def _download(df: pd.DataFrame, key: str, name: str) -> None:
+    from core.damage_report import figure
+    from core.exports import download_menu
+
+    download_menu(name, lambda: figure(df, key))
 
 
 @st.cache_data(show_spinner="Reading the damage surveys...")
@@ -220,10 +230,12 @@ def render(df: pd.DataFrame, notes: List[str], register: Optional[pd.DataFrame],
     left, right = st.columns(2)
     with left:
         st.markdown("**Cases by claim status**")
-        _plot(dc.compensation_bars(pipeline, "Cases"))
+        _plot(dc.compensation_bars(pipeline, "Cases"), df, "claims_cases",
+              "Cases by claim status")
     with right:
         st.markdown("**Estimated loss by claim status**")
-        _plot(dc.compensation_bars(pipeline, "Loss"))
+        _plot(dc.compensation_bars(pipeline, "Loss"), df, "claims_loss",
+              "Estimated loss by claim status")
 
     queue = damage.follow_up(df)
     st.markdown(f"**Follow-up queue** -- {len(queue)} case(s) with no claim, largest loss first")
@@ -250,7 +262,7 @@ def render(df: pd.DataFrame, notes: List[str], register: Optional[pd.DataFrame],
 
     # -- Losses over time ------------------------------------------------------
     section("trend", "Losses over time", "Estimated loss by month of damage")
-    _plot(dc.monthly_loss(damage.monthly(df)))
+    _plot(dc.monthly_loss(damage.monthly(df)), df, "monthly", "Estimated loss by month")
 
     # -- Gaj Rakshak gap -------------------------------------------------------
     section("broadcast", "Gaj Rakshak gap",
@@ -292,6 +304,7 @@ def render(df: pd.DataFrame, notes: List[str], register: Optional[pd.DataFrame],
     from core.map_engine import render_damage_map
 
     render_damage_map(df, dc.STATUS_COLORS, style_name=basemap)
+    _download(df, "map", "Damage survey map")
     legend = " ".join(
         f'<span class="ci-legend__item"><span class="ci-legend__dot" '
         f'style="background:{color};"></span>{status}</span>'
@@ -309,10 +322,10 @@ def render(df: pd.DataFrame, notes: List[str], register: Optional[pd.DataFrame],
     with h1:
         st.markdown("**Elephants present**")
         _plot(dc.by_kind_bars(damage.herd_sizes(df), "Herd", damage.HERD_LABELS,
-                              x_title="Elephants in the group"))
+                              x_title="Elephants in the group"), df, "herd", "Elephants present")
     with h2:
         st.markdown("**Hour of damage**")
-        _plot(dc.hour_profile(damage.hourly(df)))
+        _plot(dc.hour_profile(damage.hourly(df)), df, "hours", "Hour of damage")
 
     # -- Crop detail -----------------------------------------------------------
     crop = df[df["Kind"] == damage.CROP]
@@ -321,18 +334,21 @@ def render(df: pd.DataFrame, notes: List[str], register: Optional[pd.DataFrame],
         k1, k2 = st.columns(2)
         with k1:
             st.markdown("**Crops damaged**")
-            _plot(dc.ranked_bars(damage.crop_table(df), "Crop", color=dc.KIND_COLORS[damage.CROP]))
+            _plot(dc.ranked_bars(damage.crop_table(df), "Crop", color=dc.KIND_COLORS[damage.CROP]),
+                  df, "crops", "Crops damaged")
             st.caption("A field with two crops counts under both.")
         with k2:
             st.markdown("**Stage of the crop**")
             stages = damage.exploded_counts(crop, "Crop Stage", damage.CROP_STAGES)
             _plot(dc.ranked_bars(stages, "Crop Stage",
-                                 color=dc.KIND_COLORS[damage.CROP]))
+                                 color=dc.KIND_COLORS[damage.CROP]),
+                  df, "stages", "Stage of the crop")
         k3, k4 = st.columns(2)
         with k3:
             st.markdown("**Fencing at the damaged field**")
             _plot(dc.ranked_bars(damage.exploded_counts(crop, "Fencing"), "Fencing",
-                                 color="#6B8578"))
+                                 color="#6B8578"),
+                  df, "fencing", "Fencing at the damaged field")
             st.caption(
                 "Only damaged fields are surveyed, so this is what was in place where "
                 "damage happened -- not evidence of which fence works."
@@ -341,7 +357,8 @@ def render(df: pd.DataFrame, notes: List[str], register: Optional[pd.DataFrame],
             check = damage.area_check(df)
             if check:
                 st.markdown("**Damaged area: claimed against measured**")
-                _plot(dc.area_comparison(check))
+                _plot(dc.area_comparison(check), df, "area",
+                      "Damaged area claimed against measured")
                 st.caption(
                     f"Over {check['cases']} fields with both figures, the calculated "
                     f"area is {check['ratio']:.0%} of what owners reported, in the "
@@ -356,11 +373,13 @@ def render(df: pd.DataFrame, notes: List[str], register: Optional[pd.DataFrame],
         with q1:
             st.markdown("**Type of house**")
             _plot(dc.ranked_bars(damage.exploded_counts(house, "House Type"), "House Type",
-                                 color=dc.KIND_COLORS[damage.HOUSE]))
+                                 color=dc.KIND_COLORS[damage.HOUSE]),
+                  df, "house_type", "Type of house")
         with q2:
             st.markdown("**Part of the house broken**")
             _plot(dc.ranked_bars(damage.exploded_counts(house, "Rooms Damaged"),
-                                 "Rooms Damaged", color=dc.KIND_COLORS[damage.HOUSE]))
+                                 "Rooms Damaged", color=dc.KIND_COLORS[damage.HOUSE]),
+                  df, "rooms", "Part of the house broken")
             st.caption("Kitchens and bakhari (grain stores) are where food is kept.")
         with q3:
             lit = house["Light On"].dropna()
@@ -376,7 +395,8 @@ def render(df: pd.DataFrame, notes: List[str], register: Optional[pd.DataFrame],
             "Days from the damage to the survey visit. Late visits lose evidence and "
             "delay the claim.")
     _plot(dc.by_kind_bars(damage.survey_lag(df), "Delay", damage.LAG_LABELS,
-                          x_title="Days from damage to survey"))
+                          x_title="Days from damage to survey"),
+          df, "lag", "Days from damage to survey")
 
     st.warning(
         "Owner names, phone numbers, photos, surveyor emails and remark text are "

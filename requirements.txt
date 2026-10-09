@@ -14,3 +14,6 @@ openpyxl==3.1.5
 # SVG into vector drawing, so the PDF is as sharp as the HTML.
 reportlab==5.0.1
 svglib==2.3.0
+# PNG downloads of any chart or map: resvg rasterises the SVG, using the
+# fonts in assets/fonts, from a self-contained wheel (no system cairo).
+resvg-py==0.5.0

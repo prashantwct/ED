@@ -29,7 +29,8 @@ from core.analytics import (
     severity_distribution,
     window_comparison,
 )
-from core import boundaries, charts, landing
+from core import boundaries, charts, landing, report_charts
+from core.exports import download_menu
 from core.config import LOG_PATH, NIGHT_HOUR_END, NIGHT_HOUR_START
 from core.data_loader import load_and_validate_csv
 from core.exceptions import DataValidationError, SpatialEnrichmentError
@@ -58,6 +59,7 @@ from core.map_engine import (
     render_map,
     render_village_map,
 )
+from core.map_export import sightings_map_svg, village_map_svg
 from core.report import generate_html_report
 from core.spatial import attach_nearest_village, load_village_centroids
 from core.ui import (
@@ -617,6 +619,12 @@ if len(monthly) < 2:
 else:
     st.markdown("**Conflict events per month, by type**")
     _plot(charts.conflict_type_trend(monthly, recent_days=recent_days, as_of=period_end))
+    # Each figure downloads from its SVG twin. Values are bound as default
+    # arguments: the callable runs on click, after this script has moved on
+    # and reassigned names like ``months``.
+    download_menu("Conflict events per month by type",
+                  lambda m=monthly, d=recent_days, e=period_end:
+                  report_charts.conflict_type_trend_svg(m, d, e))
     st.caption(
         "Darkest at the base is the most severe. A rising dark band matters "
         "more than a rising total."
@@ -626,17 +634,24 @@ else:
     with rate_col:
         st.markdown("**Conflict rate** -- share of reports that were conflict")
         _plot(charts.conflict_rate_trend(monthly, kpis["conflict_rate"]))
+        download_menu("Conflict rate per month",
+                      lambda m=monthly, r=kpis["conflict_rate"]:
+                      report_charts.conflict_rate_svg(m, r))
     with casualty_col:
         st.markdown("**People killed and injured per month**")
         if float((monthly["Human Deaths"] + monthly["People Injured"]).sum()) == 0:
             st.success("No casualties recorded in the selected period.")
         else:
             _plot(charts.casualty_trend(monthly))
+            download_menu("People killed and injured per month",
+                          lambda m=monthly: report_charts.casualty_svg(m))
 
     season_col, division_col = st.columns(2)
     with season_col:
         st.markdown("**Seasonal pattern** -- conflict events by month and year")
         _plot(charts.seasonal_heatmap(seasonal_matrix(filtered)))
+        download_menu("Seasonal pattern",
+                      lambda f=filtered: report_charts.seasonal_heatmap_svg(seasonal_matrix(f)))
         st.caption("Read down a column to compare the same month across years.")
     with division_col:
         st.markdown("**By division** -- conflict events per month")
@@ -647,6 +662,9 @@ else:
             _plot(charts.division_trend(
                 division_long, charts.division_colors(df["Division"].unique())
             ))
+            download_menu("Conflict events per month by division",
+                          lambda d=division_long, c=charts.division_colors(df["Division"].unique()):
+                          report_charts.division_trend_svg(d, c))
             st.caption("Three-month average, so one busy month does not read as a trend.")
 
 
@@ -848,6 +866,8 @@ else:
         village_risk, hotspots, style_name=basemap,
         show_boundaries=layer_boundaries, boundary_level=boundary_level,
     )
+    download_menu("Village risk map",
+                  lambda v=village_risk, h=hotspots, b=basemap: village_map_svg(v, h, b))
 
 
 # ---------------------------------------------------------------------------
@@ -995,6 +1015,8 @@ with esc_col:
         st.info("No beat shows a materially higher conflict count than the prior window.")
     else:
         _plot(charts.escalation_dumbbell(escalating))
+        download_menu("Escalating beats",
+                      lambda e=escalating: report_charts.escalation_svg(e))
         st.caption(
             f"Grey is the earlier window, red the recent one. "
             f"{len(escalating)} beat(s) escalating; the largest rises are shown."
@@ -1022,6 +1044,9 @@ with time_col:
     hourly = temporal["hourly"]
     if float(hourly.sum()) > 0:
         _plot(charts.hourly_profile(hourly, NIGHT_HOUR_START, NIGHT_HOUR_END))
+        download_menu("Conflict events by hour",
+                      lambda h=hourly: report_charts.hourly_svg(h, NIGHT_HOUR_START,
+                                                                NIGHT_HOUR_END))
     else:
         st.info("No timed conflict records, so no risk window can be identified.")
 
@@ -1047,6 +1072,9 @@ render_map(
     boundary_level=boundary_level,
     beat_stats=brief["beats"],
 )
+download_menu("Spatial view",
+              lambda f=filtered, h=hotspots, b=basemap: sightings_map_svg(f, h, b))
+st.caption("The downloaded map shows sightings and hotspot footprints over the basemap.")
 
 
 # ---------------------------------------------------------------------------
@@ -1072,6 +1100,8 @@ with trend_col1:
             yaxis_gridcolor="rgba(128,128,128,0.2)",
         )
         st.plotly_chart(fig, width="stretch")
+        download_menu("Monthly sightings and conflict events",
+                      lambda t=trend: report_charts.sightings_vs_conflict_svg(t))
 
 with trend_col2:
     st.markdown("**Conflict rate by division**")
@@ -1082,6 +1112,10 @@ with trend_col2:
         _plot(charts.division_rate_bars(
             rates, kpis["conflict_rate"], charts.division_colors(df["Division"].unique())
         ))
+        download_menu("Conflict rate by division",
+                      lambda r=rates, k=kpis["conflict_rate"],
+                      c=charts.division_colors(df["Division"].unique()):
+                      report_charts.division_rate_svg(r, k, c))
         st.caption(
             "Rate, not raw volume: sighting counts mostly track reporting effort."
         )
@@ -1104,6 +1138,9 @@ with dist_col1:
             yaxis_gridcolor="rgba(128,128,128,0.2)",
         )
         st.plotly_chart(fig, width="stretch")
+        download_menu("Severity distribution",
+                      lambda b=bands: report_charts.bars_svg(
+                          b["Band"].tolist(), b["Count"].tolist(), "Severity distribution"))
 
 with dist_col2:
     st.markdown("**Night vs. day**")
@@ -1119,6 +1156,9 @@ with dist_col2:
             yaxis_gridcolor="rgba(128,128,128,0.2)",
         )
         st.plotly_chart(fig, width="stretch")
+        download_menu("Night and day",
+                      lambda n=nd: report_charts.bars_svg(
+                          n["Period"].tolist(), n["Entries"].tolist(), "Night and day"))
 
 
 # ---------------------------------------------------------------------------

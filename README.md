@@ -392,6 +392,15 @@ drawn into the brief as inline SVG in the dashboard's colours -- no chart
 library, no script -- with the seasonal grid as a shaded table, so the brief
 still opens offline and prints as it looks on screen.
 
+**Every chart and map downloads.** A Download menu under each figure, in both
+views, gives SVG (vector), PNG at four times its drawn size, and PDF (vector).
+Each is exported from an SVG twin of the figure -- the brief's and the damage
+study's chart builders -- rather than captured from the interactive canvas,
+which the server cannot render. resvg draws the PNG with the DejaVu Sans fonts
+in `assets/fonts`, so text renders the same on a host with no fonts installed;
+svglib and ReportLab draw the PDF. Files are built only when a button is
+pressed. The spatial view downloads as sightings and hotspots over the basemap.
+
 ## Design rules
 
 **Composition informs the score, never the tier.** Tiers record harm that has
@@ -461,6 +470,7 @@ core/damage.py       Damage surveys: reading, de-identifying, analysis
 core/damage_charts.py Figures for the damage view
 core/damage_view.py  The damage and compensation view
 core/damage_report.py The damage study as vector HTML and PDF
+core/exports.py      SVG / PNG / PDF downloads for any chart or map
 core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief
