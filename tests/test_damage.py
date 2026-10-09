@@ -213,3 +213,69 @@ def test_damage_view_waits_for_an_export(monkeypatch):
     at.run()
     assert not at.exception, at.exception
     assert any("Upload a herd-crop-damage" in i.value for i in at.info)
+
+
+# --- The downloadable study -----------------------------------------------
+def test_html_study_is_self_contained_vector_and_de_identified(surveys):
+    import re
+    import xml.etree.ElementTree as ET
+
+    from core import damage_report
+
+    frame, notes = surveys
+    html = damage_report.build_html(frame, notes)
+    svgs = re.findall(r"<svg.*?</svg>", html, re.S)
+    assert len(svgs) >= 8  # every chart and the map
+    for svg in svgs:
+        ET.fromstring(svg)  # well-formed: names reach SVG text escaped
+    # Nothing fetched when it opens: no scripts, images or linked files.
+    assert "<script" not in html and "<img" not in html
+    assert "src=" not in html and "<link" not in html
+    for leak in ("Owner 1", "9000000001", "surveyor@example.org", ".jpg"):
+        assert leak not in html
+    assert "Follow-up queue" in html and "Gaj Rakshak gap" in html
+
+
+def test_pdf_study_draws_charts_as_vectors(surveys):
+    from core import damage_report
+
+    frame, notes = surveys
+    pdf = damage_report.build_pdf(frame, notes)
+    assert pdf.startswith(b"%PDF")
+    # Charts and map are drawing operators, not embedded pictures.
+    assert b"/Subtype /Image" not in pdf and b"/Subtype/Image" not in pdf
+    assert b"Owner 1" not in pdf and b"9000000001" not in pdf
+
+
+def test_map_outlines_are_clipped_to_the_frame():
+    from core.damage_report import _clip
+
+    square = [(-50, -50), (150, -50), (150, 150), (-50, 150)]
+    clipped = _clip(square, 100, 100)
+    assert all(0 <= x <= 100 and 0 <= y <= 100 for x, y in clipped)
+    assert sorted(set(clipped)) == [(0, 0), (0, 100), (100, 0), (100, 100)]
+
+
+def test_long_tables_move_to_an_appendix(surveys, monkeypatch):
+    from core import damage_report
+
+    monkeypatch.setattr(damage_report, "TOP_ROWS", 2)
+    frame, notes = surveys
+    html = damage_report.build_html(frame, notes)
+    assert "Appendix" in html and "the 2 largest of 4 case(s)" in html
+
+
+def test_view_offers_html_and_pdf_downloads(surveys, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    from core import damage_view
+
+    frame, notes = surveys
+    monkeypatch.setattr(damage_view, "sources", lambda: (frame, notes))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.session_state["view"] = "Damage & compensation"
+    at.run()
+    at = next(b for b in at.button if b.label == "Prepare HTML and PDF").click().run()
+    assert not at.exception, at.exception
+    labels = [b.label for b in at.get("download_button")]
+    assert "Download HTML" in labels and "Download PDF (A4)" in labels

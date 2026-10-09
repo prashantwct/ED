@@ -117,6 +117,52 @@ def _combine(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
     return both[~(has_id & both.duplicated("Entry"))].reset_index(drop=True)
 
 
+@st.cache_data(show_spinner="Drawing the HTML study...")
+def _study_html(df: pd.DataFrame, notes: Tuple[str, ...], match: Optional[pd.Series],
+                scope: str) -> bytes:
+    from core.damage_report import build_html
+
+    return build_html(df, notes, match, scope).encode("utf-8")
+
+
+@st.cache_data(show_spinner="Drawing the PDF study...")
+def _study_pdf(df: pd.DataFrame, notes: Tuple[str, ...], match: Optional[pd.Series],
+               scope: str) -> bytes:
+    from core.damage_report import build_pdf
+
+    return build_pdf(df, notes, match, scope)
+
+
+def _downloads(df: pd.DataFrame, notes: List[str], match: Optional[pd.Series],
+               pick: str) -> None:
+    """The whole study as a vector HTML file and an A4 PDF.
+
+    Drawn on demand: building both takes a few seconds, which every
+    rerun of the page should not pay.
+    """
+    scope = "" if pick == "All" else f"{pick} damage only"
+    stem = "damage_study" + ("" if pick == "All" else f"_{pick.lower()}")
+    with st.container(border=True):
+        st.markdown("**Download the study** -- every chart and the map as vector "
+                    "graphics, sharp at any zoom and in print. Same content in both.")
+        if not st.session_state.get("damage_report_ready"):
+            if st.button("Prepare HTML and PDF", key="damage_prepare"):
+                st.session_state["damage_report_ready"] = True
+                st.rerun()
+            return
+        left, right = st.columns(2)
+        try:
+            html = _study_html(df, tuple(notes), match, scope)
+            pdf = _study_pdf(df, tuple(notes), match, scope)
+        except Exception as exc:  # noqa: BLE001 - the view must survive a failed export
+            st.error(f"The study could not be drawn: {type(exc).__name__}: {exc}")
+            return
+        left.download_button("Download HTML", html, f"{stem}.html", mime="text/html",
+                             width="stretch", type="primary")
+        right.download_button("Download PDF (A4)", pdf, f"{stem}.pdf",
+                              mime="application/pdf", width="stretch", type="primary")
+
+
 def render(df: pd.DataFrame, notes: List[str], register: Optional[pd.DataFrame],
            basemap: str) -> None:
     """The whole view, top to bottom."""
@@ -164,6 +210,7 @@ def render(df: pd.DataFrame, notes: List[str], register: Optional[pd.DataFrame],
 
     section("assessment", "Assessment", "What the surveys say, in order of what needs doing")
     findings(damage.headlines(df, match))
+    _downloads(df, notes, match, pick)
 
     # -- Compensation ----------------------------------------------------------
     section("report", "Compensation",
