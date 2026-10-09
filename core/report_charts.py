@@ -473,3 +473,74 @@ def division_rate_svg(rates: pd.DataFrame, overall: float, colors: Dict[str, str
             f'font-size="10.5" fill="{INK_MUTED}">all divisions {overall:.0f}%</text>'
         )
     return plot.svg("Conflict rate by division")
+
+
+def bars_svg(categories: Sequence[str], values: Sequence[float], label: str,
+             y_title: str = "Reports", color: str = BRAND, width: int = WIDTH) -> str:
+    """Plain vertical bars, each labelled with its value."""
+    plot = _Plot(260, float(max(values) if len(values) else 0), width=width)
+    band, x_of = _band_x(plot, len(categories))
+    bar_w = band * 0.6
+    plot.grid(y_title)
+    for i, (cat, value) in enumerate(zip(categories, values)):
+        value = float(value)
+        if value > 0:
+            plot.parts.append(
+                f'<rect x="{x_of(i) - bar_w / 2:.1f}" y="{plot.y(value):.1f}" '
+                f'width="{bar_w:.1f}" height="{plot.y(0) - plot.y(value):.1f}" rx="2" '
+                f'fill="{color}"><title>{escape(str(cat))}: {value:,.0f}</title></rect>'
+                f'<text x="{x_of(i):.1f}" y="{plot.y(value) - 5:.1f}" text-anchor="middle" '
+                f'font-size="10.5" fill="{INK}">{value:,.0f}</text>'
+            )
+        plot.parts.append(
+            f'<text x="{x_of(i):.1f}" y="{plot.height - plot.bottom + 16}" '
+            f'text-anchor="middle" font-size="10.5" fill="{INK_MUTED}">{escape(str(cat))}</text>'
+        )
+    return plot.svg(label)
+
+
+def sightings_vs_conflict_svg(trend: pd.DataFrame) -> str:
+    """Monthly reports and conflict events: two lines on one count axis."""
+    months = pd.DatetimeIndex(pd.to_datetime(trend.index.astype(str)))
+    return _line_chart(
+        months,
+        [("Sightings", BRAND, trend["Sightings"].to_numpy(float)),
+         ("Conflict events", SEVERITY_RAMP["House"], trend["Conflict Events"].to_numpy(float))],
+        260, "Reports per month", end_labels=True,
+    )
+
+
+def seasonal_heatmap_svg(matrix: pd.DataFrame, width: int = WIDTH) -> str:
+    """Year by calendar month as shaded cells, the count in each."""
+    values = matrix.to_numpy(dtype=float)
+    top = np.nanmax(values) if np.isfinite(values).any() else 0.0
+    left, head, row_h = 56, 26, 34
+    cell_w = (width - left - 10) / max(len(matrix.columns), 1)
+    height = head + row_h * len(matrix) + 10
+    parts = []
+    for j, month in enumerate(matrix.columns):
+        parts.append(f'<text x="{left + cell_w * (j + 0.5):.1f}" y="18" text-anchor="middle" '
+                     f'font-size="11" fill="{INK_MUTED}">{escape(str(month))}</text>')
+    for i, (year, row) in enumerate(matrix.iterrows()):
+        y = head + i * row_h
+        parts.append(f'<text x="{left - 10}" y="{y + row_h / 2 + 4:.1f}" text-anchor="end" '
+                     f'font-size="11" fill="{INK}">{escape(str(year))}</text>')
+        for j, value in enumerate(row):
+            x = left + j * cell_w
+            if value != value:
+                parts.append(f'<rect x="{x + 1:.1f}" y="{y + 1}" width="{cell_w - 2:.1f}" '
+                             f'height="{row_h - 2}" fill="#fafbfa"/>')
+                continue
+            step = 0 if top <= 0 else min(int(value / top * (len(HEAT_STEPS) - 1) + 0.5),
+                                         len(HEAT_STEPS) - 1)
+            ink = "#ffffff" if step >= 4 else INK
+            parts.append(
+                f'<rect x="{x + 1:.1f}" y="{y + 1}" width="{cell_w - 2:.1f}" height="{row_h - 2}" '
+                f'fill="{HEAT_STEPS[step]}"><title>{escape(str(matrix.columns[j]))} '
+                f'{escape(str(year))}: {value:.0f}</title></rect>'
+                f'<text x="{x + cell_w / 2:.1f}" y="{y + row_h / 2 + 4:.1f}" text-anchor="middle" '
+                f'font-size="11" fill="{ink}">{value:.0f}</text>'
+            )
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+            f'role="img" aria-label="Conflict events by month and year" {FONT}>'
+            + "".join(parts) + "</svg>")

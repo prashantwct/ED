@@ -293,8 +293,15 @@ def damage_map_svg(df: pd.DataFrame, width: int = 900, height: int = 560) -> str
 # ---------------------------------------------------------------------------
 # What goes in the report: one list of sections, rendered twice
 # ---------------------------------------------------------------------------
-def _figures(df: pd.DataFrame) -> Dict[str, str]:
-    """Every chart, as SVG, keyed by name."""
+def figure(df: pd.DataFrame, key: str) -> Optional[str]:
+    """One chart or the map, as SVG -- what a single download needs."""
+    if key == "map":
+        return damage_map_svg(df) or None
+    return _figures(df, with_map=False).get(key)
+
+
+def _figures(df: pd.DataFrame, with_map: bool = True) -> Dict[str, str]:
+    """Every chart, as SVG, keyed by name. The map is the slow one."""
     figs: Dict[str, str] = {}
     pipe = damage.compensation_pipeline(df)
     kinds = [k for k in (damage.CROP, damage.HOUSE) if k in set(df["Kind"])]
@@ -368,7 +375,8 @@ def _figures(df: pd.DataFrame) -> Dict[str, str]:
         rm = damage.exploded_counts(house, "Rooms Damaged")
         figs["rooms"] = ranked_hbars(rm["Rooms Damaged"].tolist(), rm["Cases"].tolist(),
                                      KIND_COLORS[damage.HOUSE], label="Part of the house broken")
-    figs["map"] = damage_map_svg(df)
+    if with_map:
+        figs["map"] = damage_map_svg(df)
     return figs
 
 
