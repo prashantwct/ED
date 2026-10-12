@@ -401,6 +401,35 @@ in `assets/fonts`, so text renders the same on a host with no fonts installed;
 svglib and ReportLab draw the PDF. Files are built only when a button is
 pressed. The spatial view downloads as sightings and hotspots over the basemap.
 
+**Day refuges.** A third view finds where herds lie up by day, from the
+register loaded in the Conflict dashboard and Esri's 10 m Sentinel-2 land
+cover (read online by year, or uploaded as the GeoTIFFs Esri's Land Cover
+Explorer downloads). A place is a candidate refuge only if it passes every
+test, and each decoy it rejects is planted in the tests:
+
+* Sightings between 09:00 and 16:00 only -- dawn and dusk are movement, not
+  rest -- clustered (DBSCAN, 0.75 km) and seen on at least three separate days,
+  so one afternoon's passage is dropped.
+* At least 40% of all sightings there by day; a night-heavy place is a feeding
+  ground and is dropped and reported as such.
+* Cover: tree, flooded-vegetation and rangeland share within 250 m, and the
+  size of the tree patch it sits in. Day use without cover is kept but capped
+  at Possible and flagged for ground verification.
+* Stability: the refuge must reappear when the day window (08-17, 09-16,
+  10-15) and cluster radius (0.5-1 km) change.
+* Confirmed needs five days, two-thirds stability, a majority day share and
+  passing cover; without land cover nothing is Confirmed.
+
+Night conflict within 5 km on the night before or after a use day is linked
+to the nearest refuge in use, giving the direction raids head, their median
+distance and the villages hit. Each refuge carries its beat, nearest village,
+flags (small isolated patch, near settlement, breeding herd, lone bull) and
+a recommended action: the dusk-watch edge, the villages to warn, do-not-drive
+for herds with calves. It downloads as CSV, GeoJSON and KML for field phones,
+with the linked raids, and a land-cover card per refuge shows what is around
+it. Clusters of sightings say where herds were reported, not where every herd
+is: a refuge nobody reports from will not appear.
+
 ## Design rules
 
 **Composition informs the score, never the tier.** Tiers record harm that has
@@ -471,6 +500,9 @@ core/damage_charts.py Figures for the damage view
 core/damage_view.py  The damage and compensation view
 core/damage_report.py The damage study as vector HTML and PDF
 core/exports.py      SVG / PNG / PDF downloads for any chart or map
+core/esri_landcover.py Windowed reads of Esri 10 m land cover
+core/refuges.py      Day refuges: detection, cover, raid links, actions
+core/refuge_view.py  The day refuges view
 core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief

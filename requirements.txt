@@ -17,3 +17,6 @@ svglib==2.3.0
 # PNG downloads of any chart or map: resvg rasterises the SVG, using the
 # fonts in assets/fonts, from a self-contained wheel (no system cairo).
 resvg-py==0.5.0
+# Day refuges: windowed reads of Esri's 10 m land cover GeoTIFFs, uploaded
+# or straight from Esri's published files (manylinux wheel bundles GDAL).
+rasterio==1.4.4

@@ -226,9 +226,46 @@ def _clip(points: List[Tuple[float, float]], width: float, height: float
     return out
 
 
+def outline_parts(project, width: int, height: int) -> List[str]:
+    """Forest division, range and beat outlines, clipped to the frame."""
+    from core import boundaries
+
+    parts: List[str] = []
+    if not boundaries.available():
+        return parts
+    for level, color, stroke in ((boundaries.BEAT, "#d7c7a6", 0.6),
+                                 (boundaries.RANGE, "#c4a265", 0.9),
+                                 (boundaries.DIVISION, "#a9762c", 1.6)):
+        for feature in boundaries.load(level)["features"]:
+            for polygon in boundaries._rings(feature["geometry"]):
+                xy = [project(la, lo) for lo, la in polygon[0]]
+                xs_, ys_ = [p[0] for p in xy], [p[1] for p in xy]
+                if max(xs_) < 0 or min(xs_) > width or max(ys_) < 0 or min(ys_) > height:
+                    continue
+                if min(xs_) < 0 or max(xs_) > width or min(ys_) < 0 or max(ys_) > height:
+                    xy = _clip(xy, width, height)
+                    if len(xy) < 3:
+                        continue
+                path = "M" + "L".join(f"{x:.1f},{y:.1f}" for x, y in xy) + "Z"
+                parts.append(f'<path d="{path}" fill="none" stroke="{color}" '
+                             f'stroke-width="{stroke}"/>')
+    return parts
+
+
+def scale_bar(lat: float, zoom: float, height: int) -> List[str]:
+    """A km scale bar for a Web Mercator frame at this latitude and zoom."""
+    m_per_px = 156543.03392 * math.cos(math.radians(lat)) / (2 ** zoom)
+    km = next(k for k in (1, 2, 5, 10, 20, 50, 100) if k * 1000 / m_per_px >= 60)
+    px = km * 1000 / m_per_px
+    return [f'<rect x="14" y="{height - 34}" width="{px + 16:.1f}" height="24" rx="3" '
+            f'fill="#ffffff" fill-opacity="0.85"/>',
+            f'<line x1="22" x2="{22 + px:.1f}" y1="{height - 16}" y2="{height - 16}" '
+            f'stroke="{INK}" stroke-width="2"/>',
+            _text(22 + px / 2, height - 21, f"{km} km", 10, "middle")]
+
+
 def damage_map_svg(df: pd.DataFrame, width: int = 900, height: int = 560) -> str:
     """Surveys over forest outlines: area is loss, colour the claim, ring a house."""
-    from core import boundaries
     from core.map_export import _fit_view, _projector
 
     points = df.dropna(subset=["Latitude", "Longitude"])
@@ -238,25 +275,7 @@ def damage_map_svg(df: pd.DataFrame, width: int = 900, height: int = 560) -> str
                                width, height)
     project = _projector(lat, lon, zoom, width, height)
     parts = [f'<rect width="{width}" height="{height}" fill="#f4f6f3"/>']
-
-    if boundaries.available():
-        for level, color, stroke in ((boundaries.BEAT, "#d7c7a6", 0.6),
-                                     (boundaries.RANGE, "#c4a265", 0.9),
-                                     (boundaries.DIVISION, "#a9762c", 1.6)):
-            for feature in boundaries.load(level)["features"]:
-                for polygon in boundaries._rings(feature["geometry"]):
-                    ring = polygon[0]
-                    xy = [project(la, lo) for lo, la in ring]
-                    xs_, ys_ = [p[0] for p in xy], [p[1] for p in xy]
-                    if max(xs_) < 0 or min(xs_) > width or max(ys_) < 0 or min(ys_) > height:
-                        continue
-                    if min(xs_) < 0 or max(xs_) > width or min(ys_) < 0 or max(ys_) > height:
-                        xy = _clip(xy, width, height)
-                        if len(xy) < 3:
-                            continue
-                    path = "M" + "L".join(f"{x:.1f},{y:.1f}" for x, y in xy) + "Z"
-                    parts.append(f'<path d="{path}" fill="none" stroke="{color}" '
-                                 f'stroke-width="{stroke}"/>')
+    parts += outline_parts(project, width, height)
 
     loss = points["Estimated Loss"].fillna(0).clip(lower=0)
     radius = 2.5 + np.sqrt(loss) / np.sqrt(max(float(loss.max()), 1.0)) * 13
@@ -277,15 +296,7 @@ def damage_map_svg(df: pd.DataFrame, width: int = 900, height: int = 560) -> str
                          f'fill-opacity="0.82" stroke="#ffffff" stroke-width="0.8">'
                          f'<title>{escape(title)}</title></circle>')
 
-    # Scale bar: Web Mercator metres per pixel at this latitude and zoom.
-    m_per_px = 156543.03392 * math.cos(math.radians(lat)) / (2 ** zoom)
-    km = next(k for k in (1, 2, 5, 10, 20, 50, 100) if k * 1000 / m_per_px >= 60)
-    px = km * 1000 / m_per_px
-    parts.append(f'<rect x="14" y="{height - 34}" width="{px + 16:.1f}" height="24" rx="3" '
-                 f'fill="#ffffff" fill-opacity="0.85"/>')
-    parts.append(f'<line x1="22" x2="{22 + px:.1f}" y1="{height - 16}" y2="{height - 16}" '
-                 f'stroke="{INK}" stroke-width="2"/>')
-    parts.append(_text(22 + px / 2, height - 21, f"{km} km", 10, "middle"))
+    parts += scale_bar(lat, zoom, height)
     parts.append(f'<rect width="{width}" height="{height}" fill="none" stroke="{GRID}"/>')
     return _svg(width, height, parts, "Damage surveys by claim status")
 
