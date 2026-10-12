@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+from typing import Optional
 
 import pandas as pd
 import plotly.express as px
@@ -224,7 +225,43 @@ REGISTER_KEY = "loaded_register"
 # damage surveys. Different questions, so different pages.
 VIEW_KEY = "view"
 CONFLICT_VIEW, DAMAGE_VIEW = "Conflict dashboard", "Damage & compensation"
-view = st.sidebar.radio("View", [CONFLICT_VIEW, DAMAGE_VIEW], key=VIEW_KEY)
+REFUGE_VIEW = "Day refuges"
+view = st.sidebar.radio("View", [CONFLICT_VIEW, REFUGE_VIEW, DAMAGE_VIEW], key=VIEW_KEY)
+
+
+def _stashed_register() -> Optional[pd.DataFrame]:
+    """The register last loaded in the conflict view, if any."""
+    stash = st.session_state.get(REGISTER_KEY)
+    if stash is None:
+        return None
+    try:
+        return _load(*stash)[0]
+    except DataValidationError:
+        return None
+
+
+if view == REFUGE_VIEW:
+    from core import refuge_view
+
+    landing.header()
+    refuge_register = _stashed_register()
+    try:
+        refuge_villages, _ = load_village_centroids(None)
+    except SpatialEnrichmentError:
+        refuge_villages = None
+    if refuge_register is not None:
+        refuge_register, _ = attach_nearest_village(refuge_register, refuge_villages)
+        chosen = st.sidebar.multiselect(
+            "Division", sorted(refuge_register["Division"].unique()), key="refuge_divisions",
+            help="Leave empty for the whole register.")
+        if chosen:
+            refuge_register = refuge_register[refuge_register["Division"].isin(chosen)]
+    refuge_basemap = st.sidebar.selectbox(
+        "Basemap", list(BASEMAP_STYLES),
+        index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP), key="refuge_basemap",
+    )
+    refuge_view.render(refuge_register, refuge_villages, refuge_basemap)
+    st.stop()
 
 if view == DAMAGE_VIEW:
     from core import damage_view
@@ -234,13 +271,7 @@ if view == DAMAGE_VIEW:
     if damage_df is None:
         st.info("Upload a herd-crop-damage or herd-house-damage export to begin.")
         st.stop()
-    register_df = None
-    stash = st.session_state.get(REGISTER_KEY)
-    if stash is not None:
-        try:
-            register_df = _load(*stash)[0]
-        except DataValidationError:
-            register_df = None
+    register_df = _stashed_register()
     damage_basemap = st.sidebar.selectbox(
         "Basemap", list(BASEMAP_STYLES),
         index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP), key="damage_basemap",
