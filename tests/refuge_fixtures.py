@@ -12,6 +12,8 @@ register in which the truth is planted:
 * Passage -- a herd seen eight times on one afternoon. Must be dropped.
 * Open-field day use -- day sightings in open crop on five days. May be
   found, but must be flagged as having no cover.
+* Quiet refuge -- forest used by day on five days with no raid within
+  reach. A refuge, but not a management one: it must be left out.
 """
 
 import numpy as np
@@ -36,6 +38,7 @@ FEEDING = (5000.0, 6500.0)        # open crop
 PASSAGE = (4000.0, 1000.0)
 OPEN_DAY = (7500.0, 7500.0)
 VILLAGE = (7200.0, 2200.0)
+QUIET = (1000.0, 4500.0)          # inside the big block; used after the raiding season
 
 
 def landcover_tif(path) -> str:
@@ -97,10 +100,16 @@ def register(seed=7) -> pd.DataFrame:
     # Passage: one afternoon.
     for hour in (9, 10, 10, 11, 12, 13, 14, 15):
         add(PASSAGE, base + pd.Timedelta(days=20), hour, jitter=100)
-    # Day use in open crop.
+    # Day use in open crop, raiding fields 1.5 km south each evening.
     for k in range(5):
         for hour in (10, 14):
             add(OPEN_DAY, base + pd.Timedelta(days=4 * k + 2), hour, jitter=80)
+        add((OPEN_DAY[0], OPEN_DAY[1] - 1500), base + pd.Timedelta(days=4 * k + 2), 20,
+            jitter=100, crop=1)
+    # A quiet refuge: forest, day use on five days, never a raid near it.
+    for k in range(5):
+        for hour in (10, 13):
+            add(QUIET, base + pd.Timedelta(days=5 * k + 40), hour, jitter=80)
     # Dawn and dusk movement near the refuges: must not be counted as rest.
     for k in range(10):
         add(REFUGE_A, base + pd.Timedelta(days=3 * k), 6)

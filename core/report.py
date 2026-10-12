@@ -132,6 +132,7 @@ def generate_html_report(
     basemap_style_name: str = DEFAULT_BASEMAP,
     coverage: Optional[pd.DataFrame] = None,
     coverage_stats: Optional[Dict[str, object]] = None,
+    refuges: Optional[Dict[str, object]] = None,
 ) -> str:
     """Build a complete, styled conservation intelligence brief.
 
@@ -151,6 +152,9 @@ def generate_html_report(
         coverage: Output of :func:`core.coverage.village_coverage`. The
             section is omitted when no registry was supplied.
         coverage_stats: Its companion summary, used for the caveats.
+        refuges: Output of :func:`core.refuges.find_refuges`. Only refuges
+            with night conflict linked to them are shown; the section is
+            omitted when None.
 
     Returns:
         A complete HTML document as a string.
@@ -213,6 +217,8 @@ def generate_html_report(
     <h2>Villages at Risk</h2>
     {village_map_svg(village_risk, hotspots, basemap_style_name)}
     {_village_risk_html(village_risk)}
+
+    {_refuge_section(refuges)}
 
     {_coverage_section(coverage, coverage_stats)}
 
@@ -424,6 +430,14 @@ def _village_risk_html(village_risk: Optional[pd.DataFrame], top_n: int = 15) ->
         "<th class='num'>Distance</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
+
+
+def _refuge_section(refuges: Optional[Dict[str, object]]) -> str:
+    if refuges is None:
+        return ""
+    from core.refuge_report import brief_section
+
+    return brief_section(refuges)
 
 
 def _coverage_section(

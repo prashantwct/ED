@@ -40,8 +40,12 @@ COLORS: Dict[int, str] = {
 
 REMOTE_URL = ("https://lulctimeseries.blob.core.windows.net/lulctimeseriesv003/"
               "lc{year}/{tile}_{year}0101-{next}0101.tif")
+# A mirror or a later release can be named in the environment, with the same
+# {year}, {next} and {tile} fields.
+URL_ENV = "ESRI_LULC_URL"
 YEARS = tuple(range(2017, 2025))
-DEFAULT_YEAR = 2024
+# The latest year confirmed for the Indian tiles; 2024 returns 404 for 44Q.
+DEFAULT_YEAR = 2023
 
 METRES_PER_DEG = 111_320.0
 _BANDS = "CDEFGHJKLMNPQRSTUVWX"  # MGRS latitude bands, 8 degrees from 80 S
@@ -55,7 +59,10 @@ def utm_tile(lat: float, lon: float) -> str:
 
 
 def remote_url(year: int, lat: float, lon: float) -> str:
-    return REMOTE_URL.format(year=year, next=year + 1, tile=utm_tile(lat, lon))
+    import os
+
+    template = os.environ.get(URL_ENV) or REMOTE_URL
+    return template.format(year=year, next=year + 1, tile=utm_tile(lat, lon))
 
 
 @dataclass
@@ -89,13 +96,20 @@ class Window:
 
 
 class LandCover:
-    """Reads windows from a set of GeoTIFFs, local or remote."""
+    """Reads windows from a set of GeoTIFFs, local or remote.
+
+    Read online, a year Esri has not published for a tile (a 404) falls
+    back to the latest earlier year that is, and ``fallbacks`` says so;
+    ``failures`` lists only tiles no year could be read for.
+    """
 
     def __init__(self, sources: Sequence[str] = (), remote_year: Optional[int] = None):
         self.sources = list(sources)
         self.remote_year = remote_year
         self._open: Dict[str, object] = {}
+        self._errors: Dict[str, str] = {}
         self.failures: List[str] = []
+        self.fallbacks: Dict[str, int] = {}   # tile -> year actually read
 
     @property
     def label(self) -> str:
@@ -110,13 +124,18 @@ class LandCover:
             try:
                 self._open[path] = rasterio.open(path)
             except Exception as exc:  # noqa: BLE001 - a bad tile is reported, not fatal
-                self.failures.append(f"{path.rsplit('/', 1)[-1]}: {exc}")
+                self._errors[path] = f"{path.rsplit('/', 1)[-1]}: {exc}"
+                if not self.remote_year:
+                    self.failures.append(self._errors[path])
                 self._open[path] = None
         return self._open[path]
 
     def _candidates(self, lat: float, lon: float) -> List[str]:
         if self.remote_year:
-            return ["/vsicurl/" + remote_url(self.remote_year, lat, lon)]
+            years = [y for y in sorted(set(YEARS) | {self.remote_year}, reverse=True)
+                     if y <= self.remote_year]
+            urls = [remote_url(y, lat, lon) for y in years]
+            return [("/vsicurl/" + u) if u.startswith("http") else u for u in urls]
         return self.sources
 
     def window(self, lat: float, lon: float, half_m: float = 3000.0) -> Optional[Window]:
@@ -149,9 +168,19 @@ class LandCover:
                 col = int((x - ds.transform.c) / abs(ds.transform.a) - win.col_off)
                 row = min(max(row, 0), codes.shape[0] - 1)
                 col = min(max(col, 0), codes.shape[1] - 1)
+                if self.remote_year:
+                    year = _year_of(path)
+                    if year != self.remote_year:
+                        self.fallbacks[utm_tile(lat, lon)] = year
                 return Window(codes, row, col, dy_m, dx_m, path.rsplit("/", 1)[-1], lat, lon)
             except Exception as exc:  # noqa: BLE001
                 self.failures.append(f"{path.rsplit('/', 1)[-1]}: {exc}")
+        if self.remote_year:
+            tile = utm_tile(lat, lon)
+            note = (f"{tile}: no year from {self.remote_year} back to {YEARS[0]} could be read "
+                    f"({self._errors.get(self._candidates(lat, lon)[0], 'outside the file')})")
+            if not any(f.startswith(f"{tile}:") for f in self.failures):
+                self.failures.append(note)
         return None
 
     def close(self) -> None:
@@ -159,6 +188,14 @@ class LandCover:
             if ds is not None:
                 ds.close()
         self._open.clear()
+
+
+def _year_of(path: str) -> int:
+    """The map year in an Esri file name ('.../44Q_20230101-20240101.tif')."""
+    import re
+
+    found = re.search(r"_(\d{4})0101-", path)
+    return int(found.group(1)) if found else 0
 
 
 def thumbnail_png(window: Window, size: int = 360, marks: Sequence[Tuple[float, float]] = ()

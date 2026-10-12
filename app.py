@@ -1230,7 +1230,14 @@ section(
 )
 
 if st.button("Generate brief", type="primary"):
+    from core import refuge_view
+
     try:
+        try:
+            brief_refuges = refuge_view.for_brief(filtered, villages)
+        except Exception:  # noqa: BLE001 - the brief goes out without the section
+            logger.exception("Day refuges for the brief failed")
+            brief_refuges = None
         html = generate_html_report(
             filtered,
             filtered["Date"].min(),
@@ -1247,6 +1254,7 @@ if st.button("Generate brief", type="primary"):
             basemap_style_name=basemap,
             coverage=coverage_table,
             coverage_stats=coverage_stats,
+            refuges=brief_refuges,
         )
     except Exception as exc:  # noqa: BLE001 - report generation must never 500
         logger.exception("Report generation failed")
