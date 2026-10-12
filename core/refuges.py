@@ -207,6 +207,7 @@ def find_refuges(
     eps_km: float = EPS_KM,
     min_days: int = MIN_DAYS,
     link_km: float = LINK_KM,
+    require_raids: bool = True,
     as_of: Optional[pd.Timestamp] = None,
     progress: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, object]:
@@ -215,6 +216,10 @@ def find_refuges(
     Returns ``refuges`` (one row per refuge, most-used first), ``links``
     (one row per linked raid), ``windows`` (land-cover windows by refuge
     id, for thumbnails), ``summary`` and ``caveats``.
+
+    With ``require_raids`` (the default) a refuge no night conflict links
+    to is left out: a resting place that sends no raids is not a
+    management priority, and is counted in the caveats instead.
     """
     timed = df[df["Hour"].notna() & df["Date"].notna()
                & df["Latitude"].notna() & df["Longitude"].notna()].copy()
@@ -312,6 +317,15 @@ def find_refuges(
         raids, _ = attach_nearest_village(raids, villages)
     links = _link_raids(table, use_days, raids, link_km)
     table = _attach_links(table, links)
+    if require_raids:
+        quiet = int((table["Linked Raids"] == 0).sum())
+        table = table[table["Linked Raids"] > 0].reset_index(drop=True)
+        if quiet:
+            caveats.append(f"{quiet} place(s) used by day but with no night conflict linked "
+                           "to them are left out.")
+        if table.empty:
+            return _empty(caveats + ["No day refuge had night conflict linked to it."],
+                          len(timed), day_n)
     table = _attach_villages(table, villages, link_km)
     table = _attach_admin(table)
     table["Confidence"] = table.apply(_confidence, axis=1, land_cover=land_cover is not None)

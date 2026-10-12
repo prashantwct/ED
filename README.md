@@ -419,6 +419,8 @@ test, and each decoy it rejects is planted in the tests:
   10-15) and cluster radius (0.5-1 km) change.
 * Confirmed needs five days, two-thirds stability, a majority day share and
   passing cover; without land cover nothing is Confirmed.
+* Raids: a place used by day that no night conflict links to is left out,
+  and counted in the caveats. Such a place is not a management priority.
 
 Night conflict within 5 km on the night before or after a use day is linked
 to the nearest refuge in use, giving the direction raids head, their median
@@ -429,6 +431,14 @@ for herds with calves. It downloads as CSV, GeoJSON and KML for field phones,
 with the linked raids, and a land-cover card per refuge shows what is around
 it. Clusters of sightings say where herds were reported, not where every herd
 is: a refuge nobody reports from will not appear.
+
+The brief carries the same refuges: findings, the map of refuges and their
+linked raids, and the register with recommended actions. It uses the land
+cover and settings last chosen in the Day refuges view, or otherwise Esri's
+latest year read online. Read online, a year Esri has not published for a
+tile (a 404) falls back to the latest earlier year, and the view and brief
+say which year was used. Set `ESRI_LULC_URL` to read from a mirror, using the
+same `{year}`, `{next}` and `{tile}` fields.
 
 ## Design rules
 
@@ -503,6 +513,7 @@ core/exports.py      SVG / PNG / PDF downloads for any chart or map
 core/esri_landcover.py Windowed reads of Esri 10 m land cover
 core/refuges.py      Day refuges: detection, cover, raid links, actions
 core/refuge_view.py  The day refuges view
+core/refuge_report.py Day refuges map and brief section
 core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief

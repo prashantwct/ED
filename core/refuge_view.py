@@ -20,10 +20,11 @@ import streamlit as st
 
 from core import esri_landcover as lc
 from core import refuges as rf
+from core.refuge_report import CONFIDENCE_COLORS, RAID_COLOR, map_svg
 from core.ui import findings, section
 
-CONFIDENCE_COLORS = {rf.CONFIRMED: "#8C1D18", rf.PROBABLE: "#C2570C", rf.POSSIBLE: "#C9A227"}
-RAID_COLOR = "#5B6B62"
+# The source and settings last used in this view, for the brief to reuse.
+LAST_USED_KEY = "refuge_last_used"
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "ed_landcover"
 
 
@@ -56,7 +57,11 @@ def land_cover_source() -> Tuple[str, object]:
             help="Esri Sentinel-2 land use / land cover, 10 m, yearly.",
         )
         if choice.startswith("Read"):
-            year = st.selectbox("Year", list(lc.YEARS)[::-1], key="refuge_lc_year")
+            years = list(lc.YEARS)[::-1]
+            year = st.selectbox("Year", years, index=years.index(lc.DEFAULT_YEAR),
+                                key="refuge_lc_year",
+                                help="A year Esri has not published falls back to the "
+                                     "latest earlier one.")
             st.caption("Fetches only the few hundred kilobytes around each refuge from "
                        "Esri's published files. Needs internet where the app runs.")
             return "online", int(year)
@@ -101,7 +106,19 @@ def analyse(df: pd.DataFrame, villages: Optional[pd.DataFrame], source: Tuple[st
             cover.close()
     result["land_cover"] = cover.label if cover is not None else "None"
     result["land_cover_failures"] = list(cover.failures) if cover is not None else []
+    result["land_cover_notes"] = [
+        f"Esri has not published {value} land cover for tile {tile}; {year} was used there."
+        for tile, year in sorted(getattr(cover, "fallbacks", {}).items())]
     return result
+
+
+def for_brief(df: pd.DataFrame, villages: Optional[pd.DataFrame]) -> Dict[str, object]:
+    """Refuges for the brief, with the land cover and settings last used in
+    the Day refuges view, or the defaults and Esri's latest year online."""
+    source, params = st.session_state.get(LAST_USED_KEY, (
+        ("online", lc.DEFAULT_YEAR), ((rf.DAY_START, rf.DAY_END), rf.EPS_KM, rf.MIN_DAYS,
+                                      rf.LINK_KM)))
+    return analyse(df, villages, source, params)
 
 
 # ---------------------------------------------------------------------------
@@ -172,45 +189,6 @@ def _render_map(table: pd.DataFrame, links: pd.DataFrame, basemap: str) -> None:
     me._render_deck(layers, view, basemap)
 
 
-def map_svg(table: pd.DataFrame, links: pd.DataFrame, width: int = 900, height: int = 600) -> str:
-    """The refuge map as vector SVG, for the download menu."""
-    from html import escape
-
-    from core.damage_report import _svg, _text, outline_parts, scale_bar
-    from core.map_export import _fit_view, _projector
-
-    lats = table["Latitude"].tolist() + links["Latitude"].tolist()
-    lons = table["Longitude"].tolist() + links["Longitude"].tolist()
-    lat, lon, zoom = _fit_view(lats, lons, width, height)
-    project = _projector(lat, lon, zoom, width, height)
-    parts = [f'<rect width="{width}" height="{height}" fill="#f4f6f3"/>']
-    parts += outline_parts(project, width, height)
-    ref = table.set_index("Refuge")
-    for r in links.to_dict("records"):
-        x0, y0 = project(ref.at[r["Refuge"], "Latitude"], ref.at[r["Refuge"], "Longitude"])
-        x1, y1 = project(r["Latitude"], r["Longitude"])
-        parts.append(f'<line x1="{x0:.1f}" y1="{y0:.1f}" x2="{x1:.1f}" y2="{y1:.1f}" '
-                     f'stroke="{RAID_COLOR}" stroke-opacity="0.45" stroke-width="1"/>')
-        parts.append(f'<circle cx="{x1:.1f}" cy="{y1:.1f}" r="2.2" fill="{RAID_COLOR}"/>')
-    for r in table.to_dict("records"):
-        x, y = project(r["Latitude"], r["Longitude"])
-        color = CONFIDENCE_COLORS[r["Confidence"]]
-        parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{6 + min(r["Days Used"], 20) * 0.5:.1f}" '
-                     f'fill="{color}" fill-opacity="0.85" stroke="#ffffff" stroke-width="1.5">'
-                     f'<title>{escape(r["Refuge"])}</title></circle>')
-        parts.append(_text(x + 10, y - 8, r["Refuge"], 11, weight="bold"))
-    parts += scale_bar(lat, zoom, height)
-    legend_x = width - 150
-    for k, (name, color) in enumerate(CONFIDENCE_COLORS.items()):
-        y = 20 + k * 18
-        parts.append(f'<circle cx="{legend_x}" cy="{y - 4}" r="5" fill="{color}"/>')
-        parts.append(_text(legend_x + 10, y, f"{name} refuge", 10.5))
-    parts.append(f'<line x1="{legend_x - 6}" x2="{legend_x + 6}" y1="{20 + 3 * 18 - 4}" '
-                 f'y2="{20 + 3 * 18 - 4}" stroke="{RAID_COLOR}"/>')
-    parts.append(_text(legend_x + 10, 20 + 3 * 18, "Linked night raid", 10.5))
-    return _svg(width, height, parts, "Elephant day refuges and linked raids")
-
-
 # ---------------------------------------------------------------------------
 # The view
 # ---------------------------------------------------------------------------
@@ -231,11 +209,15 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
     params = settings()
     key = (params["day_window"], params["eps_km"], params["min_days"], params["link_km"])
     result = analyse(register, villages, source, key)
+    st.session_state[LAST_USED_KEY] = (source, key)
     table, links, s = result["refuges"], result["links"], result["summary"]
 
     st.caption(f"Land cover: {result['land_cover']}.")
+    for note in result["land_cover_notes"]:
+        st.info(note)
     for failure in result["land_cover_failures"][:3]:
-        st.warning(f"Land cover could not be read: {failure}")
+        st.warning(f"Land cover could not be read: {failure}. Upload the tile from Esri's "
+                   "Land Cover Explorer instead.")
 
     note = dict(delta_color="off", delta_arrow="off", border=True)
     c1, c2, c3, c4 = st.columns(4)

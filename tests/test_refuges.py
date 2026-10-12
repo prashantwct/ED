@@ -64,6 +64,18 @@ def test_day_use_without_cover_is_flagged_and_capped(result):
     assert "Verify on the ground" in open_day["Recommended Action"]
 
 
+def test_a_refuge_with_no_raids_linked_is_left_out(result):
+    assert _at(result["refuges"], fx.QUIET) is None
+    assert any("no night conflict linked" in c for c in result["caveats"])
+    assert (result["refuges"]["Linked Raids"] > 0).all()
+
+
+def test_quiet_refuges_can_still_be_listed_on_request(tif):
+    out = rf.find_refuges(fx.register(), fx.villages(), lc.LandCover([tif]), require_raids=False)
+    quiet = _at(out["refuges"], fx.QUIET)
+    assert quiet is not None and quiet["Linked Raids"] == 0
+
+
 def test_dawn_and_dusk_sightings_are_not_rest(result):
     a = _at(result["refuges"], fx.REFUGE_A)
     assert a["Day Sightings"] == 30  # 10 days x 3 rest-hour reports; 06 and 17 h left out
@@ -128,6 +140,41 @@ def test_a_lat_lon_raster_measures_the_same_as_utm(tif, tmp_path):
     assert abs(utm["Cover Share %"] - wgs["Cover Share %"]) <= 10
 
 
+def test_an_unpublished_year_falls_back_to_the_latest_published(tif, tmp_path, monkeypatch):
+    import shutil
+
+    lat, lon = fx.latlon(fx.REFUGE_A)
+    tile = lc.utm_tile(lat, lon)
+    (tmp_path / "lc2022").mkdir()
+    shutil.copy(tif, tmp_path / "lc2022" / f"{tile}_20220101-20230101.tif")
+    monkeypatch.setenv(lc.URL_ENV, str(tmp_path / "lc{year}" / "{tile}_{year}0101-{next}0101.tif"))
+    cover = lc.LandCover(remote_year=2024)
+    window = cover.window(lat, lon)
+    assert window is not None and window.source.startswith(f"{tile}_2022")
+    assert cover.fallbacks == {tile: 2022} and not cover.failures
+
+
+def test_no_published_year_is_one_clear_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv(lc.URL_ENV, str(tmp_path / "{year}" / "{tile}.tif"))
+    cover = lc.LandCover(remote_year=2024)
+    lat, lon = fx.latlon(fx.REFUGE_A)
+    assert cover.window(lat, lon) is None and cover.window(lat, lon) is None
+    assert len(cover.failures) == 1 and "no year from 2024 back to 2017" in cover.failures[0]
+
+
+def test_the_brief_carries_the_raiding_refuges_only(result):
+    from core.report import generate_html_report
+
+    df = fx.register()
+    html = generate_html_report(df, df["Date"].min(), df["Date"].max(), refuges=result)
+    assert "<h2>Day Refuges" in html
+    for ref in result["refuges"]["Refuge"]:
+        assert f"<td>{ref}</td>" in html
+    assert "no night conflict linked" in html
+    assert "Elephant day refuges and linked raids" in html  # the map
+    assert "Day Refuges" not in generate_html_report(df, df["Date"].min(), df["Date"].max())
+
+
 def test_utm_tile_names_match_esri_files():
     assert lc.utm_tile(23.8, 81.0) == "44Q"
     assert lc.utm_tile(24.5, 81.0) == "44R"
@@ -175,3 +222,27 @@ def test_view_without_a_register_says_where_to_load_it():
     at.run()
     assert not at.exception, at.exception
     assert any("Conflict dashboard view first" in i.value for i in at.info)
+
+
+def test_generate_brief_in_the_app_includes_refuges():
+    from streamlit.testing.v1 import AppTest
+
+    from core import refuge_view
+
+    df = fx.register()
+    df["Date"] = df["Date"].dt.strftime("%d/%m/%Y")
+    app = str(Path(__file__).resolve().parent.parent / "app.py")
+    at = AppTest.from_file(app, default_timeout=240)
+    from types import SimpleNamespace
+
+    at.session_state["fetched_register"] = SimpleNamespace(
+        data=df.to_csv(index=False).encode(), name="register.csv", rows=len(df), pages=1,
+        start_date="01/01/2026", end_date="01/03/2026", fetched_at="today")
+    at.session_state[refuge_view.LAST_USED_KEY] = (
+        ("none", None), ((rf.DAY_START, rf.DAY_END), rf.EPS_KM, rf.MIN_DAYS, rf.LINK_KM))
+    at.run()
+    assert not at.exception, at.exception
+    next(b for b in at.button if b.label == "Generate brief").click().run()
+    assert not at.exception, at.exception
+    assert not at.error, [e.value for e in at.error]
+    assert any(b.label == "Download brief (HTML)" for b in at.get("download_button"))
