@@ -88,6 +88,43 @@ def test_the_night_a_report_belongs_to():
     assert nights == {0: day_before, 1: d, 2: day_before, 4: day_before}  # 3: a day injury
 
 
+def test_every_raid_is_accounted_for(result):
+    s = result["summary"]
+    assert s["linked_raids"] + s["area_raids"] + s["scattered_raids"] == s["night_raids"]
+
+
+def test_raids_with_no_known_refuge_become_an_area_to_search(result):
+    areas = result["areas"]
+    lat, lon = fx.latlon(fx.UNKNOWN_RAIDS)
+    d = rf._km(lat, lon, areas["Latitude"].to_numpy(float), areas["Longitude"].to_numpy(float))
+    area = areas[d <= 1.0].iloc[0]
+    assert area["Raids"] == 5 and area["Nights"] == 5
+    # The open-field day-use site 1.4 km off was not in use on these nights.
+    assert area["To Nearest Known Refuge (km)"] > 1
+    # The forest block is the nearest patch big enough to hide a herd.
+    assert area["Search Patch (ha)"] > 300 and area["Search Patch Extends Beyond Window"]
+    assert area["Search Direction"] in ("W", "SW", "NW")
+    assert 3.5 <= area["Search Distance (km)"] <= 4.6
+    # The open-field site 1.4 km off is within reach: check it after raids.
+    assert "known day-use site" in area["Recommended Action"]
+    assert any("no known refuge" in line for line in rf.headlines(result))
+
+
+def test_a_raid_days_after_a_reported_day_still_links(tif):
+    df = fx.register()
+    lat, lon = fx.latlon((fx.REFUGE_A[0] + 2500, fx.REFUGE_A[1]))
+    # Entered 2 Feb, so the night of 1 Feb; A was last reported on 28 Jan.
+    late = {"Date": pd.Timestamp("2026-02-02"), "Hour": 8, "Latitude": lat, "Longitude": lon,
+            "Division": "Test", "Range": "Test", "Beat": "Test", "Total Count": 3,
+            "Crop Damage": 1, "House Damage": 0, "Injury": 0, "Death": 0}
+    reg = pd.concat([df, pd.DataFrame([late])], ignore_index=True)
+    wide = rf.find_refuges(reg, fx.villages(), lc.LandCover([tif]))["links"]
+    hit = wide[wide["Night Of"] == pd.Timestamp("2026-02-01")]
+    assert len(hit) == 1 and hit.iloc[0]["Link"] == "4 day(s) apart"
+    strict = rf.find_refuges(reg, fx.villages(), lc.LandCover([tif]), link_days=1)["links"]
+    assert not (strict["Night Of"] == pd.Timestamp("2026-02-01")).any()
+
+
 def test_a_refuge_with_no_raids_linked_is_left_out(result):
     assert _at(result["refuges"], fx.QUIET) is None
     assert any("no night raid linked" in c for c in result["caveats"])
@@ -119,7 +156,7 @@ def test_a_raid_is_linked_once_to_the_nearest_refuge(result):
     assert not links.duplicated(["Date", "Hour", "Latitude", "Longitude"]).any()
 
 
-def test_a_raid_on_a_night_the_refuge_was_empty_is_not_linked(tif):
+def test_a_raid_long_after_the_refuge_was_used_is_not_linked(tif):
     df = fx.register()
     lat, lon = fx.latlon((fx.REFUGE_A[0] + 2500, fx.REFUGE_A[1]))
     far_night = {"Date": pd.Timestamp("2026-06-15"), "Hour": 22, "Latitude": lat,
@@ -209,6 +246,11 @@ def test_field_files(result):
     gj = json.loads(rf.to_geojson(result["refuges"], result["links"]))
     kinds = {f["properties"]["kind"] for f in gj["features"]}
     assert kinds == {"refuge", "linked raid"}
+    gj = json.loads(rf.to_geojson(result["refuges"], result["links"], result["areas"]))
+    assert "raid area" in {f["properties"]["kind"] for f in gj["features"]}
+    root = ET.fromstring(rf.to_kml(result["refuges"], result["areas"]))
+    names = [n.text for n in root.findall(".//{http://www.opengis.net/kml/2.2}name")]
+    assert any(n.endswith("(search)") for n in names if n)
     root = ET.fromstring(rf.to_kml(result["refuges"]))
     marks = root.findall(".//{http://www.opengis.net/kml/2.2}Placemark")
     assert len(marks) == len(result["refuges"])
@@ -270,3 +312,12 @@ def test_generate_brief_in_the_app_includes_refuges():
     assert not at.exception, at.exception
     assert not at.error, [e.value for e in at.error]
     assert any(b.label == "Download brief (HTML)" for b in at.get("download_button"))
+
+
+def test_a_raid_area_far_from_any_known_refuge_names_the_patch_to_search():
+    row = {"Villages Raided": "Kukargoda", "To Nearest Known Refuge (km)": 40.0,
+           "Search Patch (ha)": 850.0, "Search Patch Extends Beyond Window": True,
+           "Search Distance (km)": 2.4, "Search Direction": "NE", "Casualties": 1}
+    action = rf._area_action(row)
+    assert "search the 850+ ha tree patch 2.4 km NE by day" in action
+    assert "Kukargoda" in action and "night patrol" in action

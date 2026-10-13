@@ -40,9 +40,21 @@ of the place. Injuries and deaths are reported as they happen, so they
 keep their hour and count as raids only at night.
 
 Each refuge is then linked to the raids it feeds: raids within
-``LINK_KM`` of the refuge on the night before or after a day it was in
-use. A raid near two refuges goes to the nearer one in use, so nothing is
-counted twice.
+``LINK_KM`` of the refuge on a night within ``LINK_DAYS`` of a day it was
+seen in use. Herds stay in one block of cover for days at a stretch but
+are not reported there every day, so the night-before-or-after rule alone
+links only the raids that happen to fall on a reported day. Each link
+records the gap: "Same night" when the refuge was reported the day before
+or after, otherwise the number of days. A raid near two refuges goes to
+one in use the same night if there is one, else to the nearer one, so
+nothing is counted twice.
+
+**Raids with no known refuge.** Every raid is accounted for. Raids that
+link to no refuge are grouped into raid areas (``AREA_EPS_KM``,
+``AREA_MIN_RAIDS`` or more); each is a place where elephants raid but no
+daytime refuge is on record within reach -- a refuge nobody has reported.
+With land cover, the nearest tree patch of ``SEARCH_MIN_HA`` or more
+within reach is named as the place to search by day.
 
 **What this cannot say.** Positions are the observer's, not the
 elephant's, often a few hundred metres off -- hence the 250 m cover disc
@@ -70,7 +82,10 @@ EPS_KM = 0.75                         # neighbour distance for day clusters
 MIN_SIGHTINGS = 3
 MIN_DAYS = 3
 LINK_KM = 5.0                         # a night's foray from the refuge
-LINK_DAYS = 1                         # raid on the night before, or the evening of, a day in use
+LINK_DAYS = 7                         # days between refuge use and the raid night
+AREA_EPS_KM = 1.5                     # raids this close form one raid area
+AREA_MIN_RAIDS = 3
+SEARCH_MIN_HA = 20.0                  # tree patch big enough to hide a herd by day
 COVER_DISC_M = 250.0
 COVER_PASS = 40.0       # % cover within the disc for Confirmed
 COVER_FAIL = 25.0       # below this the cover test fails
@@ -242,6 +257,7 @@ def find_refuges(
     eps_km: float = EPS_KM,
     min_days: int = MIN_DAYS,
     link_km: float = LINK_KM,
+    link_days: int = LINK_DAYS,
     require_raids: bool = True,
     as_of: Optional[pd.Timestamp] = None,
     progress: Optional[Callable[[str], None]] = None,
@@ -267,10 +283,21 @@ def find_refuges(
     if untimed:
         caveats.append(f"{untimed:,} sighting(s) without an hour cannot be placed in day or "
                        "night and are left out.")
+    raids = raids_and_nights(located).copy()
+    if len(raids):
+        raids["_deaths"] = human_deaths(raids)
+        raids["_injuries"] = human_injuries(raids)
+        if "Nearest Village" not in raids and villages is not None and len(villages):
+            from core.spatial import attach_nearest_village
+
+            raids, _ = attach_nearest_village(raids, villages)
+    ctx = {"raids": raids, "villages": villages, "land_cover": land_cover,
+           "link_km": link_km}
+
     day_n = int(is_day(timed["Hour"], *day_window).sum())
     if not len(timed) or day_n == 0:
         return _empty(caveats + ["No reports fall in the daytime rest window, so no "
-                                 "refuge can be identified."])
+                                 "refuge can be identified."], ctx=ctx)
 
     as_of = pd.Timestamp(as_of) if as_of is not None else timed["Date"].max()
     base = _candidates(timed, eps_km, day_window, MIN_SIGHTINGS, min_days)
@@ -282,11 +309,6 @@ def find_refuges(
         found = _candidates(timed, e, w, MIN_SIGHTINGS, min_days)
         centres_by_setting.append(np.array([_centre(m) for m in found]) if found
                                   else np.empty((0, 2)))
-
-    raids = raids_and_nights(located).copy()
-    if len(raids):
-        raids["_deaths"] = human_deaths(raids)
-        raids["_injuries"] = human_injuries(raids)
 
     rows, windows, use_days = [], {}, {}
     for i, members in enumerate(base):
@@ -349,14 +371,12 @@ def find_refuges(
                        "out.")
     if not rows:
         return _empty(caveats + [f"No place had daytime sightings on {min_days} or more "
-                                 "separate days and mostly daytime use."], len(timed), day_n)
+                                 "separate days and mostly daytime use."], len(timed), day_n,
+                      ctx=ctx)
 
     table = pd.DataFrame(rows)
-    if len(raids) and "Nearest Village" not in raids and villages is not None and len(villages):
-        from core.spatial import attach_nearest_village
-
-        raids, _ = attach_nearest_village(raids, villages)
-    links = _link_raids(table, use_days, raids, link_km)
+    known = table[["Latitude", "Longitude"]].copy()   # every day-use place, raids or not
+    links = _link_raids(table, use_days, raids, link_km, link_days)
     table = _attach_links(table, links)
     if require_raids:
         quiet = int((table["Linked Raids"] == 0).sum())
@@ -366,7 +386,7 @@ def find_refuges(
                            "to them are left out.")
         if table.empty:
             return _empty(caveats + ["No day refuge had a night raid linked to it."],
-                          len(timed), day_n)
+                          len(timed), day_n, ctx=ctx, known=known)
     table = _attach_villages(table, villages, link_km)
     table = _attach_admin(table)
     table["Confidence"] = table.apply(_confidence, axis=1, land_cover=land_cover is not None)
@@ -380,7 +400,10 @@ def find_refuges(
     links["Refuge"] = links["_i"].map(ids)
     windows = {ids[k]: v for k, v in windows.items() if k in ids}
     table = table.drop(columns=["_i", "_o"])
-    links = links.drop(columns=["_i"])
+    linked_idx = set(links["_raid"])
+    links = links.drop(columns=["_i", "_raid"])
+    areas, scattered = raid_areas(raids[~raids.index.isin(linked_idx)], known, villages,
+                                  land_cover, link_km)
 
     if land_cover is None:
         caveats.append("No land cover loaded: refuges rest on sighting evidence alone, and "
@@ -397,8 +420,9 @@ def find_refuges(
         f"{COVER_DISC_M:.0f} m disc rather than the single pixel for that reason.",
         "A refuge appears only where trackers go by day. No refuge in an area is not "
         "evidence that elephants do not lie up there.",
-        f"Raids are linked by place ({link_km:g} km) and night (the one before or after a "
-        "day in use), not identity: consistent with coming from the refuge, not proof.",
+        f"Raids are linked by place ({link_km:g} km) and time (a night within {link_days} "
+        "day(s) of a reported day in use), not identity: consistent with coming from the "
+        "refuge, not proof. Same-night links are the strongest.",
         "Damage is taken to have happened the night before its entry (the night itself if "
         f"entered after {NIGHT_START}:00), since it is found and recorded the next morning.",
     ]
@@ -407,26 +431,175 @@ def find_refuges(
         "confirmed": int((table["Confidence"] == CONFIRMED).sum()),
         "probable": int((table["Confidence"] == PROBABLE).sum()),
         "linked_raids": int(len(links)),
+        "same_night": int((links["Link"] == SAME_NIGHT).sum()) if len(links) else 0,
         "night_raids": int(len(raids)),
         "villages_to_warn": int(len(set(", ".join(table["Villages Within Reach"].dropna())
                                        .split(", ")) - {""})),
+        "areas": int(len(areas)),
+        "area_raids": int(areas["Raids"].sum()) if len(areas) else 0,
+        "scattered_raids": int(scattered),
     }
-    return {"refuges": table, "links": links, "windows": windows,
+    return {"refuges": table, "links": links, "windows": windows, "areas": areas,
             "summary": summary, "caveats": caveats}
 
 
-def _empty(caveats, timed=0, day=0) -> Dict[str, object]:
-    return {"refuges": pd.DataFrame(), "links": pd.DataFrame(), "windows": {},
+def _empty(caveats, timed=0, day=0, ctx=None, known=None) -> Dict[str, object]:
+    ctx = ctx or {}
+    raids = ctx.get("raids")
+    raids = raids if raids is not None else pd.DataFrame()
+    areas, scattered = raid_areas(raids, known, ctx.get("villages"), ctx.get("land_cover"),
+                                  ctx.get("link_km", LINK_KM))
+    return {"refuges": pd.DataFrame(), "links": pd.DataFrame(), "windows": {}, "areas": areas,
             "summary": {"timed": timed, "day_sightings": day, "refuges": 0, "confirmed": 0,
-                        "probable": 0, "linked_raids": 0, "night_raids": 0,
-                        "villages_to_warn": 0},
+                        "probable": 0, "linked_raids": 0, "same_night": 0,
+                        "night_raids": int(len(raids)), "villages_to_warn": 0,
+                        "areas": int(len(areas)),
+                        "area_raids": int(areas["Raids"].sum()) if len(areas) else 0,
+                        "scattered_raids": int(scattered)},
             "caveats": caveats}
 
 
+# ---------------------------------------------------------------------------
+# Raids with no known refuge
+# ---------------------------------------------------------------------------
+AREA_COLUMNS = ["Area", "Latitude", "Longitude", "Raids", "Nights", "First Raid", "Last Raid",
+                "Months", "House Damage", "Casualties", "Villages Raided",
+                "To Nearest Known Refuge (km)", "Division", "Range", "Beat"]
+
+
+def raid_areas(raids: pd.DataFrame, known: Optional[pd.DataFrame], villages, land_cover,
+               link_km: float = LINK_KM) -> Tuple[pd.DataFrame, int]:
+    """Raids no refuge accounts for, grouped into areas; and the count left scattered.
+
+    ``known`` holds every place with repeated day use (Latitude, Longitude),
+    linked or not, for the distance to the nearest known refuge.
+    """
+    if raids is None or len(raids) < AREA_MIN_RAIDS:
+        return pd.DataFrame(columns=AREA_COLUMNS), int(0 if raids is None else len(raids))
+    from core.analytics import classify_conflict
+
+    lat = raids["Latitude"].to_numpy(float)
+    lon = raids["Longitude"].to_numpy(float)
+    labels = _dbscan(_to_km_plane(lat, lon), eps=AREA_EPS_KM, min_samples=AREA_MIN_RAIDS)
+    cats = classify_conflict(raids)
+    rows = []
+    for label in sorted(set(labels) - {-1}):
+        part = raids[labels == label]
+        clat, clon = float(part["Latitude"].median()), float(part["Longitude"].median())
+        nights = part["Night Of"]
+        names = part.get("Nearest Village", pd.Series(dtype=object)).replace("", np.nan).dropna()
+        row = {
+            "Latitude": round(clat, 5), "Longitude": round(clon, 5),
+            "Raids": int(len(part)), "Nights": int(nights.nunique()),
+            "First Raid": nights.min(), "Last Raid": nights.max(),
+            "Months": ", ".join(pd.Timestamp(2000, m, 1).strftime("%b")
+                                for m in sorted(set(nights.dt.month))),
+            "House Damage": int((cats.loc[part.index] == "House").sum()),
+            "Casualties": int((part["_injuries"] + part["_deaths"]).sum())
+            if "_injuries" in part else 0,
+            "Villages Raided": ", ".join(names.value_counts().index[:4]),
+            "To Nearest Known Refuge (km)": (
+                round(float(_km(clat, clon, known["Latitude"].to_numpy(float),
+                                known["Longitude"].to_numpy(float)).min()), 1)
+                if known is not None and len(known) else np.nan),
+        }
+        if land_cover is not None:
+            window = land_cover.window(clat, clon, link_km * 1000.0)
+            if window is not None:
+                row.update(search_target(window))
+        rows.append(row)
+    scattered = int((labels == -1).sum())
+    if not rows:
+        return pd.DataFrame(columns=AREA_COLUMNS), scattered
+    table = pd.DataFrame(rows).sort_values(["Raids", "Nights"], ascending=False)
+    table = _attach_admin(table.reset_index(drop=True))
+    table.insert(0, "Area", [f"A{k + 1:02d}" for k in range(len(table))])
+    table["Recommended Action"] = table.apply(_area_action, axis=1, link_km=link_km)
+    return table, scattered
+
+
+def search_target(window) -> Dict[str, object]:
+    """The nearest tree patch big enough to hold a herd by day, from a raid area."""
+    from scipy import ndimage
+
+    from core import esri_landcover as lc
+
+    trees = window.codes == lc.TREES
+    out = {"Search Patch (ha)": np.nan, "Search Distance (km)": np.nan,
+           "Search Direction": "", "Search Latitude": np.nan, "Search Longitude": np.nan}
+    if not trees.any():
+        return out
+    labels, n = ndimage.label(trees, structure=np.ones((3, 3)))
+    sizes = ndimage.sum(trees, labels, index=np.arange(1, n + 1)) * window.pixel_ha
+    big = np.isin(labels, np.nonzero(sizes >= SEARCH_MIN_HA)[0] + 1)
+    if not big.any():
+        return out
+    rows, cols = np.nonzero(big)
+    d2 = ((rows - window.row) * window.dy_m) ** 2 + ((cols - window.col) * window.dx_m) ** 2
+    k = int(np.argmin(d2))
+    r, c = rows[k], cols[k]
+    plat = window.lat - (r - window.row) * window.dy_m / 111_320.0
+    plon = window.lon + (c - window.col) * window.dx_m / (
+        111_320.0 * math.cos(math.radians(window.lat)))
+    component = labels == labels[r, c]
+    out.update({
+        "Search Patch Extends Beyond Window": bool(
+            component[0, :].any() or component[-1, :].any()
+            or component[:, 0].any() or component[:, -1].any()),
+        "Search Patch (ha)": round(float(sizes[labels[r, c] - 1]), 0),
+        "Search Distance (km)": round(math.sqrt(float(d2[k])) / 1000.0, 1),
+        "Search Direction": compass(float(_bearing(window.lat, window.lon, plat, plon))),
+        "Search Latitude": round(plat, 5), "Search Longitude": round(plon, 5),
+    })
+    return out
+
+
+def _area_action(row, link_km: float = LINK_KM) -> str:
+    villages = row.get("Villages Raided") or "nearby villages"
+    acts = []
+    patch = row.get("Search Patch (ha)", np.nan)
+    known = row.get("To Nearest Known Refuge (km)", np.nan)
+    if known == known and known <= link_km:
+        acts.append(f"A known day-use site {known} km away was not reported on these nights: "
+                    "check it by day after each raid, and the cover around it")
+    elif patch == patch:
+        more = "+" if row.get("Search Patch Extends Beyond Window") else ""
+        acts.append(f"No daytime refuge on record within reach: search the {patch:.0f}{more} ha "
+                    f"tree patch {row['Search Distance (km)']} km {row['Search Direction']} "
+                    "by day")
+    else:
+        acts.append("No daytime refuge on record within reach: send trackers out by day to "
+                    "find where the herd lies up")
+    acts.append(f"Dusk watch and early warning for {villages}")
+    if row.get("Casualties"):
+        acts.append("People have been hurt here: night patrol with the village response team")
+    return "; ".join(acts)
+
+
+SAME_NIGHT = "Same night"
+
+
+def _use_gap(use: set, night_of: pd.Timestamp) -> int:
+    """Days between a raid night and the nearest reported day in use.
+
+    0 when the refuge was reported the day the night began or the day
+    after (lying up before the raid, or after it).
+    """
+    best = None
+    for d in use:
+        gap = 0 if 0 <= (d - night_of).days <= 1 else min(abs((d - night_of).days),
+                                                           abs((d - night_of).days - 1))
+        best = gap if best is None else min(best, gap)
+    return best if best is not None else 10 ** 6
+
+
 def _link_raids(table: pd.DataFrame, use_days: Dict[int, set], raids: pd.DataFrame,
-                link_km: float) -> pd.DataFrame:
-    """Each night raid to the nearest refuge in use the day before or after."""
-    cols = ["_i", "Date", "Night Of", "Hour", "Latitude", "Longitude", "Distance (km)", "Bearing",
+                link_km: float, link_days: int = LINK_DAYS) -> pd.DataFrame:
+    """Each raid to a refuge in use within ``link_days`` of its night.
+
+    A refuge reported the same night wins; otherwise the nearer one.
+    """
+    cols = ["_i", "_raid", "Link", "Days From Use", "Date", "Night Of", "Hour", "Latitude", "Longitude", "Distance (km)", "Bearing",
             "Village", "Deaths", "Injuries", "Category"]
     if raids is None or not len(raids):
         return pd.DataFrame(columns=cols)
@@ -438,18 +611,22 @@ def _link_raids(table: pd.DataFrame, use_days: Dict[int, set], raids: pd.DataFra
         night_of = raid["Night Of"]
         best = None
         for _, ref in table.iterrows():
-            # Lying up on day D, the animals raid the evening of D (leaving at
-            # dusk) or came in from the night before (D - 1).
-            if not any(-LINK_DAYS <= (night_of - d).days <= 0 for d in use_days[ref["_i"]]):
-                continue
             dist = float(_km(ref["Latitude"], ref["Longitude"], raid["Latitude"], raid["Longitude"]))
-            if dist <= link_km and (best is None or dist < best[1]):
-                best = (ref, dist)
+            if dist > link_km:
+                continue
+            gap = _use_gap(use_days[ref["_i"]], night_of)
+            if gap > link_days:
+                continue
+            key = (gap > 0, dist)
+            if best is None or key < best[0]:
+                best = (key, ref, dist, gap)
         if best is None:
             continue
-        ref, dist = best
+        _, ref, dist, gap = best
         out.append({
-            "_i": ref["_i"], "Date": raid["Date"], "Night Of": night_of,
+            "_i": ref["_i"], "_raid": idx,
+            "Link": SAME_NIGHT if gap == 0 else f"{gap} day(s) apart",
+            "Days From Use": int(gap), "Date": raid["Date"], "Night Of": night_of,
             "Hour": int(raid["Hour"]) if pd.notna(raid["Hour"]) else None,
             "Latitude": raid["Latitude"], "Longitude": raid["Longitude"],
             "Distance (km)": round(dist, 2),
@@ -482,6 +659,9 @@ def _attach_links(table: pd.DataFrame, links: pd.DataFrame) -> pd.DataFrame:
             reach.append(np.nan)
             villages.append("")
     table["Linked Raids"] = linked
+    table["Same-Night Raids"] = [
+        int((links[links["_i"] == i]["Link"] == SAME_NIGHT).sum()) if len(links) else 0
+        for i in table["_i"]]
     table["Linked Deaths"] = deaths
     table["Linked Injuries"] = injuries
     table["Linked House Damage"] = houses
@@ -591,17 +771,25 @@ def _actions(row) -> str:
 # ---------------------------------------------------------------------------
 # Outputs for the field
 # ---------------------------------------------------------------------------
-def to_geojson(refuges: pd.DataFrame, links: pd.DataFrame) -> str:
-    """Refuges as points and linked raids as lines, for QGIS or a phone map."""
+def _props(row: Dict[str, object], skip=("Latitude", "Longitude")) -> Dict[str, object]:
+    return {k: (v.isoformat() if isinstance(v, pd.Timestamp) else
+                (None if isinstance(v, float) and v != v else
+                 (v.item() if hasattr(v, "item") else v)))
+            for k, v in row.items() if k not in skip}
+
+
+def to_geojson(refuges: pd.DataFrame, links: pd.DataFrame,
+               areas: Optional[pd.DataFrame] = None) -> str:
+    """Refuges and raid areas as points, linked raids as lines, for QGIS or a phone map."""
     import json
 
     features = []
+    for row in ([] if areas is None else areas.to_dict("records")):
+        features.append({"type": "Feature", "properties": {"kind": "raid area", **_props(row)},
+                         "geometry": {"type": "Point",
+                                      "coordinates": [row["Longitude"], row["Latitude"]]}})
     for row in refuges.to_dict("records"):
-        props = {k: (v.isoformat() if isinstance(v, pd.Timestamp) else
-                     (None if isinstance(v, float) and v != v else
-                      (v.item() if hasattr(v, "item") else v)))
-                 for k, v in row.items() if k not in ("Latitude", "Longitude")}
-        features.append({"type": "Feature", "properties": {"kind": "refuge", **props},
+        features.append({"type": "Feature", "properties": {"kind": "refuge", **_props(row)},
                          "geometry": {"type": "Point",
                                       "coordinates": [row["Longitude"], row["Latitude"]]}})
     by_id = refuges.set_index("Refuge")
@@ -620,8 +808,8 @@ def to_geojson(refuges: pd.DataFrame, links: pd.DataFrame) -> str:
     return json.dumps({"type": "FeatureCollection", "features": features}, indent=1)
 
 
-def to_kml(refuges: pd.DataFrame) -> str:
-    """Refuges as placemarks, for Google Earth or a field GPS."""
+def to_kml(refuges: pd.DataFrame, areas: Optional[pd.DataFrame] = None) -> str:
+    """Refuges, and the tree patches to search near raid areas, as placemarks."""
     from html import escape
 
     colours = {CONFIRMED: "ff1e1e8c", PROBABLE: "ff0c57c2", POSSIBLE: "ff27a2c9"}
@@ -640,6 +828,21 @@ def to_kml(refuges: pd.DataFrame) -> str:
             f"<styleUrl>#{r['Confidence']}</styleUrl>"
             f"<Point><coordinates>{r['Longitude']},{r['Latitude']},0</coordinates></Point>"
             "</Placemark>")
+    for r in ([] if areas is None else areas.to_dict("records")):
+        lat, lon = r.get("Search Latitude", np.nan), r.get("Search Longitude", np.nan)
+        target = "search" if lat == lat else "raids"
+        if lat != lat:
+            lat, lon = r["Latitude"], r["Longitude"]
+        desc = (f"Raid area with no known day refuge: {r['Raids']} raid(s) on {r['Nights']} "
+                f"night(s), last {r['Last Raid']:%d %b %Y}. Beat: {r.get('Beat', '')}. "
+                f"{r['Recommended Action']}")
+        marks.append(
+            f"<Placemark><name>{escape(r['Area'])} ({target})</name>"
+            f"<description>{escape(desc)}</description><styleUrl>#search</styleUrl>"
+            f"<Point><coordinates>{lon},{lat},0</coordinates></Point></Placemark>")
+    styles += ('<Style id="search"><IconStyle><color>ff6b6b5b</color><scale>1.1</scale>'
+               "<Icon><href>http://maps.google.com/mapfiles/kml/shapes/target.png</href>"
+               "</Icon></IconStyle></Style>")
     return ('<?xml version="1.0" encoding="UTF-8"?>'
             '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
             "<name>Elephant day refuges</name>" + styles + "".join(marks)
@@ -648,16 +851,26 @@ def to_kml(refuges: pd.DataFrame) -> str:
 
 def headlines(result: Dict[str, object]) -> List[str]:
     s, table = result["summary"], result["refuges"]
-    lines = [f"{s['day_sightings']:,} of {s['timed']:,} timed reports fall in the daytime "
-             "rest window."]
+    lines = []
+    if s["night_raids"]:
+        lines.append(f"Of {s['night_raids']:,} night raids (damage dated to the night before "
+                     f"its entry): {s['linked_raids']:,} link to a known day refuge "
+                     f"({s['same_night']:,} the same night), {s['area_raids']:,} fall in "
+                     f"{s['areas']} raid area(s) with no daytime refuge on record, and "
+                     f"{s['scattered_raids']:,} are scattered.")
+    areas = result.get("areas")
+    if areas is not None and len(areas):
+        top = areas.iloc[0]
+        where = top["Villages Raided"] or f"{top['Beat']} beat"
+        lines.append(f"The biggest raid area with no known refuge, {top['Area']} around "
+                     f"{where}, saw {top['Raids']} raids on {top['Nights']} nights: an "
+                     "unreported refuge lies within a night's walk of it.")
+    lines.append(f"{s['day_sightings']:,} of {s['timed']:,} timed sightings fall in the "
+                 "daytime rest window.")
     if not s["refuges"]:
         return lines
-    lines.append(f"{s['refuges']} day refuge(s): {s['confirmed']} confirmed, "
+    lines.append(f"{s['refuges']} day refuge(s) send raids: {s['confirmed']} confirmed, "
                  f"{s['probable']} probable, the rest possible.")
-    if s["night_raids"]:
-        lines.append(f"{s['linked_raids']} of {s['night_raids']} night raids link to a refuge "
-                     "in use the day before or after (damage dated to the night before its "
-                     "entry).")
     top = table.sort_values("Linked Raids", ascending=False).iloc[0]
     if top["Linked Raids"]:
         lines.append(
