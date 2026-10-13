@@ -508,7 +508,12 @@ def _temporal_html(temporal: Dict[str, object]) -> str:
     months = temporal.get("peak_months") or []
     night_share = temporal.get("night_share", float("nan"))
 
-    parts = [f"<p><b>Peak window:</b> {escape(format_window(window))}</p>"]
+    parts = [f"<p><b>Injuries and deaths peak:</b> {escape(format_window(window))}</p>"]
+    if temporal.get("night_damage"):
+        parts.append(
+            f"<p><b>Crop and house damage:</b> {temporal['night_damage']:,} event(s), counted "
+            f"as night raids ({NIGHT_HOUR_START:02d}:00-{NIGHT_HOUR_END:02d}:00). Damage is "
+            "recorded the morning after, so its entry hour is not when it happened.</p>")
     if not pd.isna(night_share):
         parts.append(f"<p><b>Night share of conflict:</b> {night_share:.0f}%</p>")
     if months:

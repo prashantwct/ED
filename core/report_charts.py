@@ -415,7 +415,7 @@ def hourly_svg(hourly: pd.Series, night_start: int, night_end: int) -> str:
     plot = _Plot(200, float(counts.max()))
     band, x_of = _band_x(plot, 24)
     bar_w = band * 0.78
-    plot.grid("Conflict events by hour of day")
+    plot.grid("Injuries and deaths by hour of day")
     for i, (hour, value) in enumerate(zip(hours, counts)):
         night = hour >= night_start or hour < night_end
         if value > 0:
@@ -423,7 +423,7 @@ def hourly_svg(hourly: pd.Series, night_start: int, night_end: int) -> str:
                 f'<rect x="{x_of(i) - bar_w / 2:.1f}" y="{plot.y(value):.1f}" '
                 f'width="{bar_w:.1f}" height="{plot.y(0) - plot.y(value):.1f}" rx="1.5" '
                 f'fill="{NIGHT_COLOR if night else DAY_COLOR}">'
-                f"<title>{hour:02d}:00 - {value:.0f} conflict events</title></rect>"
+                f"<title>{hour:02d}:00 - {value:.0f} injuries and deaths</title></rect>"
             )
         if i % 2 == 0:
             plot.parts.append(
@@ -431,7 +431,7 @@ def hourly_svg(hourly: pd.Series, night_start: int, night_end: int) -> str:
                 f'text-anchor="middle" font-size="10.5" fill="{INK_MUTED}">{hour:02d}</text>'
             )
     plot.legend([("box", DAY_COLOR, "Day"), ("box", NIGHT_COLOR, "Night")])
-    return plot.svg("Conflict events by hour of day")
+    return plot.svg("Injuries and deaths by hour of day")
 
 
 def division_rate_svg(rates: pd.DataFrame, overall: float, colors: Dict[str, str]) -> str:

@@ -137,14 +137,11 @@ def raids_and_nights(df: pd.DataFrame) -> pd.DataFrame:
     """
     if df.empty:
         return df.assign(**{"Night Of": pd.Series(dtype="datetime64[ns]")})
-    from core.analytics import DAMAGE_FLAG_COLS
+    from core.analytics import property_damage_mask
 
     hour = pd.to_numeric(df["Hour"], errors="coerce") if "Hour" in df else \
         pd.Series(np.nan, index=df.index)
-    damage = pd.Series(False, index=df.index)
-    for col in DAMAGE_FLAG_COLS:
-        if col in df:
-            damage |= pd.to_numeric(df[col], errors="coerce").fillna(0) > 0
+    damage = property_damage_mask(df)
     casualty = (human_injuries(df) > 0) | (human_deaths(df) > 0)
     raid = damage | (casualty & is_night(hour))
     date = df["Date"].dt.normalize()

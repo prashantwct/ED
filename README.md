@@ -324,6 +324,14 @@ Routine — with the evidence behind it: reports, conflict events, adjusted
 conflict rate, casualties recent and total, night share, village proximity,
 which animals are causing it, trend, and a recommended action.
 
+**Timing.** Crop, grain and house damage is found and written down the
+morning after the raid, so a damage report's hour is when it was recorded.
+Every damage report counts as night conflict, in the night shares and in
+each beat's Night Conflict %, whatever hour it was entered at. The
+hour-of-day chart and the "when to staff" peak window are built from
+injuries and deaths only, which are reported as they happen; the timing
+panel and brief state how many damage events were counted as night raids.
+
 **Which animals.** Damage rate split by the kind of group seen. Only bulls
 carry tusks in this species, so the male count is the tusker count. In the
 export this was built against, a lone bull carried a 28% damage rate and a
