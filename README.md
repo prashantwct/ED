@@ -437,9 +437,22 @@ entries are never counted as day sightings, so a 10 am damage report in a
 field cannot become a "refuge"; they count as night use of the place.
 Injuries and deaths keep their reported hour and are raids only at night.
 
-A night raid within 5 km on the night before or after a use day is linked
-to the nearest refuge in use, giving the direction raids head, their median
-distance and the villages hit. Each refuge carries its beat, nearest village,
+A night raid within 5 km is linked to a refuge reported in use within 7
+days of the raid night (adjustable): herds stay in one block of cover for
+days but are not reported there every day. Each link says how close in time
+it is ("Same night" when the refuge was reported the day before or after),
+and a refuge reported the same night wins over a nearer one that was not.
+This gives the direction raids head, their median distance and the villages
+hit.
+
+Every raid is accounted for: linked to a refuge, in a raid area, or
+scattered. Raids no refuge accounts for are grouped into raid areas (three
+or more raids within 1.5 km). Each is a place elephants raid with no
+reported day refuge within reach -- in a register where one division
+reports almost only at night, most raids are of this kind. With land cover,
+each area names the nearest tree patch of 20 ha or more within reach, with
+its distance, direction and coordinates, as the place to search by day; the
+KML carries these as search targets for field phones. Each refuge carries its beat, nearest village,
 flags (small isolated patch, near settlement, breeding herd, lone bull) and
 a recommended action: the dusk-watch edge, the villages to warn, do-not-drive
 for herds with calves. It downloads as CSV, GeoJSON and KML for field phones,

@@ -16,6 +16,9 @@ register in which the truth is planted:
 * Morning damage entries -- crop damage in open fields, written down the
   morning after on five days. Under the entry's hour it looks like day
   use; it is a night raid and must not become a refuge.
+* Unknown refuge -- raids on five nights in fields 4 km east of the big
+  forest block, with no daytime sighting anywhere within reach. A raid
+  area to search, with the forest block as the place to look.
 * Quiet refuge -- forest used by day on five days with no raid within
   reach. A refuge, but not a management one: it must be left out.
 """
@@ -43,6 +46,7 @@ PASSAGE = (4000.0, 1000.0)
 OPEN_DAY = (7500.0, 7500.0)
 VILLAGE = (7200.0, 2200.0)
 DAMAGE_FIELD = (5500.0, 4000.0)   # open crop, damage entered in the morning
+UNKNOWN_RAIDS = (8500.0, 8500.0)  # raided, no day sighting within 5 km
 QUIET = (1000.0, 4500.0)          # inside the big block; used after the raiding season
 
 
@@ -117,6 +121,9 @@ def register(seed=7) -> pd.DataFrame:
     for k in range(5):
         for hour in (10, 12):
             add(DAMAGE_FIELD, base + pd.Timedelta(days=6 * k + 4), hour, jitter=80, crop=1)
+    # Raids from a refuge nobody reports, entered the next morning.
+    for k in range(5):
+        add(UNKNOWN_RAIDS, base + pd.Timedelta(days=61 + k), 8, jitter=200, crop=1)
     # A quiet refuge: forest, day use on five days, never a raid near it.
     for k in range(5):
         for hour in (10, 13):

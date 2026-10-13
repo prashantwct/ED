@@ -20,7 +20,7 @@ import streamlit as st
 
 from core import esri_landcover as lc
 from core import refuges as rf
-from core.refuge_report import CONFIDENCE_COLORS, RAID_COLOR, map_svg
+from core.refuge_report import AREA_COLOR, CONFIDENCE_COLORS, RAID_COLOR, map_svg
 from core.ui import findings, section
 
 # The source and settings last used in this view, for the brief to reuse.
@@ -85,7 +85,12 @@ def settings() -> Dict[str, object]:
         days = st.slider("Minimum separate days of use", 2, 10, rf.MIN_DAYS, key="refuge_days")
         link = st.slider("Night raid reach from a refuge (km)", 1.0, 10.0, rf.LINK_KM, 0.5,
                          key="refuge_link")
-    return {"day_window": (start, end), "eps_km": eps, "min_days": days, "link_km": link}
+        link_days = st.slider(
+            "Raid within (days) of the refuge being reported", 1, 30, rf.LINK_DAYS,
+            key="refuge_link_days",
+            help="Herds stay in cover for days but are not reported there daily.")
+    return {"day_window": (start, end), "eps_km": eps, "min_days": days, "link_km": link,
+            "link_days": link_days}
 
 
 @st.cache_data(show_spinner="Finding day refuges...", max_entries=8)
@@ -97,10 +102,10 @@ def analyse(df: pd.DataFrame, villages: Optional[pd.DataFrame], source: Tuple[st
         cover = lc.LandCover(remote_year=value)
     elif kind == "files":
         cover = lc.LandCover(list(value))
-    day_window, eps_km, min_days, link_km = params
+    day_window, eps_km, min_days, link_km, link_days = params
     try:
         result = rf.find_refuges(df, villages, cover, day_window=day_window, eps_km=eps_km,
-                                 min_days=min_days, link_km=link_km)
+                                 min_days=min_days, link_km=link_km, link_days=link_days)
     finally:
         if cover is not None:
             cover.close()
@@ -117,20 +122,49 @@ def for_brief(df: pd.DataFrame, villages: Optional[pd.DataFrame]) -> Dict[str, o
     the Day refuges view, or the defaults and Esri's latest year online."""
     source, params = st.session_state.get(LAST_USED_KEY, (
         ("online", lc.DEFAULT_YEAR), ((rf.DAY_START, rf.DAY_END), rf.EPS_KM, rf.MIN_DAYS,
-                                      rf.LINK_KM)))
+                                      rf.LINK_KM, rf.LINK_DAYS)))
     return analyse(df, villages, source, params)
 
 
 # ---------------------------------------------------------------------------
 # The map
 # ---------------------------------------------------------------------------
-def _render_map(table: pd.DataFrame, links: pd.DataFrame, basemap: str) -> None:
+def _render_map(table: pd.DataFrame, links: pd.DataFrame, basemap: str,
+                areas: Optional[pd.DataFrame] = None) -> None:
     from core import map_engine as me
 
     points = table.copy()
-    view = me._adaptive_view_state(pd.concat([points[["Latitude", "Longitude"]],
-                                              links[["Latitude", "Longitude"]]]))
+    areas = areas if areas is not None else pd.DataFrame()
+    view = me._adaptive_view_state(pd.concat(
+        [f[["Latitude", "Longitude"]] for f in (points, links, areas) if len(f)]))
     layers = list(me.boundary_layers(view, None))
+    if len(areas):
+        area_tips = [me._slots(
+            title=f"{r['Area']} - raid area, no known refuge",
+            accent=me._hex_to_rgb(AREA_COLOR),
+            subtitle=me._trail(r.get("Beat"), r.get("Range")),
+            rows=[("Raids", f"{r['Raids']} on {r['Nights']} nights"),
+                  ("Last raid", f"{r['Last Raid']:%d %b %Y}"),
+                  ("Villages", r["Villages Raided"] or None),
+                  ("Search", f"{r['Search Patch (ha)']:.0f} ha tree patch, "
+                             f"{r['Search Distance (km)']} km {r['Search Direction']}"
+                   if r.get("Search Patch (ha)") == r.get("Search Patch (ha)")
+                   and "Search Patch (ha)" in r else None)],
+            footer=r["Recommended Action"],
+        ) for r in areas.to_dict("records")]
+        area_data = pd.concat([areas[["Latitude", "Longitude"]].reset_index(drop=True),
+                               pd.DataFrame(area_tips)], axis=1)
+        area_data["_r"] = 300 + 40 * areas["Raids"].clip(upper=40).to_numpy()
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", data=area_data, get_position="[Longitude, Latitude]",
+            get_radius="_r", radius_min_pixels=6,
+            get_fill_color=list(me._hex_to_rgb(AREA_COLOR)) + [60],
+            get_line_color=list(me._hex_to_rgb(AREA_COLOR)) + [230],
+            stroked=True, line_width_min_pixels=2, pickable=True,
+        ))
+    if points.empty:
+        me._render_deck(layers, view, basemap)
+        return
     if len(links):
         ref = table.set_index("Refuge")
         lines = links.assign(
@@ -145,7 +179,7 @@ def _render_map(table: pd.DataFrame, links: pd.DataFrame, basemap: str) -> None:
         raid_tips = [me._slots(
             title=f"Night raid linked to {r['Refuge']}",
             accent=me._hex_to_rgb(RAID_COLOR),
-            subtitle=f"{r['Date']:%d %b %Y}, {int(r['Hour']):02d}:00",
+            subtitle=f"Night of {r['Night Of']:%d %b %Y} ({r['Link'].lower()})",
             rows=[("Damage", r["Category"]), ("From refuge", f"{r['Distance (km)']:.1f} km"),
                   ("Village", r["Village"] or None)],
         ) for r in links.to_dict("records")]
@@ -207,10 +241,12 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
 
     source = land_cover_source()
     params = settings()
-    key = (params["day_window"], params["eps_km"], params["min_days"], params["link_km"])
+    key = (params["day_window"], params["eps_km"], params["min_days"], params["link_km"],
+           params["link_days"])
     result = analyse(register, villages, source, key)
     st.session_state[LAST_USED_KEY] = (source, key)
     table, links, s = result["refuges"], result["links"], result["summary"]
+    areas = result.get("areas", pd.DataFrame())
 
     st.caption(f"Land cover: {result['land_cover']}.")
     for note in result["land_cover_notes"]:
@@ -221,36 +257,45 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
 
     note = dict(delta_color="off", delta_arrow="off", border=True)
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Day refuges", f"{s['refuges']}",
+    c1.metric("Night raids", f"{s['night_raids']:,}",
+              delta=f"{s['scattered_raids']:,} scattered", **note)
+    c2.metric("Linked to a day refuge", f"{s['linked_raids']:,}",
+              delta=f"{s['same_night']:,} the same night", **note)
+    c3.metric("In raid areas, no known refuge", f"{s['area_raids']:,}",
+              delta=f"{s['areas']} area(s) to search", **note)
+    c4.metric("Day refuges", f"{s['refuges']}",
               delta=f"{s['confirmed']} confirmed, {s['probable']} probable", **note)
-    c2.metric("Linked night raids", f"{s['linked_raids']:,}",
-              delta=f"of {s['night_raids']:,} night raids", **note)
-    c3.metric("Villages within reach", f"{s['villages_to_warn']:,}", delta="of a refuge", **note)
-    c4.metric("Daytime reports used", f"{s['day_sightings']:,}",
-              delta=f"of {s['timed']:,} timed", **note)
 
     findings(rf.headlines(result))
-    if table.empty:
+    if table.empty and areas.empty:
         for c in result["caveats"]:
             st.caption(c)
         return
 
-    st.markdown("**Refuges and the raids linked to them**")
-    _render_map(table, links, basemap)
+    st.markdown("**Refuges, the raids linked to them, and raid areas with no known refuge**")
+    _render_map(table, links, basemap, areas)
     from core.exports import download_menu
 
-    download_menu("Day refuge map", lambda t=table, l=links: map_svg(t, l))
+    download_menu("Day refuge map", lambda t=table, l=links, a=areas: map_svg(t, l, areas=a))
     legend = " ".join(
         f'<span class="ci-legend__item"><span class="ci-legend__dot" style="background:{c};">'
         f"</span>{n}</span>" for n, c in CONFIDENCE_COLORS.items())
     st.markdown(f'<div class="ci-legend">{legend}<span class="ci-legend__item">'
                 f'<span class="ci-legend__dot" style="background:{RAID_COLOR};"></span>'
-                "Linked night raid</span></div>", unsafe_allow_html=True)
+                'Linked night raid</span><span class="ci-legend__item">'
+                f'<span class="ci-legend__dot" style="background:{AREA_COLOR};'
+                'border-radius:2px;"></span>Raid area, no known refuge</span></div>',
+                unsafe_allow_html=True)
+    _areas_table(areas)
+    if table.empty:
+        _method(result)
+        return
 
     st.markdown("**Refuge register** -- strongest evidence first")
     shown = [c for c in [
         "Refuge", "Confidence", "Beat", "Range", "Days Used", "Last Used", "Months Used",
-        "Group", "Cover Share %", "Tree Patch (ha)", "Linked Raids", "Raids Head",
+        "Group", "Cover Share %", "Tree Patch (ha)", "Linked Raids", "Same-Night Raids",
+        "Raids Head",
         "Raid Distance (km, median)", "Villages Raided", "Nearest Village",
         "To Nearest Village (km)", "Flags", "Recommended Action"] if c in table]
     st.dataframe(table[shown], width="stretch", hide_index=True, column_config={
@@ -262,9 +307,10 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
     d1, d2, d3, d4 = st.columns(4)
     d1.download_button("Refuges (CSV)", table.to_csv(index=False).encode(), "day_refuges.csv",
                        mime="text/csv", width="stretch")
-    d2.download_button("Refuges + raids (GeoJSON)", rf.to_geojson(table, links).encode(),
+    d2.download_button("Refuges + raids (GeoJSON)",
+                       rf.to_geojson(table, links, areas).encode(),
                        "day_refuges.geojson", mime="application/geo+json", width="stretch")
-    d3.download_button("Refuges (KML, Google Earth)", rf.to_kml(table).encode(),
+    d3.download_button("Refuges (KML, Google Earth)", rf.to_kml(table, areas).encode(),
                        "day_refuges.kml", mime="application/vnd.google-earth.kml+xml",
                        width="stretch")
     d4.download_button("Linked raids (CSV)", links.to_csv(index=False).encode(),
@@ -272,10 +318,32 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
     st.caption("GeoJSON opens in QGIS; KML in Google Earth or a phone map app for field teams.")
 
     _cards(table, links, result["windows"])
+    _method(result)
+
+
+def _method(result: Dict[str, object]) -> None:
     with st.expander("Method, and what this cannot say", expanded=False):
         st.markdown(rf.__doc__.split("\n", 1)[1])
         for c in result["caveats"]:
             st.markdown(f"- {c}")
+
+
+def _areas_table(areas: pd.DataFrame) -> None:
+    if areas is None or areas.empty:
+        return
+    st.markdown("**Raid areas with no known refuge** -- raids no reported day refuge accounts "
+                "for; an unreported refuge lies within a night's walk of each")
+    shown = [c for c in [
+        "Area", "Beat", "Range", "Raids", "Nights", "Last Raid", "Months", "House Damage",
+        "Casualties", "Villages Raided", "To Nearest Known Refuge (km)", "Search Patch (ha)",
+        "Search Distance (km)", "Search Direction", "Recommended Action"] if c in areas]
+    st.dataframe(areas[shown], width="stretch", hide_index=True, column_config={
+        "Last Raid": st.column_config.DateColumn(format="DD MMM YYYY"),
+        "Recommended Action": st.column_config.TextColumn(width="large"),
+    })
+    st.download_button("Raid areas to search (CSV)", areas.to_csv(index=False).encode(),
+                       "raid_areas_no_refuge.csv", mime="text/csv",
+                       key="refuge_areas_csv")
 
 
 def _cards(table: pd.DataFrame, links: pd.DataFrame, windows: Dict[str, object]) -> None:
