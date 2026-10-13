@@ -80,7 +80,7 @@ def _cell(col: str, value: object) -> str:
 def brief_section(result: Dict[str, object], top_n: int = 12) -> str:
     """The brief's Day Refuges section: findings, map, register, caveats.
 
-    Only refuges with night conflict linked to them are in ``result`` (see
+    Only refuges with night raids linked to them are in ``result`` (see
     :func:`core.refuges.find_refuges`), so every row here sends raids.
     """
     table, links = result["refuges"], result["links"]
@@ -92,7 +92,7 @@ def brief_section(result: Dict[str, object], top_n: int = 12) -> str:
     findings = "".join(f"<li>{escape(line)}</li>" for line in lines)
     out = [head, f'<div class="headlines"><ul>{findings}</ul></div>']
     if table is None or table.empty:
-        out.append('<p class="empty-note">No day refuge had night conflict linked to it in '
+        out.append('<p class="empty-note">No day refuge had a night raid linked to it in '
                    "this period.</p>")
     else:
         out.append("<div class='chart-title'>Refuges and the night raids linked to them</div>"

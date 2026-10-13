@@ -224,7 +224,7 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
     c1.metric("Day refuges", f"{s['refuges']}",
               delta=f"{s['confirmed']} confirmed, {s['probable']} probable", **note)
     c2.metric("Linked night raids", f"{s['linked_raids']:,}",
-              delta=f"of {s['night_raids']:,} night conflict reports", **note)
+              delta=f"of {s['night_raids']:,} night raids", **note)
     c3.metric("Villages within reach", f"{s['villages_to_warn']:,}", delta="of a refuge", **note)
     c4.metric("Daytime reports used", f"{s['day_sightings']:,}",
               delta=f"of {s['timed']:,} timed", **note)

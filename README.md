@@ -419,10 +419,17 @@ test, and each decoy it rejects is planted in the tests:
   10-15) and cluster radius (0.5-1 km) change.
 * Confirmed needs five days, two-thirds stability, a majority day share and
   passing cover; without land cover nothing is Confirmed.
-* Raids: a place used by day that no night conflict links to is left out,
+* Raids: a place used by day that no night raid links to is left out,
   and counted in the caveats. Such a place is not a management priority.
 
-Night conflict within 5 km on the night before or after a use day is linked
+Damage is written down the morning after the raid, so a crop, grain or
+house damage entry is dated to the night before it (or to the same night
+if entered after 18:00, and to the night before if it has no hour). Damage
+entries are never counted as day sightings, so a 10 am damage report in a
+field cannot become a "refuge"; they count as night use of the place.
+Injuries and deaths keep their reported hour and are raids only at night.
+
+A night raid within 5 km on the night before or after a use day is linked
 to the nearest refuge in use, giving the direction raids head, their median
 distance and the villages hit. Each refuge carries its beat, nearest village,
 flags (small isolated patch, near settlement, breeding herd, lone bull) and

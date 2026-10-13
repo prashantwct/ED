@@ -64,9 +64,33 @@ def test_day_use_without_cover_is_flagged_and_capped(result):
     assert "Verify on the ground" in open_day["Recommended Action"]
 
 
+def test_damage_entered_next_morning_is_a_raid_not_a_refuge(result):
+    assert _at(result["refuges"], fx.DAMAGE_FIELD) is None
+    links = result["links"]
+    # A's raids are entered at 08:00 the day after and still link to A.
+    a = _at(result["refuges"], fx.REFUGE_A)
+    mine = links[(links["Refuge"] == a["Refuge"]) & (links["Hour"] == 8)]
+    assert len(mine) >= 10
+    assert (mine["Night Of"] == mine["Date"].dt.normalize() - pd.Timedelta(days=1)).all()
+
+
+def test_the_night_a_report_belongs_to():
+    d = pd.Timestamp("2026-03-10")
+    df = pd.DataFrame({
+        "Date": [d] * 5, "Hour": [8, 21, None, 14, 2],
+        "Latitude": [23.8] * 5, "Longitude": [81.0] * 5,
+        "Crop Damage": [1, 1, 1, 0, 0], "House Damage": [0] * 5,
+        "Injury": [0, 0, 0, 1, 1], "Death": [0] * 5,
+    })
+    out = rf.raids_and_nights(df)
+    nights = dict(zip(out.index, out["Night Of"]))
+    day_before = d - pd.Timedelta(days=1)
+    assert nights == {0: day_before, 1: d, 2: day_before, 4: day_before}  # 3: a day injury
+
+
 def test_a_refuge_with_no_raids_linked_is_left_out(result):
     assert _at(result["refuges"], fx.QUIET) is None
-    assert any("no night conflict linked" in c for c in result["caveats"])
+    assert any("no night raid linked" in c for c in result["caveats"])
     assert (result["refuges"]["Linked Raids"] > 0).all()
 
 
@@ -170,7 +194,7 @@ def test_the_brief_carries_the_raiding_refuges_only(result):
     assert "<h2>Day Refuges" in html
     for ref in result["refuges"]["Refuge"]:
         assert f"<td>{ref}</td>" in html
-    assert "no night conflict linked" in html
+    assert "no night raid linked" in html
     assert "Elephant day refuges and linked raids" in html  # the map
     assert "Day Refuges" not in generate_html_report(df, df["Date"].min(), df["Date"].max())
 

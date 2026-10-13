@@ -5,13 +5,17 @@ over farmland with two forest patches and a village, and a sighting
 register in which the truth is planted:
 
 * Refuge A -- a large forest block, used by day on ten days; the herd
-  raids fields 2-3 km east on the evenings it is there.
+  raids fields 2-3 km east on the nights it is there, and the damage is
+  entered the next morning, as it is in the field.
 * Refuge B -- a 9 ha tree patch beside the village, used on four days.
 * Feeding ground -- crop fields seen mostly at night, with a few day
   sightings on three days. Must not pass as a refuge.
 * Passage -- a herd seen eight times on one afternoon. Must be dropped.
 * Open-field day use -- day sightings in open crop on five days. May be
   found, but must be flagged as having no cover.
+* Morning damage entries -- crop damage in open fields, written down the
+  morning after on five days. Under the entry's hour it looks like day
+  use; it is a night raid and must not become a refuge.
 * Quiet refuge -- forest used by day on five days with no raid within
   reach. A refuge, but not a management one: it must be left out.
 """
@@ -38,6 +42,7 @@ FEEDING = (5000.0, 6500.0)        # open crop
 PASSAGE = (4000.0, 1000.0)
 OPEN_DAY = (7500.0, 7500.0)
 VILLAGE = (7200.0, 2200.0)
+DAMAGE_FIELD = (5500.0, 4000.0)   # open crop, damage entered in the morning
 QUIET = (1000.0, 4500.0)          # inside the big block; used after the raiding season
 
 
@@ -82,13 +87,15 @@ def register(seed=7) -> pd.DataFrame:
         day = base + pd.Timedelta(days=3 * k)
         for hour in (10, 12, 14):
             add(REFUGE_A, day, hour)
-        add((REFUGE_A[0] + 2500, REFUGE_A[1] + rng.normal(0, 300)), day, 21, crop=1)
+        # The night of `day` raid, found and entered at 08:00 next morning.
+        add((REFUGE_A[0] + 2500, REFUGE_A[1] + rng.normal(0, 300)),
+            day + pd.Timedelta(days=1), 8, crop=1)
     # Refuge B: a lone bull, four days, raiding the village.
     for k in range(4):
         day = base + pd.Timedelta(days=5 * k + 1)
         for hour in (11, 13):
             add(REFUGE_B, day, hour, jitter=60, total=1, male=1, female=0, calf=0)
-        add(VILLAGE, day + pd.Timedelta(days=1), 1, jitter=80, total=1, male=1, female=0,
+        add(VILLAGE, day + pd.Timedelta(days=1), 10, jitter=80, total=1, male=1, female=0,
             calf=0, house=1)
     # Feeding ground: night-heavy, a little day use on three days.
     for k in range(12):
@@ -106,6 +113,10 @@ def register(seed=7) -> pd.DataFrame:
             add(OPEN_DAY, base + pd.Timedelta(days=4 * k + 2), hour, jitter=80)
         add((OPEN_DAY[0], OPEN_DAY[1] - 1500), base + pd.Timedelta(days=4 * k + 2), 20,
             jitter=100, crop=1)
+    # Damage in a field, entered the morning after: night raids, not day use.
+    for k in range(5):
+        for hour in (10, 12):
+            add(DAMAGE_FIELD, base + pd.Timedelta(days=6 * k + 4), hour, jitter=80, crop=1)
     # A quiet refuge: forest, day use on five days, never a raid near it.
     for k in range(5):
         for hour in (10, 13):
