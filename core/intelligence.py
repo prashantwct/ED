@@ -60,6 +60,7 @@ from core.analytics import (
     human_deaths,
     human_injuries,
     hourly_conflict_profile,
+    property_damage_mask,
     property_severity,
 )
 
@@ -694,9 +695,11 @@ def temporal_risk_windows(
     Returns:
         Dict with:
 
-        ``hourly``: conflict events by hour (0-23, zero-filled).
+        ``hourly``: injuries and deaths by hour (0-23, zero-filled).
+            Property damage is left out: it is written down the morning
+            after the raid, so its hour is the hour of recording.
         ``peak_window``: the *shortest* contiguous block of hours that
-            contains at least ``coverage_target`` of all conflict events,
+            contains at least ``coverage_target`` of those casualties,
             as ``{"start", "end", "hours", "share", "events"}``, or None
             if there is nothing to summarise. Shortest-that-covers is the
             useful framing -- "these 6 hours hold 64% of incidents" sizes
@@ -705,7 +708,9 @@ def temporal_risk_windows(
         ``peak_months``: month names accounting for the largest share,
             up to half the annual total -- the seasonal concentration
             that crop-guarding support should be timed against.
-        ``night_share``: percentage of conflict events at night.
+        ``night_share``: percentage of conflict events at night, damage
+            counted as the night before its entry.
+        ``night_damage``: property-damage events, all dated to the night.
     """
     result: Dict[str, object] = {
         "hourly": hourly_conflict_profile(df),
@@ -713,6 +718,7 @@ def temporal_risk_windows(
         "monthly": pd.Series(dtype=int),
         "peak_months": [],
         "night_share": float("nan"),
+        "night_damage": 0,
     }
     if df.empty:
         return result
@@ -722,6 +728,7 @@ def temporal_risk_windows(
         return result
 
     result["peak_window"] = _peak_hour_window(result["hourly"], coverage_target)
+    result["night_damage"] = int(property_damage_mask(conflicts).sum())
 
     if "Date" in conflicts.columns and conflicts["Date"].notna().any():
         monthly = (
@@ -808,7 +815,7 @@ def format_window(window: Optional[Dict[str, object]]) -> str:
         return "not determinable from the available hours"
     return (
         f"{window['start']:02d}:00-{window['end']:02d}:00 "
-        f"({window['hours']}h, {window['share']:.0f}% of conflict events, "
+        f"({window['hours']}h, {window['share']:.0f}% of injuries and deaths, "
         f"{window['lift']:.1f}x an even spread)"
     )
 
@@ -1009,7 +1016,10 @@ def _headlines(
 
     window = temporal.get("peak_window")
     if window:
-        lines.append(f"Conflict concentrates in {format_window(window)}.")
+        lines.append(f"Injuries and deaths concentrate in {format_window(window)}.")
+    if temporal.get("night_damage"):
+        lines.append(f"{temporal['night_damage']:,} crop/house damage event(s) are counted as "
+                     "night raids: damage is recorded the morning after.")
 
     lines.extend(_composition_headline(composition))
 

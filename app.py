@@ -1065,7 +1065,13 @@ with esc_col:
 with time_col:
     section("clock", "Timing", "When to staff the shift")
     temporal = brief["temporal"]
-    st.markdown(f"**Peak window:** {format_window(temporal['peak_window'])}")
+    st.markdown(f"**Injuries and deaths peak:** {format_window(temporal['peak_window'])}")
+    if temporal.get("night_damage"):
+        st.markdown(
+            f"**Crop and house damage:** {temporal['night_damage']:,} event(s), counted as "
+            f"night raids ({NIGHT_HOUR_START:02d}:00-{NIGHT_HOUR_END:02d}:00). Damage is "
+            "recorded the morning after, so its entry hour is not when it happened."
+        )
     months = temporal["peak_months"]
     st.markdown(
         f"**Seasonal peak:** {', '.join(months)}"
@@ -1075,11 +1081,12 @@ with time_col:
     hourly = temporal["hourly"]
     if float(hourly.sum()) > 0:
         _plot(charts.hourly_profile(hourly, NIGHT_HOUR_START, NIGHT_HOUR_END))
-        download_menu("Conflict events by hour",
+        download_menu("Injuries and deaths by hour",
                       lambda h=hourly: report_charts.hourly_svg(h, NIGHT_HOUR_START,
                                                                 NIGHT_HOUR_END))
     else:
-        st.info("No timed conflict records, so no risk window can be identified.")
+        st.info("No timed injuries or deaths, so no hour-of-day risk window can be "
+                "identified. Damage is counted as night conflict.")
 
 
 # ---------------------------------------------------------------------------

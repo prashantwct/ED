@@ -301,7 +301,7 @@ def escalation_dumbbell(beats: pd.DataFrame, limit: int = 12) -> go.Figure:
 
 
 def hourly_profile(hourly: pd.Series, night_start: int, night_end: int) -> go.Figure:
-    """Conflict by hour, night hours in the darker colour."""
+    """Injuries and deaths by hour, night hours in the darker colour."""
     hours = np.asarray(hourly.index, dtype=int)
     night = (hours >= night_start) | (hours < night_end)
     fig = go.Figure()
@@ -310,12 +310,12 @@ def hourly_profile(hourly: pd.Series, night_start: int, night_end: int) -> go.Fi
         fig.add_bar(
             x=hours[mask], y=hourly.to_numpy()[mask], name=name,
             marker=dict(color=color, line=dict(color=SURFACE, width=1)),
-            hovertemplate="%{x}:00<br>Conflict events: <b>%{y}</b><extra></extra>",
+            hovertemplate="%{x}:00<br>Injuries and deaths: <b>%{y}</b><extra></extra>",
         )
     _base_layout(fig, 260, barmode="overlay", bargap=0.12)
     fig.update_xaxes(title_text="Hour of day (24h)", dtick=2, range=[-0.6, 23.6],
                      title_font=dict(color=INK_MUTED))
-    fig.update_yaxes(title_text="Conflict events")
+    fig.update_yaxes(title_text="Injuries and deaths")
     return fig
 
 

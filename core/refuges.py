@@ -12,11 +12,13 @@ each of which removes a known way of being wrong:
 1. **Rest hours only.** Sightings between ``DAY_START`` and ``DAY_END``
    (09:00-16:00 by default). Dawn and dusk sightings are left out: they
    catch animals moving between field and cover, and would put "refuges"
-   on the paths in between.
+   on the paths in between. Damage reports are never sightings, whatever
+   their hour: see below.
 2. **Recurrence.** Day sightings on at least ``MIN_DAYS`` separate days.
    One afternoon of reports, however many, is a herd passing through.
-3. **Day, not night, use.** Of all timed sightings at the place, at least
-   half by day. A place seen mostly at night is a feeding ground.
+3. **Day, not night, use.** Of all use of the place -- timed sightings,
+   plus the damage done there -- at least ``MIN_DAY_SHARE`` per cent by
+   day. A place seen mostly at night, or raided, is a feeding ground.
 4. **Stability.** The clustering is re-run over a grid of neighbour
    distances and rest windows; a refuge must reappear within 1 km in
    most of them. One that only exists at one setting is an artefact of
@@ -27,10 +29,20 @@ each of which removes a known way of being wrong:
    is either a position error or animals lying up in tall crop, and both
    matter.
 
-Each refuge is then linked to the night conflict it feeds: conflict
-reported between ``NIGHT_START`` and ``NIGHT_END`` within ``LINK_KM`` of
-the refuge on the night before or after a day it was in use. A raid near
-two refuges goes to the nearer one in use, so nothing is counted twice.
+**Damage is entered after the raid.** Crop, grain and house damage is
+found and recorded the next morning, so the entry's hour is when it was
+written down, not when the elephants were there. A damage report entered
+on day D before ``NIGHT_START`` (or with no hour) is a raid on the night
+that began on D - 1; one entered at or after ``NIGHT_START`` is that same
+night. Such reports are taken out of the day sightings -- a 10 am damage
+entry in a field is not elephants resting in it -- and count as night use
+of the place. Injuries and deaths are reported as they happen, so they
+keep their hour and count as raids only at night.
+
+Each refuge is then linked to the raids it feeds: raids within
+``LINK_KM`` of the refuge on the night before or after a day it was in
+use. A raid near two refuges goes to the nearer one in use, so nothing is
+counted twice.
 
 **What this cannot say.** Positions are the observer's, not the
 elephant's, often a few hundred metres off -- hence the 250 m cover disc
@@ -114,6 +126,29 @@ def is_day(hours: pd.Series, start: int = DAY_START, end: int = DAY_END) -> pd.S
 
 def is_night(hours: pd.Series, start: int = NIGHT_START, end: int = NIGHT_END) -> pd.Series:
     return hours.notna() & ((hours >= start) | (hours < end))
+
+
+def raids_and_nights(df: pd.DataFrame) -> pd.DataFrame:
+    """Conflict reports that are night raids, each with the night it belongs to.
+
+    ``Night Of`` is the date the raid's night began. Property damage is
+    taken to precede its entry (see the module notes); a casualty keeps its
+    reported hour and is a raid only at night.
+    """
+    if df.empty:
+        return df.assign(**{"Night Of": pd.Series(dtype="datetime64[ns]")})
+    from core.analytics import property_damage_mask
+
+    hour = pd.to_numeric(df["Hour"], errors="coerce") if "Hour" in df else \
+        pd.Series(np.nan, index=df.index)
+    damage = property_damage_mask(df)
+    casualty = (human_injuries(df) > 0) | (human_deaths(df) > 0)
+    raid = damage | (casualty & is_night(hour))
+    date = df["Date"].dt.normalize()
+    # Entered the same night (after dusk) -> that night; otherwise the night before.
+    same_night = hour.notna() & (hour >= NIGHT_START)
+    night_of = date.where(same_night, date - pd.Timedelta(days=1))
+    return df[raid].assign(**{"Night Of": night_of[raid]})
 
 
 def _candidates(df: pd.DataFrame, eps_km: float, window: Tuple[int, int],
@@ -217,17 +252,20 @@ def find_refuges(
     (one row per linked raid), ``windows`` (land-cover windows by refuge
     id, for thumbnails), ``summary`` and ``caveats``.
 
-    With ``require_raids`` (the default) a refuge no night conflict links
+    With ``require_raids`` (the default) a refuge no night raid links
     to is left out: a resting place that sends no raids is not a
     management priority, and is counted in the caveats instead.
     """
-    timed = df[df["Hour"].notna() & df["Date"].notna()
-               & df["Latitude"].notna() & df["Longitude"].notna()].copy()
+    located = df[df["Date"].notna() & df["Latitude"].notna() & df["Longitude"].notna()]
+    conflict = conflict_mask(located)
+    # Sightings say where the animals were at that hour; damage reports say
+    # where they were the night before, so they never count as sightings.
+    timed = located[~conflict & located["Hour"].notna()].copy()
     timed["Hour"] = timed["Hour"].astype(int)
     caveats = []
-    untimed = len(df) - len(timed)
+    untimed = int((~conflict & located["Hour"].isna()).sum())
     if untimed:
-        caveats.append(f"{untimed:,} report(s) without an hour cannot be placed in day or "
+        caveats.append(f"{untimed:,} sighting(s) without an hour cannot be placed in day or "
                        "night and are left out.")
     day_n = int(is_day(timed["Hour"], *day_window).sum())
     if not len(timed) or day_n == 0:
@@ -245,8 +283,7 @@ def find_refuges(
         centres_by_setting.append(np.array([_centre(m) for m in found]) if found
                                   else np.empty((0, 2)))
 
-    night = timed[is_night(timed["Hour"])]
-    raids = night[conflict_mask(night)].copy() if len(night) else night
+    raids = raids_and_nights(located).copy()
     if len(raids):
         raids["_deaths"] = human_deaths(raids)
         raids["_injuries"] = human_injuries(raids)
@@ -263,7 +300,10 @@ def find_refuges(
                        timed["Longitude"].to_numpy(float)) <= radius + 0.25
         local = timed[near_all]
         local_day = int(is_day(local["Hour"], *day_window).sum())
-        local_night = int(is_night(local["Hour"]).sum())
+        raided_here = int((_km(lat, lon, raids["Latitude"].to_numpy(float),
+                               raids["Longitude"].to_numpy(float)) <= radius + 0.25).sum()) \
+            if len(raids) else 0
+        local_night = int(is_night(local["Hour"]).sum()) + raided_here
         day_share = local_day / max(local_day + local_night, 1)
 
         stable = sum(
@@ -304,8 +344,9 @@ def find_refuges(
     feeding = [r for r in rows if r["Day Share %"] < MIN_DAY_SHARE]
     rows = [r for r in rows if r["Day Share %"] >= MIN_DAY_SHARE]
     if feeding:
-        caveats.append(f"{len(feeding)} place(s) with repeated day sightings were seen mostly at "
-                       "night -- feeding grounds, not refuges -- and are left out.")
+        caveats.append(f"{len(feeding)} place(s) with repeated day sightings were mostly seen "
+                       "at night or raided -- feeding grounds, not refuges -- and are left "
+                       "out.")
     if not rows:
         return _empty(caveats + [f"No place had daytime sightings on {min_days} or more "
                                  "separate days and mostly daytime use."], len(timed), day_n)
@@ -321,10 +362,10 @@ def find_refuges(
         quiet = int((table["Linked Raids"] == 0).sum())
         table = table[table["Linked Raids"] > 0].reset_index(drop=True)
         if quiet:
-            caveats.append(f"{quiet} place(s) used by day but with no night conflict linked "
+            caveats.append(f"{quiet} place(s) used by day but with no night raid linked "
                            "to them are left out.")
         if table.empty:
-            return _empty(caveats + ["No day refuge had night conflict linked to it."],
+            return _empty(caveats + ["No day refuge had a night raid linked to it."],
                           len(timed), day_n)
     table = _attach_villages(table, villages, link_km)
     table = _attach_admin(table)
@@ -358,6 +399,8 @@ def find_refuges(
         "evidence that elephants do not lie up there.",
         f"Raids are linked by place ({link_km:g} km) and night (the one before or after a "
         "day in use), not identity: consistent with coming from the refuge, not proof.",
+        "Damage is taken to have happened the night before its entry (the night itself if "
+        f"entered after {NIGHT_START}:00), since it is found and recorded the next morning.",
     ]
     summary = {
         "timed": len(timed), "day_sightings": day_n, "refuges": len(table),
@@ -383,7 +426,7 @@ def _empty(caveats, timed=0, day=0) -> Dict[str, object]:
 def _link_raids(table: pd.DataFrame, use_days: Dict[int, set], raids: pd.DataFrame,
                 link_km: float) -> pd.DataFrame:
     """Each night raid to the nearest refuge in use the day before or after."""
-    cols = ["_i", "Date", "Hour", "Latitude", "Longitude", "Distance (km)", "Bearing",
+    cols = ["_i", "Date", "Night Of", "Hour", "Latitude", "Longitude", "Distance (km)", "Bearing",
             "Village", "Deaths", "Injuries", "Category"]
     if raids is None or not len(raids):
         return pd.DataFrame(columns=cols)
@@ -392,8 +435,7 @@ def _link_raids(table: pd.DataFrame, use_days: Dict[int, set], raids: pd.DataFra
     cats = classify_conflict(raids)
     out = []
     for idx, raid in raids.iterrows():
-        # A raid after midnight belongs to the evening before it.
-        night_of = raid["Date"].normalize() - pd.Timedelta(days=1 if raid["Hour"] < 12 else 0)
+        night_of = raid["Night Of"]
         best = None
         for _, ref in table.iterrows():
             # Lying up on day D, the animals raid the evening of D (leaving at
@@ -407,7 +449,8 @@ def _link_raids(table: pd.DataFrame, use_days: Dict[int, set], raids: pd.DataFra
             continue
         ref, dist = best
         out.append({
-            "_i": ref["_i"], "Date": raid["Date"], "Hour": int(raid["Hour"]),
+            "_i": ref["_i"], "Date": raid["Date"], "Night Of": night_of,
+            "Hour": int(raid["Hour"]) if pd.notna(raid["Hour"]) else None,
             "Latitude": raid["Latitude"], "Longitude": raid["Longitude"],
             "Distance (km)": round(dist, 2),
             "Bearing": float(_bearing(ref["Latitude"], ref["Longitude"],
@@ -567,7 +610,8 @@ def to_geojson(refuges: pd.DataFrame, links: pd.DataFrame) -> str:
         features.append({
             "type": "Feature",
             "properties": {"kind": "linked raid", "refuge": row["Refuge"],
-                           "date": row["Date"].isoformat(), "hour": row["Hour"],
+                           "date": row["Date"].isoformat(),
+                           "night_of": row["Night Of"].isoformat(), "entry_hour": row["Hour"],
                            "category": row["Category"], "distance_km": row["Distance (km)"]},
             "geometry": {"type": "LineString",
                          "coordinates": [[ref["Longitude"], ref["Latitude"]],
@@ -611,8 +655,9 @@ def headlines(result: Dict[str, object]) -> List[str]:
     lines.append(f"{s['refuges']} day refuge(s): {s['confirmed']} confirmed, "
                  f"{s['probable']} probable, the rest possible.")
     if s["night_raids"]:
-        lines.append(f"{s['linked_raids']} of {s['night_raids']} night conflict reports link to "
-                     "a refuge in use the day before or after.")
+        lines.append(f"{s['linked_raids']} of {s['night_raids']} night raids link to a refuge "
+                     "in use the day before or after (damage dated to the night before its "
+                     "entry).")
     top = table.sort_values("Linked Raids", ascending=False).iloc[0]
     if top["Linked Raids"]:
         lines.append(

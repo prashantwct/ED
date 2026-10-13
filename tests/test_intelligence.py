@@ -407,12 +407,30 @@ def test_format_window_handles_none():
     assert "not determinable" in format_window(None)
 
 
-def test_temporal_windows_uses_conflict_rows_only():
+def test_temporal_windows_uses_casualty_rows_only():
     """A profile of all sightings mostly shows when patrols go out."""
-    rows = _rows("A", 20, conflict_n=0, hour=9) + _rows("A", 5, conflict_n=5, hour=22)
+    rows = _rows("A", 20, conflict_n=0, hour=9) + _rows("A", 5, injuries=5, hour=22)
     result = temporal_risk_windows(_prepare(rows))
     assert result["hourly"][22] == 5
     assert result["hourly"][9] == 0
+
+
+def test_damage_entered_in_the_morning_is_night_conflict():
+    """Damage is written down the morning after: its hour is not the raid's."""
+    rows = _rows("A", 8, conflict_n=8, hour=9) + _rows("A", 3, injuries=3, hour=21)
+    df = _prepare(rows)
+    assert df["Is_Night"].all()
+    result = temporal_risk_windows(df)
+    assert result["hourly"][9] == 0 and result["hourly"][21] == 3
+    assert result["night_damage"] == 8
+    assert result["night_share"] == 100
+    assert result["peak_window"]["start"] == 21
+
+
+def test_untimed_damage_is_still_night():
+    df = _prepare(_rows("A", 4, conflict_n=2, hour=None))
+    assert df["Is_Night"].tolist()[:2] == [True, True]
+    assert df["Is_Night"].isna().tolist()[2:] == [True, True]
 
 
 # ---------------------------------------------------------------------------

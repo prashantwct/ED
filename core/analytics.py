@@ -217,18 +217,31 @@ def composition_summary(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def compute_is_night(df: pd.DataFrame) -> pd.Series:
-    """Nullable boolean night flag from ``Hour``.
+def property_damage_mask(df: pd.DataFrame) -> pd.Series:
+    """Rows reporting crop, grain or house damage."""
+    mask = pd.Series(False, index=df.index)
+    for col in DAMAGE_FLAG_COLS:
+        mask = mask | (_numeric(df, col) > 0)
+    return mask
 
-    Rows with no usable hour get ``pd.NA`` rather than defaulting to day,
-    so KPIs can report "unknown" instead of counting them as daytime.
+
+def compute_is_night(df: pd.DataFrame) -> pd.Series:
+    """Nullable boolean night flag.
+
+    Crop, grain and house damage is found and written down the morning
+    after the raid, so its entry hour is when it was recorded: a damage
+    row is a night event whatever its hour, or with none. Other rows take
+    the flag from ``Hour``; with no usable hour they get ``pd.NA`` rather
+    than defaulting to day, so KPIs can report "unknown" instead of
+    counting them as daytime.
     """
+    damage = property_damage_mask(df)
     if "Hour" not in df.columns:
-        return pd.Series(pd.NA, index=df.index, dtype="boolean")
+        return pd.Series(pd.NA, index=df.index, dtype="boolean").mask(damage, True)
 
     hour = pd.to_numeric(df["Hour"], errors="coerce")
     is_night = (hour >= NIGHT_HOUR_START) | (hour < NIGHT_HOUR_END)
-    return is_night.astype("boolean").where(hour.notna(), pd.NA)
+    return is_night.astype("boolean").where(hour.notna(), pd.NA).mask(damage, True)
 
 
 def compute_kpis(df: pd.DataFrame) -> Dict[str, float]:
@@ -373,11 +386,23 @@ def monthly_trend(df: pd.DataFrame) -> pd.DataFrame:
     return out[columns].sort_index()
 
 
-def hourly_conflict_profile(df: pd.DataFrame) -> pd.Series:
-    """Conflict events by hour of day, zero-filled.
+def timed_conflict_mask(df: pd.DataFrame) -> pd.Series:
+    """Conflict whose recorded hour is when it happened: injuries and deaths.
 
-    Conflict rows only: a profile of all sightings mostly traces when
-    patrols go out.
+    Property damage is recorded the morning after the raid, so its hour
+    says when the form was filled in, not when the elephants came.
+    """
+    if df.empty:
+        return pd.Series(dtype=bool, index=df.index)
+    return (human_injuries(df) > 0) | (human_deaths(df) > 0)
+
+
+def hourly_conflict_profile(df: pd.DataFrame) -> pd.Series:
+    """Injuries and deaths by hour of day, zero-filled.
+
+    Casualties only: they are reported as they happen, whereas damage is
+    written down the next morning (its hour would put the risk at 9 am),
+    and a profile of all sightings mostly traces when patrols go out.
     """
     counts = pd.Series(0, index=pd.RangeIndex(24), dtype=int)
     counts.index.name = "Hour"
@@ -386,7 +411,7 @@ def hourly_conflict_profile(df: pd.DataFrame) -> pd.Series:
     if df.empty or "Hour" not in df.columns:
         return counts
 
-    hours = pd.to_numeric(df.loc[conflict_mask(df), "Hour"], errors="coerce").dropna()
+    hours = pd.to_numeric(df.loc[timed_conflict_mask(df), "Hour"], errors="coerce").dropna()
     observed = hours.astype(int).value_counts()
     counts.update(observed.reindex(range(24)).dropna().astype(int))
     return counts
