@@ -427,6 +427,21 @@ def test_damage_entered_in_the_morning_is_night_conflict():
     assert result["peak_window"]["start"] == 21
 
 
+def test_indirect_reports_are_stale():
+    """Only a direct sighting is timed: pug marks and indirect casualty
+    reports are written down after the night they record."""
+    rows = (_rows("A", 3, hour=10) + _rows("A", 2, injuries=2, hour=14)
+            + _rows("A", 2, injuries=2, hour=15))
+    df = pd.DataFrame(rows)
+    df["Sighting Type"] = ["Indirect"] * 3 + ["Indirect"] * 2 + ["Direct"] * 2
+    df["Severity Score"] = compute_severity(df)
+    df["Is_Night"] = compute_is_night(df)
+    assert df["Is_Night"].tolist() == [True] * 5 + [False] * 2
+    result = temporal_risk_windows(df)
+    assert result["hourly"][14] == 0 and result["hourly"][15] == 2
+    assert result["night_damage"] == 2
+
+
 def test_untimed_damage_is_still_night():
     df = _prepare(_rows("A", 4, conflict_n=2, hour=None))
     assert df["Is_Night"].tolist()[:2] == [True, True]

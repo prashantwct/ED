@@ -89,6 +89,28 @@ def test_the_night_a_report_belongs_to():
     assert nights == {0: day_before, 1: d, 2: day_before, 4: day_before}  # 3: a day injury
 
 
+def test_indirect_signs_logged_by_day_are_not_day_rest(tif):
+    out = rf.find_refuges(fx.register(), fx.villages(), lc.LandCover([tif]),
+                          require_raids=False)
+    assert _at(out["refuges"], fx.PUGMARKS) is None
+    assert any("indirect sign(s)" in c for c in out["caveats"])
+    # Counted as sightings at their hour, they would have made a refuge.
+    seen = fx.register().assign(**{"Sighting Type": "Direct"})
+    naive = rf.find_refuges(seen, fx.villages(), lc.LandCover([tif]), require_raids=False)
+    assert _at(naive["refuges"], fx.PUGMARKS) is not None
+
+
+def test_an_indirectly_reported_injury_is_a_raid_of_the_night_before():
+    d = pd.Timestamp("2026-03-10")
+    df = pd.DataFrame({
+        "Date": [d, d], "Hour": [14, 14], "Latitude": [23.8] * 2, "Longitude": [81.0] * 2,
+        "Sighting Type": ["Indirect", "Direct"], "Crop Damage": [0, 0], "House Damage": [0, 0],
+        "Injury": [1, 1], "Death": [0, 0],
+    })
+    out = rf.raids_and_nights(df)
+    assert list(out.index) == [0] and out["Night Of"].iloc[0] == d - pd.Timedelta(days=1)
+
+
 def test_every_raid_is_accounted_for(result):
     s = result["summary"]
     assert s["linked_raids"] + s["area_raids"] + s["scattered_raids"] == s["night_raids"]

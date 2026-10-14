@@ -430,6 +430,15 @@ test, and each decoy it rejects is planted in the tests:
 * Raids: a place used by day that no night raid links to is left out,
   and counted in the caveats. Such a place is not a management priority.
 
+Only a direct sighting puts elephants at a place at the hour entered.
+Everything else -- pug marks, dung, broken branches, sounds, and damage
+or casualties reported indirectly -- is a stale trace of an earlier visit:
+it never counts as a day sighting, counts as night use of the place, and
+is dated to the night before its entry. The dashboard follows the same
+rule: stale reports are night events in every night share, and the
+hour-of-day chart and "when to staff" window use directly sighted
+injuries and deaths only.
+
 Damage is written down the morning after the raid, so a crop, grain or
 house damage entry is dated to the night before it (or to the same night
 if entered after 18:00, and to the night before if it has no hour). Damage

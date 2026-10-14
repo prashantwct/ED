@@ -60,8 +60,8 @@ from core.analytics import (
     human_deaths,
     human_injuries,
     hourly_conflict_profile,
-    property_damage_mask,
     property_severity,
+    stale_mask,
 )
 
 logger = logging.getLogger(__name__)
@@ -710,7 +710,8 @@ def temporal_risk_windows(
             that crop-guarding support should be timed against.
         ``night_share``: percentage of conflict events at night, damage
             counted as the night before its entry.
-        ``night_damage``: property-damage events, all dated to the night.
+        ``night_damage``: conflict reports dated to the night before their
+            entry: property damage, and anything not a direct sighting.
     """
     result: Dict[str, object] = {
         "hourly": hourly_conflict_profile(df),
@@ -728,7 +729,7 @@ def temporal_risk_windows(
         return result
 
     result["peak_window"] = _peak_hour_window(result["hourly"], coverage_target)
-    result["night_damage"] = int(property_damage_mask(conflicts).sum())
+    result["night_damage"] = int(stale_mask(conflicts).sum())
 
     if "Date" in conflicts.columns and conflicts["Date"].notna().any():
         monthly = (
@@ -1018,8 +1019,9 @@ def _headlines(
     if window:
         lines.append(f"Injuries and deaths concentrate in {format_window(window)}.")
     if temporal.get("night_damage"):
-        lines.append(f"{temporal['night_damage']:,} crop/house damage event(s) are counted as "
-                     "night raids: damage is recorded the morning after.")
+        lines.append(f"{temporal['night_damage']:,} conflict report(s) -- damage, and anything "
+                     "not a direct sighting -- are counted as night raids: they are recorded "
+                     "after the night.")
 
     lines.extend(_composition_headline(composition))
 

@@ -225,17 +225,41 @@ def property_damage_mask(df: pd.DataFrame) -> pd.Series:
     return mask
 
 
+def indirect_mask(df: pd.DataFrame) -> pd.Series:
+    """Reports that are not direct sightings: pug marks, dung, broken
+    branches, sounds, damage found later.
+
+    Only a direct sighting puts elephants at the place at the hour it was
+    entered; everything else is a stale trace of an earlier visit. Rows
+    with no ``Sighting Type`` are not marked (it cannot be told).
+    """
+    if "Sighting Type" not in df.columns:
+        return pd.Series(False, index=df.index)
+    kind = df["Sighting Type"].astype("string").str.strip().str.lower()
+    return (kind.notna() & (kind != "") & (kind != "direct")).fillna(False).astype(bool)
+
+
+def stale_mask(df: pd.DataFrame) -> pd.Series:
+    """Reports whose entry hour is not when the elephants were there.
+
+    Indirect reports, and property damage of any kind -- damage is found
+    and written down the morning after the raid. Stale reports are dated
+    to the night before their entry.
+    """
+    return indirect_mask(df) | property_damage_mask(df)
+
+
 def compute_is_night(df: pd.DataFrame) -> pd.Series:
     """Nullable boolean night flag.
 
-    Crop, grain and house damage is found and written down the morning
-    after the raid, so its entry hour is when it was recorded: a damage
-    row is a night event whatever its hour, or with none. Other rows take
-    the flag from ``Hour``; with no usable hour they get ``pd.NA`` rather
-    than defaulting to day, so KPIs can report "unknown" instead of
-    counting them as daytime.
+    Stale reports (:func:`stale_mask`: indirect signs and damage) are
+    found and written down after the night they record, so their entry
+    hour is when they were recorded: they are night events whatever their
+    hour, or with none. Direct sightings take the flag from ``Hour``;
+    with no usable hour they get ``pd.NA`` rather than defaulting to day,
+    so KPIs can report "unknown" instead of counting them as daytime.
     """
-    damage = property_damage_mask(df)
+    damage = stale_mask(df)
     if "Hour" not in df.columns:
         return pd.Series(pd.NA, index=df.index, dtype="boolean").mask(damage, True)
 
@@ -387,14 +411,16 @@ def monthly_trend(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def timed_conflict_mask(df: pd.DataFrame) -> pd.Series:
-    """Conflict whose recorded hour is when it happened: injuries and deaths.
+    """Conflict whose recorded hour is when it happened: injuries and
+    deaths reported as direct sightings.
 
-    Property damage is recorded the morning after the raid, so its hour
-    says when the form was filled in, not when the elephants came.
+    Property damage is recorded the morning after the raid, and an
+    indirect report of a casualty is recorded after the event, so their
+    hours say when the form was filled in, not when the elephants came.
     """
     if df.empty:
         return pd.Series(dtype=bool, index=df.index)
-    return (human_injuries(df) > 0) | (human_deaths(df) > 0)
+    return ((human_injuries(df) > 0) | (human_deaths(df) > 0)) & ~indirect_mask(df)
 
 
 def hourly_conflict_profile(df: pd.DataFrame) -> pd.Series:

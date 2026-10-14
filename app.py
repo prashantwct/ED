@@ -1068,9 +1068,11 @@ with time_col:
     st.markdown(f"**Injuries and deaths peak:** {format_window(temporal['peak_window'])}")
     if temporal.get("night_damage"):
         st.markdown(
-            f"**Crop and house damage:** {temporal['night_damage']:,} event(s), counted as "
-            f"night raids ({NIGHT_HOUR_START:02d}:00-{NIGHT_HOUR_END:02d}:00). Damage is "
-            "recorded the morning after, so its entry hour is not when it happened."
+            f"**Damage and indirect reports:** {temporal['night_damage']:,} conflict "
+            f"report(s), counted as night raids ({NIGHT_HOUR_START:02d}:00-"
+            f"{NIGHT_HOUR_END:02d}:00). Damage and indirect signs are recorded after the "
+            "night, so their entry hour is not when they happened. Only direct sightings "
+            "are timed."
         )
     months = temporal["peak_months"]
     st.markdown(
