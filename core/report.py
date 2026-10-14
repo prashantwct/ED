@@ -218,7 +218,7 @@ def generate_html_report(
     {village_map_svg(village_risk, hotspots, basemap_style_name)}
     {_village_risk_html(village_risk)}
 
-    {_refuge_section(refuges)}
+    {_refuge_section(refuges, basemap_style_name)}
 
     {_coverage_section(coverage, coverage_stats)}
 
@@ -432,12 +432,12 @@ def _village_risk_html(village_risk: Optional[pd.DataFrame], top_n: int = 15) ->
     )
 
 
-def _refuge_section(refuges: Optional[Dict[str, object]]) -> str:
+def _refuge_section(refuges: Optional[Dict[str, object]], style_name: str) -> str:
     if refuges is None:
         return ""
     from core.refuge_report import brief_section
 
-    return brief_section(refuges)
+    return brief_section(refuges, style_name=style_name)
 
 
 def _coverage_section(
@@ -511,9 +511,11 @@ def _temporal_html(temporal: Dict[str, object]) -> str:
     parts = [f"<p><b>Injuries and deaths peak:</b> {escape(format_window(window))}</p>"]
     if temporal.get("night_damage"):
         parts.append(
-            f"<p><b>Crop and house damage:</b> {temporal['night_damage']:,} event(s), counted "
-            f"as night raids ({NIGHT_HOUR_START:02d}:00-{NIGHT_HOUR_END:02d}:00). Damage is "
-            "recorded the morning after, so its entry hour is not when it happened.</p>")
+            f"<p><b>Damage and indirect reports:</b> {temporal['night_damage']:,} conflict "
+            f"report(s), counted as night raids ({NIGHT_HOUR_START:02d}:00-"
+            f"{NIGHT_HOUR_END:02d}:00). Damage and indirect signs are recorded after the "
+            "night, so their entry hour is not when they happened. Only direct sightings "
+            "are timed.</p>")
     if not pd.isna(night_share):
         parts.append(f"<p><b>Night share of conflict:</b> {night_share:.0f}%</p>")
     if months:

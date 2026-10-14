@@ -10,6 +10,7 @@ import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -86,6 +87,28 @@ def test_the_night_a_report_belongs_to():
     nights = dict(zip(out.index, out["Night Of"]))
     day_before = d - pd.Timedelta(days=1)
     assert nights == {0: day_before, 1: d, 2: day_before, 4: day_before}  # 3: a day injury
+
+
+def test_indirect_signs_logged_by_day_are_not_day_rest(tif):
+    out = rf.find_refuges(fx.register(), fx.villages(), lc.LandCover([tif]),
+                          require_raids=False)
+    assert _at(out["refuges"], fx.PUGMARKS) is None
+    assert any("indirect sign(s)" in c for c in out["caveats"])
+    # Counted as sightings at their hour, they would have made a refuge.
+    seen = fx.register().assign(**{"Sighting Type": "Direct"})
+    naive = rf.find_refuges(seen, fx.villages(), lc.LandCover([tif]), require_raids=False)
+    assert _at(naive["refuges"], fx.PUGMARKS) is not None
+
+
+def test_an_indirectly_reported_injury_is_a_raid_of_the_night_before():
+    d = pd.Timestamp("2026-03-10")
+    df = pd.DataFrame({
+        "Date": [d, d], "Hour": [14, 14], "Latitude": [23.8] * 2, "Longitude": [81.0] * 2,
+        "Sighting Type": ["Indirect", "Direct"], "Crop Damage": [0, 0], "House Damage": [0, 0],
+        "Injury": [1, 1], "Death": [0, 0],
+    })
+    out = rf.raids_and_nights(df)
+    assert list(out.index) == [0] and out["Night Of"].iloc[0] == d - pd.Timedelta(days=1)
 
 
 def test_every_raid_is_accounted_for(result):
@@ -232,7 +255,7 @@ def test_the_brief_carries_the_raiding_refuges_only(result):
     for ref in result["refuges"]["Refuge"]:
         assert f"<td>{ref}</td>" in html
     assert "no night raid linked" in html
-    assert "Elephant day refuges and linked raids" in html  # the map
+    assert "Elephant day refuges, linked raids and raid areas" in html  # the map
     assert "Day Refuges" not in generate_html_report(df, df["Date"].min(), df["Date"].max())
 
 
@@ -321,3 +344,31 @@ def test_a_raid_area_far_from_any_known_refuge_names_the_patch_to_search():
     action = rf._area_action(row)
     assert "search the 850+ ha tree patch 2.4 km NE by day" in action
     assert "Kukargoda" in action and "night patrol" in action
+
+
+def test_downloaded_map_has_the_basemap_and_few_enough_labels(result, monkeypatch):
+    import re
+
+    from core import map_export
+    from core.refuge_report import MAP_LABELS, map_svg
+
+    monkeypatch.setattr(map_export, "_basemap_data_uri",
+                        lambda *a, **k: ("data:image/jpeg;base64,AAAA", "(c) tiles"))
+    # Forty refuges crowded into a few kilometres must not print forty names.
+    many = pd.concat([result["refuges"]] * 20, ignore_index=True)
+    many["Refuge"] = [f"R{k:02d}" for k in range(len(many))]
+    many["Latitude"] += np.linspace(0, 0.05, len(many))
+    svg = map_svg(many, result["links"].iloc[0:0], areas=result["areas"], style_name="x")
+    assert '<image href="data:image/jpeg;base64,AAAA"' in svg and "(c) tiles" in svg
+    names = re.findall(r'paint-order="stroke"[^>]*>(R\d+|A\d+)<', svg)
+    assert 0 < len(names) <= MAP_LABELS
+    assert "Raid area, no known refuge" in svg
+
+
+def test_downloaded_map_renders_to_png_and_pdf(result):
+    from core import exports
+    from core.refuge_report import map_svg
+
+    svg = map_svg(result["refuges"], result["links"], areas=result["areas"])
+    assert exports.to_png(svg, scale=1).startswith(b"\x89PNG")
+    assert exports.to_pdf(svg).startswith(b"%PDF")

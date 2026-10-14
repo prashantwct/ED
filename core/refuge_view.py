@@ -276,7 +276,8 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
     _render_map(table, links, basemap, areas)
     from core.exports import download_menu
 
-    download_menu("Day refuge map", lambda t=table, l=links, a=areas: map_svg(t, l, areas=a))
+    download_menu("Day refuge map", lambda t=table, l=links, a=areas, b=basemap:
+                  map_svg(t, l, areas=a, style_name=b))
     legend = " ".join(
         f'<span class="ci-legend__item"><span class="ci-legend__dot" style="background:{c};">'
         f"</span>{n}</span>" for n, c in CONFIDENCE_COLORS.items())

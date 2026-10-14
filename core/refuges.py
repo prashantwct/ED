@@ -9,16 +9,17 @@ villages to warn before dark, people to keep out of it by day.
 A refuge here is not a cluster of sightings. It has to pass five tests,
 each of which removes a known way of being wrong:
 
-1. **Rest hours only.** Sightings between ``DAY_START`` and ``DAY_END``
+1. **Rest hours only.** Direct sightings between ``DAY_START`` and ``DAY_END``
    (09:00-16:00 by default). Dawn and dusk sightings are left out: they
    catch animals moving between field and cover, and would put "refuges"
-   on the paths in between. Damage reports are never sightings, whatever
-   their hour: see below.
+   on the paths in between. Only a direct sighting counts: pug marks,
+   dung, broken branches, sounds and damage are stale traces of an
+   earlier visit, never sightings, whatever their hour (see below).
 2. **Recurrence.** Day sightings on at least ``MIN_DAYS`` separate days.
    One afternoon of reports, however many, is a herd passing through.
-3. **Day, not night, use.** Of all use of the place -- timed sightings,
-   plus the damage done there -- at least ``MIN_DAY_SHARE`` per cent by
-   day. A place seen mostly at night, or raided, is a feeding ground.
+3. **Day, not night, use.** Of all use of the place -- timed direct
+   sightings, plus the damage and indirect signs found there, which count
+   as night use -- at least ``MIN_DAY_SHARE`` per cent by day. A place seen mostly at night, or raided, is a feeding ground.
 4. **Stability.** The clustering is re-run over a grid of neighbour
    distances and rest windows; a refuge must reappear within 1 km in
    most of them. One that only exists at one setting is an artefact of
@@ -37,7 +38,10 @@ that began on D - 1; one entered at or after ``NIGHT_START`` is that same
 night. Such reports are taken out of the day sightings -- a 10 am damage
 entry in a field is not elephants resting in it -- and count as night use
 of the place. Injuries and deaths are reported as they happen, so they
-keep their hour and count as raids only at night.
+keep their hour and count as raids only at night -- unless reported
+indirectly, when they are stale like damage. The same holds for any
+report that is not a direct sighting: its hour is when it was written
+down, so it is dated to the night before.
 
 Each refuge is then linked to the raids it feeds: raids within
 ``LINK_KM`` of the refuge on a night within ``LINK_DAYS`` of a day it was
@@ -147,18 +151,22 @@ def raids_and_nights(df: pd.DataFrame) -> pd.DataFrame:
     """Conflict reports that are night raids, each with the night it belongs to.
 
     ``Night Of`` is the date the raid's night began. Property damage is
-    taken to precede its entry (see the module notes); a casualty keeps its
-    reported hour and is a raid only at night.
+    taken to precede its entry (see the module notes), as is anything not
+    a direct sighting; a directly sighted casualty keeps its reported hour
+    and is a raid only at night.
     """
     if df.empty:
         return df.assign(**{"Night Of": pd.Series(dtype="datetime64[ns]")})
-    from core.analytics import property_damage_mask
+    from core.analytics import property_damage_mask, stale_mask
 
     hour = pd.to_numeric(df["Hour"], errors="coerce") if "Hour" in df else \
         pd.Series(np.nan, index=df.index)
     damage = property_damage_mask(df)
+    stale = stale_mask(df)
     casualty = (human_injuries(df) > 0) | (human_deaths(df) > 0)
-    raid = damage | (casualty & is_night(hour))
+    # A casualty seen directly keeps its hour; one reported indirectly is
+    # stale, like damage, and dated to the night before its entry.
+    raid = damage | (casualty & (stale | is_night(hour)))
     date = df["Date"].dt.normalize()
     # Entered the same night (after dusk) -> that night; otherwise the night before.
     same_night = hour.notna() & (hour >= NIGHT_START)
@@ -272,14 +280,25 @@ def find_refuges(
     to is left out: a resting place that sends no raids is not a
     management priority, and is counted in the caveats instead.
     """
+    from core.analytics import indirect_mask
+
     located = df[df["Date"].notna() & df["Latitude"].notna() & df["Longitude"].notna()]
     conflict = conflict_mask(located)
-    # Sightings say where the animals were at that hour; damage reports say
-    # where they were the night before, so they never count as sightings.
-    timed = located[~conflict & located["Hour"].notna()].copy()
+    indirect = indirect_mask(located)
+    # Only a direct sighting says where the animals were at that hour.
+    # Damage, pug marks, dung, broken branches and sounds are stale: they
+    # say where the animals were the night before, so they never count as
+    # day sightings -- they count as night use of the place instead.
+    timed = located[~conflict & ~indirect & located["Hour"].notna()].copy()
     timed["Hour"] = timed["Hour"].astype(int)
+    traces = located[~conflict & indirect]
     caveats = []
-    untimed = int((~conflict & located["Hour"].isna()).sum())
+    if len(traces):
+        caveats.append(f"{len(traces):,} indirect sign(s) (pug marks, dung, broken branches, "
+                       "sounds) are stale -- traces of the night before, not elephants present "
+                       "at the hour entered -- and count as night use of a place, never as day "
+                       "rest.")
+    untimed = int((~conflict & ~indirect & located["Hour"].isna()).sum())
     if untimed:
         caveats.append(f"{untimed:,} sighting(s) without an hour cannot be placed in day or "
                        "night and are left out.")
@@ -325,7 +344,10 @@ def find_refuges(
         raided_here = int((_km(lat, lon, raids["Latitude"].to_numpy(float),
                                raids["Longitude"].to_numpy(float)) <= radius + 0.25).sum()) \
             if len(raids) else 0
-        local_night = int(is_night(local["Hour"]).sum()) + raided_here
+        traced_here = int((_km(lat, lon, traces["Latitude"].to_numpy(float),
+                               traces["Longitude"].to_numpy(float)) <= radius + 0.25).sum()) \
+            if len(traces) else 0
+        local_night = int(is_night(local["Hour"]).sum()) + raided_here + traced_here
         day_share = local_day / max(local_day + local_night, 1)
 
         stable = sum(
@@ -853,8 +875,8 @@ def headlines(result: Dict[str, object]) -> List[str]:
     s, table = result["summary"], result["refuges"]
     lines = []
     if s["night_raids"]:
-        lines.append(f"Of {s['night_raids']:,} night raids (damage dated to the night before "
-                     f"its entry): {s['linked_raids']:,} link to a known day refuge "
+        lines.append(f"Of {s['night_raids']:,} night raids (damage and indirect reports dated "
+                     f"to the night before their entry): {s['linked_raids']:,} link to a known day refuge "
                      f"({s['same_night']:,} the same night), {s['area_raids']:,} fall in "
                      f"{s['areas']} raid area(s) with no daytime refuge on record, and "
                      f"{s['scattered_raids']:,} are scattered.")
@@ -865,8 +887,9 @@ def headlines(result: Dict[str, object]) -> List[str]:
         lines.append(f"The biggest raid area with no known refuge, {top['Area']} around "
                      f"{where}, saw {top['Raids']} raids on {top['Nights']} nights: an "
                      "unreported refuge lies within a night's walk of it.")
-    lines.append(f"{s['day_sightings']:,} of {s['timed']:,} timed sightings fall in the "
-                 "daytime rest window.")
+    lines.append(f"{s['day_sightings']:,} of {s['timed']:,} timed direct sightings fall in "
+                 "the daytime rest window; indirect signs are stale and never count as day "
+                 "rest.")
     if not s["refuges"]:
         return lines
     lines.append(f"{s['refuges']} day refuge(s) send raids: {s['confirmed']} confirmed, "

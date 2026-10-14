@@ -226,16 +226,25 @@ def _clip(points: List[Tuple[float, float]], width: float, height: float
     return out
 
 
-def outline_parts(project, width: int, height: int) -> List[str]:
-    """Forest division, range and beat outlines, clipped to the frame."""
+def outline_parts(project, width: int, height: int, levels=None, styles=None) -> List[str]:
+    """Forest division, range and beat outlines, clipped to the frame.
+
+    ``levels`` limits the layers drawn (all three by default); ``styles``
+    maps a level to its (colour, stroke width).
+    """
     from core import boundaries
 
     parts: List[str] = []
     if not boundaries.available():
         return parts
-    for level, color, stroke in ((boundaries.BEAT, "#d7c7a6", 0.6),
-                                 (boundaries.RANGE, "#c4a265", 0.9),
-                                 (boundaries.DIVISION, "#a9762c", 1.6)):
+    default = {boundaries.BEAT: ("#d7c7a6", 0.6), boundaries.RANGE: ("#c4a265", 0.9),
+               boundaries.DIVISION: ("#a9762c", 1.6)}
+    default.update(styles or {})
+    chosen = levels or (boundaries.BEAT, boundaries.RANGE, boundaries.DIVISION)
+    for level in (boundaries.BEAT, boundaries.RANGE, boundaries.DIVISION):
+        if level not in chosen:
+            continue
+        color, stroke = default[level]
         for feature in boundaries.load(level)["features"]:
             for polygon in boundaries._rings(feature["geometry"]):
                 xy = [project(la, lo) for lo, la in polygon[0]]
