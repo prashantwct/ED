@@ -27,57 +27,130 @@ BRIEF_COLUMNS = [
 ]
 
 
-def map_svg(table: pd.DataFrame, links: pd.DataFrame, width: int = 900, height: int = 600,
-            areas: Optional[pd.DataFrame] = None) -> str:
-    """The refuge map as vector SVG, for the download menu and the brief."""
-    from html import escape
+MAP_LABELS = 14            # most labels a map carries before it stops being read
+LABEL_GAP_PX = 46          # labels closer than this to a placed one are dropped
+LEGEND_H = 34
 
-    from core.damage_report import _svg, _text, outline_parts, scale_bar
-    from core.map_export import _fit_view, _projector
+
+def map_svg(table: pd.DataFrame, links: pd.DataFrame, width: int = 1000, height: int = 640,
+            areas: Optional[pd.DataFrame] = None, style_name: Optional[str] = None) -> str:
+    """The refuge map as SVG over the basemap, for the download menu and the brief.
+
+    The basemap is fetched and inlined as a JPEG (vector marks on top), so
+    the file reads like the interactive map; without network it falls back
+    to the forest outlines alone. Only division and range lines are drawn
+    over the basemap -- beat lines at landscape scale are noise -- and only
+    the refuges and raid areas that matter most are labelled, where a label
+    has room.
+    """
+    import math
+
+    from core import boundaries
+    from core.damage_report import _svg, outline_parts, scale_bar
+    from core.map_engine import DEFAULT_BASEMAP
+    from core.map_export import _basemap_data_uri, _fit_view, _label, _projector
 
     areas = areas if areas is not None else pd.DataFrame(columns=["Latitude", "Longitude"])
-    frames = [f for f in (table, links, areas) if len(f)]
+    frames = [f for f in (table, areas) if len(f)] or [f for f in (links,) if len(f)]
     lats = [v for f in frames for v in f["Latitude"].tolist()]
     lons = [v for f in frames for v in f["Longitude"].tolist()]
+    if not lats:
+        return _svg(width, height + LEGEND_H, [], "No refuges or raid areas to map")
     lat, lon, zoom = _fit_view(lats, lons, width, height)
     project = _projector(lat, lon, zoom, width, height)
-    parts = [f'<rect width="{width}" height="{height}" fill="#f4f6f3"/>']
-    parts += outline_parts(project, width, height)
+
+    parts = []
+    basemap = None
+    try:
+        basemap = _basemap_data_uri(lat, lon, zoom, width, height,
+                                    style_name or DEFAULT_BASEMAP)
+    except Exception:  # noqa: BLE001 - a map without terrain is still a map
+        basemap = None
+    if basemap:
+        parts.append(f'<image href="{basemap[0]}" x="0" y="0" width="{width}" '
+                     f'height="{height}" preserveAspectRatio="none"/>')
+        parts += outline_parts(project, width, height,
+                               levels=(boundaries.RANGE, boundaries.DIVISION),
+                               styles={boundaries.RANGE: ("#7a5a2a", 0.6),
+                                       boundaries.DIVISION: ("#5b3d12", 1.4)})
+    else:
+        parts.append(f'<rect width="{width}" height="{height}" fill="#f1f3ef"/>')
+        parts += outline_parts(project, width, height,
+                               levels=(boundaries.RANGE, boundaries.DIVISION))
+
+    def inside(x, y, m=6):
+        return -m <= x <= width + m and -m <= y <= height + m
+
+    labels = []   # (priority, x, y, text)
     for r in areas.to_dict("records"):
         x, y = project(r["Latitude"], r["Longitude"])
-        size = 5 + min(r["Raids"], 30) * 0.4
+        if not inside(x, y):
+            continue
+        size = 4 + 1.4 * math.sqrt(min(r["Raids"], 100))
         parts.append(f'<rect x="{x - size:.1f}" y="{y - size:.1f}" width="{2 * size:.1f}" '
-                     f'height="{2 * size:.1f}" fill="{AREA_COLOR}" fill-opacity="0.25" '
-                     f'stroke="{AREA_COLOR}" stroke-width="1.5"><title>{escape(r["Area"])}: '
+                     f'height="{2 * size:.1f}" fill="{AREA_COLOR}" fill-opacity="0.35" '
+                     f'stroke="{AREA_COLOR}" stroke-width="1.4"><title>{escape(r["Area"])}: '
                      f'{r["Raids"]} raids, no known refuge</title></rect>')
-        parts.append(_text(x + size + 3, y + 4, r["Area"], 10.5, color=AREA_COLOR))
+        labels.append((float(r["Raids"]), x, y - size - 5, r["Area"]))
+
     ref = table.set_index("Refuge") if len(table) else table
     for r in links.to_dict("records"):
+        if r["Refuge"] not in ref.index:
+            continue
         x0, y0 = project(ref.at[r["Refuge"], "Latitude"], ref.at[r["Refuge"], "Longitude"])
         x1, y1 = project(r["Latitude"], r["Longitude"])
         parts.append(f'<line x1="{x0:.1f}" y1="{y0:.1f}" x2="{x1:.1f}" y2="{y1:.1f}" '
-                     f'stroke="{RAID_COLOR}" stroke-opacity="0.45" stroke-width="1"/>')
-        parts.append(f'<circle cx="{x1:.1f}" cy="{y1:.1f}" r="2.2" fill="{RAID_COLOR}"/>')
-    for r in table.to_dict("records"):
+                     f'stroke="{RAID_COLOR}" stroke-opacity="0.55" stroke-width="0.8"/>')
+        parts.append(f'<circle cx="{x1:.1f}" cy="{y1:.1f}" r="1.6" fill="{RAID_COLOR}"/>')
+
+    order = {rf.POSSIBLE: 0, rf.PROBABLE: 1, rf.CONFIRMED: 2}
+    for r in sorted(table.to_dict("records"), key=lambda r: order.get(r["Confidence"], 0)):
         x, y = project(r["Latitude"], r["Longitude"])
-        color = CONFIDENCE_COLORS[r["Confidence"]]
-        parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{6 + min(r["Days Used"], 20) * 0.5:.1f}" '
-                     f'fill="{color}" fill-opacity="0.85" stroke="#ffffff" stroke-width="1.5">'
-                     f'<title>{escape(r["Refuge"])}</title></circle>')
-        parts.append(_text(x + 10, y - 8, r["Refuge"], 11, weight="bold"))
+        if not inside(x, y):
+            continue
+        radius = 4 + 1.1 * math.sqrt(min(r["Linked Raids"], 60))
+        parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" '
+                     f'fill="{CONFIDENCE_COLORS[r["Confidence"]]}" fill-opacity="0.9" '
+                     f'stroke="#ffffff" stroke-width="1.3"><title>{escape(r["Refuge"])}: '
+                     f'{r["Linked Raids"]} linked raids</title></circle>')
+        labels.append((float(r["Linked Raids"]) + 100 * order.get(r["Confidence"], 0),
+                       x, y - radius - 5, r["Refuge"]))
+
+    placed = []
+    for _, x, y, text in sorted(labels, key=lambda c: -c[0]):
+        if len(placed) >= MAP_LABELS:
+            break
+        if all(math.hypot(x - px, y - py) >= LABEL_GAP_PX for px, py in placed):
+            placed.append((x, y))
+            parts.append(_label(x, y, text))
     parts += scale_bar(lat, zoom, height)
-    legend_x = width - 150
-    for k, (name, color) in enumerate(CONFIDENCE_COLORS.items()):
-        y = 20 + k * 18
-        parts.append(f'<circle cx="{legend_x}" cy="{y - 4}" r="5" fill="{color}"/>')
-        parts.append(_text(legend_x + 10, y, f"{name} refuge", 10.5))
-    parts.append(f'<line x1="{legend_x - 6}" x2="{legend_x + 6}" y1="{20 + 3 * 18 - 4}" '
-                 f'y2="{20 + 3 * 18 - 4}" stroke="{RAID_COLOR}"/>')
-    parts.append(_text(legend_x + 10, 20 + 3 * 18, "Linked night raid", 10.5))
-    parts.append(f'<rect x="{legend_x - 5}" y="{20 + 4 * 18 - 9}" width="10" height="10" '
-                 f'fill="{AREA_COLOR}" fill-opacity="0.25" stroke="{AREA_COLOR}"/>')
-    parts.append(_text(legend_x + 10, 20 + 4 * 18, "Raid area, no known refuge", 10.5))
-    return _svg(width, height, parts, "Elephant day refuges and linked raids")
+    if basemap:
+        parts.append(f'<rect x="{width - 230}" y="{height - 15}" width="230" height="15" '
+                     f'fill="#ffffff" fill-opacity="0.75"/>'
+                     f'<text x="{width - 6}" y="{height - 4.5}" text-anchor="end" '
+                     f'font-size="9.5" fill="#3d4a43">{escape(basemap[1])}</text>')
+
+    # Legend in its own band below the map, so it never covers a refuge.
+    y0 = height + LEGEND_H / 2
+    parts.append(f'<rect x="0" y="{height}" width="{width}" height="{LEGEND_H}" fill="#ffffff"/>')
+    x = 14
+    for name, color in CONFIDENCE_COLORS.items():
+        parts.append(f'<circle cx="{x + 6}" cy="{y0}" r="6" fill="{color}" stroke="#ffffff"/>')
+        parts.append(f'<text x="{x + 17}" y="{y0 + 4}" font-size="12" fill="#2b3530">'
+                     f"{name} refuge</text>")
+        x += 150
+    parts.append(f'<line x1="{x}" x2="{x + 14}" y1="{y0}" y2="{y0}" stroke="{RAID_COLOR}" '
+                 f'stroke-width="1.5"/><circle cx="{x + 14}" cy="{y0}" r="2" '
+                 f'fill="{RAID_COLOR}"/>')
+    parts.append(f'<text x="{x + 22}" y="{y0 + 4}" font-size="12" fill="#2b3530">'
+                 "Linked night raid</text>")
+    x += 150
+    parts.append(f'<rect x="{x}" y="{y0 - 6}" width="12" height="12" fill="{AREA_COLOR}" '
+                 f'fill-opacity="0.35" stroke="{AREA_COLOR}"/>')
+    parts.append(f'<text x="{x + 18}" y="{y0 + 4}" font-size="12" fill="#2b3530">'
+                 "Raid area, no known refuge (size = raids)</text>")
+    return _svg(width, height + LEGEND_H, parts,
+                "Elephant day refuges, linked raids and raid areas")
 
 
 def _cell(col: str, value: object) -> str:
@@ -112,7 +185,8 @@ def _table(df: pd.DataFrame, columns, top_n: int, noun: str) -> str:
             + f"</tr></thead><tbody>{rows}</tbody></table>{more}")
 
 
-def brief_section(result: Dict[str, object], top_n: int = 12) -> str:
+def brief_section(result: Dict[str, object], top_n: int = 12,
+                  style_name: Optional[str] = None) -> str:
     """The brief's Day Refuges section: findings, map, both registers, caveats.
 
     Every raid is accounted for: linked to a refuge, in a raid area with no
@@ -132,7 +206,8 @@ def brief_section(result: Dict[str, object], top_n: int = 12) -> str:
     if len(table) or len(areas):
         out.append("<div class='chart-title'>Refuges, their linked raids, and raid areas with "
                    "no known refuge</div>"
-                   f"<div class='chart'>{map_svg(table, links, areas=areas)}</div>")
+                   f"<div class='chart'>{map_svg(table, links, areas=areas, style_name=style_name)}"
+                   "</div>")
     if len(table):
         out.append("<div class='chart-title'>Day refuges that send raids</div>")
         out.append(_table(table, BRIEF_COLUMNS, top_n, "refuge(s)"))

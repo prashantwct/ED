@@ -218,7 +218,7 @@ def generate_html_report(
     {village_map_svg(village_risk, hotspots, basemap_style_name)}
     {_village_risk_html(village_risk)}
 
-    {_refuge_section(refuges)}
+    {_refuge_section(refuges, basemap_style_name)}
 
     {_coverage_section(coverage, coverage_stats)}
 
@@ -432,12 +432,12 @@ def _village_risk_html(village_risk: Optional[pd.DataFrame], top_n: int = 15) ->
     )
 
 
-def _refuge_section(refuges: Optional[Dict[str, object]]) -> str:
+def _refuge_section(refuges: Optional[Dict[str, object]], style_name: str) -> str:
     if refuges is None:
         return ""
     from core.refuge_report import brief_section
 
-    return brief_section(refuges)
+    return brief_section(refuges, style_name=style_name)
 
 
 def _coverage_section(
