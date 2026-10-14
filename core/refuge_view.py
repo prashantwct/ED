@@ -77,20 +77,27 @@ def land_cover_source() -> Tuple[str, object]:
 
 def settings() -> Dict[str, object]:
     with st.sidebar.expander("Refuge settings", expanded=False):
-        start, end = st.slider("Daytime rest window (hours)", 6, 18,
-                               (rf.DAY_START, rf.DAY_END), key="refuge_window",
-                               help="Dawn and dusk are left out: animals are moving then.")
-        eps = st.slider("Sightings within (km) form one place", 0.25, 2.0, rf.EPS_KM, 0.25,
+        forest = st.radio(
+            "Forest from", list(FOREST_CHOICES), key="refuge_forest",
+            help="Only sightings and signs inside forest are refuge evidence.")
+        eps = st.slider("Reports within (km) form one block", 0.25, 2.0, rf.EPS_KM, 0.25,
                         key="refuge_eps")
         days = st.slider("Minimum separate days of use", 2, 10, rf.MIN_DAYS, key="refuge_days")
         link = st.slider("Night raid reach from a refuge (km)", 1.0, 10.0, rf.LINK_KM, 0.5,
                          key="refuge_link")
         link_days = st.slider(
-            "Raid within (days) of the refuge being reported", 1, 30, rf.LINK_DAYS,
+            "Raid within (days) of forest evidence", 1, 15, rf.LINK_DAYS,
             key="refuge_link_days",
-            help="Herds stay in cover for days but are not reported there daily.")
-    return {"day_window": (start, end), "eps_km": eps, "min_days": days, "link_km": link,
-            "link_days": link_days}
+            help="Wider windows link more raids, but mostly by chance: see the baseline.")
+    return {"forest": FOREST_CHOICES[forest], "eps_km": eps, "min_days": days,
+            "link_km": link, "link_days": link_days}
+
+
+FOREST_CHOICES = {
+    "Forest boundaries (notified forest)": "auto",
+    "Esri land cover": "landcover",
+    "No forest test": "none",
+}
 
 
 @st.cache_data(show_spinner="Finding day refuges...", max_entries=8)
@@ -102,9 +109,9 @@ def analyse(df: pd.DataFrame, villages: Optional[pd.DataFrame], source: Tuple[st
         cover = lc.LandCover(remote_year=value)
     elif kind == "files":
         cover = lc.LandCover(list(value))
-    day_window, eps_km, min_days, link_km, link_days = params
+    forest, eps_km, min_days, link_km, link_days = params
     try:
-        result = rf.find_refuges(df, villages, cover, day_window=day_window, eps_km=eps_km,
+        result = rf.find_refuges(df, villages, cover, forest=forest, eps_km=eps_km,
                                  min_days=min_days, link_km=link_km, link_days=link_days)
     finally:
         if cover is not None:
@@ -121,8 +128,8 @@ def for_brief(df: pd.DataFrame, villages: Optional[pd.DataFrame]) -> Dict[str, o
     """Refuges for the brief, with the land cover and settings last used in
     the Day refuges view, or the defaults and Esri's latest year online."""
     source, params = st.session_state.get(LAST_USED_KEY, (
-        ("online", lc.DEFAULT_YEAR), ((rf.DAY_START, rf.DAY_END), rf.EPS_KM, rf.MIN_DAYS,
-                                      rf.LINK_KM, rf.LINK_DAYS)))
+        ("online", lc.DEFAULT_YEAR), ("auto", rf.EPS_KM, rf.MIN_DAYS, rf.LINK_KM,
+                                      rf.LINK_DAYS)))
     return analyse(df, villages, source, params)
 
 
@@ -234,14 +241,9 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
         st.info("Load the Gaj Rakshak register in the Conflict dashboard view first; this "
                 "view reads the same data.")
         return
-    if "Hour" not in register or register["Hour"].notna().sum() == 0:
-        st.warning("The register has no time of sighting, so day and night cannot be told "
-                   "apart and no refuge can be identified.")
-        return
-
     source = land_cover_source()
     params = settings()
-    key = (params["day_window"], params["eps_km"], params["min_days"], params["link_km"],
+    key = (params["forest"], params["eps_km"], params["min_days"], params["link_km"],
            params["link_days"])
     result = analyse(register, villages, source, key)
     st.session_state[LAST_USED_KEY] = (source, key)
@@ -259,11 +261,12 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Night raids", f"{s['night_raids']:,}",
               delta=f"{s['scattered_raids']:,} scattered", **note)
-    c2.metric("Linked to a day refuge", f"{s['linked_raids']:,}",
-              delta=f"{s['same_night']:,} the same night", **note)
+    c2.metric("Linked to a forest refuge", f"{s['linked_raids']:,}",
+              delta=f"{s['same_night']:,} same night; ~{s['chance_links']:.0f} by chance",
+              **note)
     c3.metric("In raid areas, no known refuge", f"{s['area_raids']:,}",
               delta=f"{s['areas']} area(s) to search", **note)
-    c4.metric("Day refuges", f"{s['refuges']}",
+    c4.metric("Forest refuges", f"{s['refuges']}",
               delta=f"{s['confirmed']} confirmed, {s['probable']} probable", **note)
 
     findings(rf.headlines(result))
@@ -294,7 +297,8 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
 
     st.markdown("**Refuge register** -- strongest evidence first")
     shown = [c for c in [
-        "Refuge", "Confidence", "Beat", "Range", "Days Used", "Last Used", "Months Used",
+        "Refuge", "Confidence", "Beat", "Range", "Days Used", "Direct Sightings",
+        "Indirect Signs", "Last Used", "Months Used",
         "Group", "Cover Share %", "Tree Patch (ha)", "Linked Raids", "Same-Night Raids",
         "Raids Head",
         "Raid Distance (km, median)", "Villages Raided", "Nearest Village",
