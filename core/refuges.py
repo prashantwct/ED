@@ -6,29 +6,28 @@ night's walk of the fields they raid. A refuge used again and again is a
 fixed point in an otherwise moving problem: a place to watch at dusk,
 villages to warn before dark, people to keep out of it by day.
 
-A refuge here is not a cluster of sightings. It has to pass five tests,
-each of which removes a known way of being wrong:
+A refuge here is a block of forest elephants keep coming back to. It is
+built from every elephant report inside forest, and has to pass these
+tests:
 
-1. **Rest hours only.** Direct sightings between ``DAY_START`` and ``DAY_END``
-   (09:00-16:00 by default). Dawn and dusk sightings are left out: they
-   catch animals moving between field and cover, and would put "refuges"
-   on the paths in between. Only a direct sighting counts: pug marks,
-   dung, broken branches, sounds and damage are stale traces of an
-   earlier visit, never sightings, whatever their hour (see below).
-2. **Recurrence.** Day sightings on at least ``MIN_DAYS`` separate days.
-   One afternoon of reports, however many, is a herd passing through.
-3. **Day, not night, use.** Of all use of the place -- timed direct
-   sightings, plus the damage and indirect signs found there, which count
-   as night use -- at least ``MIN_DAY_SHARE`` per cent by day. A place seen mostly at night, or raided, is a feeding ground.
-4. **Stability.** The clustering is re-run over a grid of neighbour
-   distances and rest windows; a refuge must reappear within 1 km in
-   most of them. One that only exists at one setting is an artefact of
-   that setting.
-5. **Cover.** With Esri land cover, the share of tree, rangeland and
+1. **Inside forest.** Every report that is not a conflict event -- direct
+   sightings and indirect signs (pug marks, dung, broken branches,
+   sounds) alike, at any hour -- counts as evidence when it falls inside
+   forest: the notified forest of the vendored beat boundaries, or,
+   without them, tree, rangeland or flooded-vegetation cover in Esri land
+   cover. An indirect sign is stale -- it does not say the elephants were
+   there at the hour entered -- but inside forest it still says they used
+   that block of forest that day. Signs and sightings in fields are not
+   refuge evidence: they are feeding, raiding or passing.
+2. **Recurrence.** Forest evidence on at least ``MIN_DAYS`` separate days
+   within ``EPS_KM`` of each other. One day of reports, however many, is a
+   herd passing through.
+3. **Stability.** The clustering is re-run over a grid of neighbour
+   distances; a refuge must reappear within 1 km in most of them.
+4. **Cover.** With Esri land cover, the share of tree, rangeland and
    flooded-vegetation pixels within 250 m, and the size of the tree patch
-   the refuge sits in. Day use with no cover is flagged, not hidden: it
-   is either a position error or animals lying up in tall crop, and both
-   matter.
+   the refuge sits in. A block in notified forest with no cover on the
+   ground is flagged and capped at Possible.
 
 **Damage is entered after the raid.** Crop, grain and house damage is
 found and recorded the next morning, so the entry's hour is when it was
@@ -44,14 +43,20 @@ report that is not a direct sighting: its hour is when it was written
 down, so it is dated to the night before.
 
 Each refuge is then linked to the raids it feeds: raids within
-``LINK_KM`` of the refuge on a night within ``LINK_DAYS`` of a day it was
-seen in use. Herds stay in one block of cover for days at a stretch but
-are not reported there every day, so the night-before-or-after rule alone
-links only the raids that happen to fall on a reported day. Each link
-records the gap: "Same night" when the refuge was reported the day before
-or after, otherwise the number of days. A raid near two refuges goes to
-one in use the same night if there is one, else to the nearer one, so
-nothing is counted twice.
+``LINK_KM`` of the refuge on a night within ``LINK_DAYS`` of a day it had
+forest evidence -- by default the night before or after (``LINK_DAYS`` =
+1). Each link records the gap: "Same night" when the refuge had evidence
+the day the night began or the day after, otherwise the number of days.
+A raid near two refuges goes to one in use the same night if there is
+one, else to the nearer one, so nothing is counted twice.
+
+**How many links chance alone would make.** Raids happen near forest, so
+some fall near a refuge on a night it was in use by coincidence. Every
+run re-links the raids with each refuge's days shifted by 20-60 days --
+same places, same seasons, broken day-to-day tie -- and reports the
+average as the chance baseline. On the October 2026 register this gave
+327 links at +-1 day against 86 by chance, but 428 against 226 at +-7
+days: wider windows mostly add coincidences.
 
 **Raids with no known refuge.** Every raid is accounted for. Raids that
 link to no refuge are grouped into raid areas (``AREA_EPS_KM``,
@@ -82,11 +87,16 @@ from core.hotspots import _dbscan, _to_km_plane
 
 DAY_START, DAY_END = 9, 16            # rest window [start, end)
 NIGHT_START, NIGHT_END = 18, 6        # raid window, wraps midnight
-EPS_KM = 0.75                         # neighbour distance for day clusters
+EPS_KM = 0.75                         # neighbour distance for forest-evidence clusters
 MIN_SIGHTINGS = 3
 MIN_DAYS = 3
 LINK_KM = 5.0                         # a night's foray from the refuge
-LINK_DAYS = 7                         # days between refuge use and the raid night
+LINK_DAYS = 1                         # days between refuge use and the raid night
+CHANCE_DRAWS = 5                      # date shuffles behind the chance baseline
+CHANCE_SHIFT_DAYS = (20, 60)
+FOREST_SOURCES = ("auto", "boundaries", "landcover", "none")
+FOREST_DISC_M = 100.0                 # land-cover forest test around a report
+FOREST_COVER = 50.0                   # % cover within that disc to call it forest
 AREA_EPS_KM = 1.5                     # raids this close form one raid area
 AREA_MIN_RAIDS = 3
 SEARCH_MIN_HA = 20.0                  # tree patch big enough to hide a herd by day
@@ -94,12 +104,10 @@ COVER_DISC_M = 250.0
 COVER_PASS = 40.0       # % cover within the disc for Confirmed
 COVER_FAIL = 25.0       # below this the cover test fails
 CONFIRM_DAYS = 5
-MIN_DAY_SHARE = 40.0    # below this a place is a night feeding ground
 WINDOW_HALF_M = 3000.0
 
 # Stability grid: neighbour distance x rest window.
 STABILITY_EPS = (0.5, 0.75, 1.0)
-STABILITY_WINDOWS = ((8, 17), (9, 16), (10, 15))
 STABILITY_MATCH_KM = 1.0
 
 CONFIRMED, PROBABLE, POSSIBLE = "Confirmed", "Probable", "Possible"
@@ -174,21 +182,63 @@ def raids_and_nights(df: pd.DataFrame) -> pd.DataFrame:
     return df[raid].assign(**{"Night Of": night_of[raid]})
 
 
-def _candidates(df: pd.DataFrame, eps_km: float, window: Tuple[int, int],
-                min_sightings: int, min_days: int) -> List[pd.DataFrame]:
-    """Day-sighting clusters seen on enough separate days."""
-    day = df[is_day(df["Hour"], *window)]
-    if len(day) < min_sightings:
+def _candidates(df: pd.DataFrame, eps_km: float, min_reports: int,
+                min_days: int) -> List[pd.DataFrame]:
+    """Clusters of forest evidence seen on enough separate days."""
+    if len(df) < min_reports:
         return []
-    labels = _dbscan(_to_km_plane(day["Latitude"].to_numpy(float),
-                                  day["Longitude"].to_numpy(float)),
-                     eps=eps_km, min_samples=min_sightings)
+    labels = _dbscan(_to_km_plane(df["Latitude"].to_numpy(float),
+                                  df["Longitude"].to_numpy(float)),
+                     eps=eps_km, min_samples=min_reports)
     out = []
     for label in sorted(set(labels) - {-1}):
-        members = day[labels == label]
+        members = df[labels == label]
         if members["Date"].dt.normalize().nunique() >= min_days:
             out.append(members)
     return out
+
+
+def forest_mask(points: pd.DataFrame, land_cover=None, source: str = "auto"
+                ) -> Tuple[np.ndarray, str]:
+    """Which reports fall inside forest, and what decided it.
+
+    ``auto`` uses the notified forest of the vendored beat boundaries
+    when they cover the reports, else Esri land cover when given, else
+    lets every report through (``none``).
+    """
+    from core import boundaries
+
+    n = len(points)
+    lat = points["Latitude"].to_numpy(float)
+    lon = points["Longitude"].to_numpy(float)
+    if source == "none" or n == 0:
+        return np.ones(n, dtype=bool), "none"
+    if source in ("auto", "boundaries") and boundaries.available():
+        inside = boundaries.locate(boundaries.BEAT, lon, lat) != ""
+        # Beat polygons that miss the register entirely are another landscape.
+        if source == "boundaries" or inside.mean() >= 0.05:
+            return inside, "boundaries"
+    if source in ("auto", "landcover") and land_cover is not None:
+        from core import esri_landcover as lc
+
+        out = np.zeros(n, dtype=bool)
+        for k, (la, lo) in enumerate(zip(lat, lon)):
+            window = land_cover.window(la, lo, FOREST_DISC_M * 1.5)
+            if window is None:
+                continue
+            disc = window.disc(FOREST_DISC_M) & (window.codes > 0)
+            if disc.any():
+                cover = np.isin(window.codes, (lc.TREES, lc.RANGELAND, lc.FLOODED)) & disc
+                out[k] = cover.sum() * 100.0 >= FOREST_COVER * disc.sum()
+        return out, "landcover"
+    return np.ones(n, dtype=bool), "none"
+
+
+FOREST_LABELS = {
+    "boundaries": "notified forest (forest beat boundaries)",
+    "landcover": "Esri land cover (tree, rangeland or flooded vegetation)",
+    "none": "no forest test -- every report counted",
+}
 
 
 def _centre(members: pd.DataFrame) -> Tuple[float, float]:
@@ -261,47 +311,48 @@ def find_refuges(
     villages: Optional[pd.DataFrame] = None,
     land_cover=None,
     *,
-    day_window: Tuple[int, int] = (DAY_START, DAY_END),
     eps_km: float = EPS_KM,
     min_days: int = MIN_DAYS,
     link_km: float = LINK_KM,
     link_days: int = LINK_DAYS,
+    forest: str = "auto",
     require_raids: bool = True,
     as_of: Optional[pd.Timestamp] = None,
     progress: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, object]:
-    """Find day refuges in the register and link each to its night raids.
+    """Find forest refuges in the register and link each to its night raids.
 
-    Returns ``refuges`` (one row per refuge, most-used first), ``links``
-    (one row per linked raid), ``windows`` (land-cover windows by refuge
-    id, for thumbnails), ``summary`` and ``caveats``.
+    Returns ``refuges`` (one row per refuge, strongest first), ``links``
+    (one row per linked raid), ``areas`` (raids no refuge accounts for),
+    ``windows`` (land-cover windows by refuge id, for thumbnails),
+    ``summary`` and ``caveats``.
 
-    With ``require_raids`` (the default) a refuge no night raid links
-    to is left out: a resting place that sends no raids is not a
-    management priority, and is counted in the caveats instead.
+    With ``require_raids`` (the default) a refuge no raid links to is left
+    out: a block that sends no raids is not a management priority, and is
+    counted in the caveats instead.
     """
     from core.analytics import indirect_mask
 
     located = df[df["Date"].notna() & df["Latitude"].notna() & df["Longitude"].notna()]
     conflict = conflict_mask(located)
-    indirect = indirect_mask(located)
-    # Only a direct sighting says where the animals were at that hour.
-    # Damage, pug marks, dung, broken branches and sounds are stale: they
-    # say where the animals were the night before, so they never count as
-    # day sightings -- they count as night use of the place instead.
-    timed = located[~conflict & ~indirect & located["Hour"].notna()].copy()
-    timed["Hour"] = timed["Hour"].astype(int)
-    traces = located[~conflict & indirect]
+    reports = located[~conflict].copy()
+    reports["_indirect"] = indirect_mask(reports).to_numpy()
+    hours = pd.to_numeric(reports["Hour"], errors="coerce") if "Hour" in reports else \
+        pd.Series(np.nan, index=reports.index)
+    reports["_day_direct"] = (~reports["_indirect"]) & is_day(hours).to_numpy()
+
+    inside, forest_used = forest_mask(reports, land_cover, forest)
+    evidence = reports[inside]
     caveats = []
-    if len(traces):
-        caveats.append(f"{len(traces):,} indirect sign(s) (pug marks, dung, broken branches, "
-                       "sounds) are stale -- traces of the night before, not elephants present "
-                       "at the hour entered -- and count as night use of a place, never as day "
-                       "rest.")
-    untimed = int((~conflict & ~indirect & located["Hour"].isna()).sum())
-    if untimed:
-        caveats.append(f"{untimed:,} sighting(s) without an hour cannot be placed in day or "
-                       "night and are left out.")
+    if forest_used != "none" and len(reports) - len(evidence):
+        caveats.append(f"{len(reports) - len(evidence):,} sighting(s) and sign(s) outside "
+                       f"forest ({FOREST_LABELS[forest_used]}) are not refuge evidence: "
+                       "feeding, raiding or passing.")
+    elif forest_used == "none":
+        caveats.append("No forest layer available: every sighting and sign counts as "
+                       "refuge evidence, and only the cover check separates forest from "
+                       "fields.")
+
     raids = raids_and_nights(located).copy()
     if len(raids):
         raids["_deaths"] = human_deaths(raids)
@@ -311,21 +362,18 @@ def find_refuges(
 
             raids, _ = attach_nearest_village(raids, villages)
     ctx = {"raids": raids, "villages": villages, "land_cover": land_cover,
-           "link_km": link_km}
+           "link_km": link_km, "forest": forest_used}
+    counts = (len(reports), len(evidence))
 
-    day_n = int(is_day(timed["Hour"], *day_window).sum())
-    if not len(timed) or day_n == 0:
-        return _empty(caveats + ["No reports fall in the daytime rest window, so no "
-                                 "refuge can be identified."], ctx=ctx)
+    if evidence.empty:
+        return _empty(caveats + ["No elephant report falls inside forest, so no refuge can "
+                                 "be identified."], *counts, ctx=ctx)
 
-    as_of = pd.Timestamp(as_of) if as_of is not None else timed["Date"].max()
-    base = _candidates(timed, eps_km, day_window, MIN_SIGHTINGS, min_days)
-
-    # Stability: how many settings in the grid find a refuge here too.
-    grid = [(e, w) for e in STABILITY_EPS for w in STABILITY_WINDOWS]
+    as_of = pd.Timestamp(as_of) if as_of is not None else located["Date"].max()
+    base = _candidates(evidence, eps_km, MIN_SIGHTINGS, min_days)
     centres_by_setting = []
-    for e, w in grid:
-        found = _candidates(timed, e, w, MIN_SIGHTINGS, min_days)
+    for e in STABILITY_EPS:
+        found = _candidates(evidence, e, MIN_SIGHTINGS, min_days)
         centres_by_setting.append(np.array([_centre(m) for m in found]) if found
                                   else np.empty((0, 2)))
 
@@ -336,47 +384,37 @@ def find_refuges(
         lat, lon = _centre(members)
         d = _km(lat, lon, members["Latitude"].to_numpy(float), members["Longitude"].to_numpy(float))
         radius = float(max(np.percentile(d, 90), 0.25))
-
-        near_all = _km(lat, lon, timed["Latitude"].to_numpy(float),
-                       timed["Longitude"].to_numpy(float)) <= radius + 0.25
-        local = timed[near_all]
-        local_day = int(is_day(local["Hour"], *day_window).sum())
-        raided_here = int((_km(lat, lon, raids["Latitude"].to_numpy(float),
-                               raids["Longitude"].to_numpy(float)) <= radius + 0.25).sum()) \
-            if len(raids) else 0
-        traced_here = int((_km(lat, lon, traces["Latitude"].to_numpy(float),
-                               traces["Longitude"].to_numpy(float)) <= radius + 0.25).sum()) \
-            if len(traces) else 0
-        local_night = int(is_night(local["Hour"]).sum()) + raided_here + traced_here
-        day_share = local_day / max(local_day + local_night, 1)
-
         stable = sum(
             1 for centres in centres_by_setting
             if len(centres) and _km(lat, lon, centres[:, 0], centres[:, 1]).min()
             <= max(STABILITY_MATCH_KM, radius)
-        ) / len(grid)
+        ) / len(STABILITY_EPS)
 
         days = members["Date"].dt.normalize()
         use_days[i] = set(days)
-        groups = classify_group(members)
+        direct = members[~members["_indirect"]]
+        groups = classify_group(direct) if len(direct) else pd.Series(dtype=object)
         known = groups[groups != "Unrecorded"]
         months = sorted(set(days.dt.month))
-
         row = {
             "_i": i,
             "Latitude": round(lat, 5), "Longitude": round(lon, 5),
             "Radius (km)": round(radius, 2),
-            "Day Sightings": len(members),
+            "Reports": int(len(members)),
+            "Direct Sightings": int(len(direct)),
+            "Direct Day Sightings": int(members["_day_direct"].sum()),
+            "Indirect Signs": int(members["_indirect"].sum()),
             "Days Used": int(days.nunique()),
             "First Used": days.min(), "Last Used": days.max(),
             "Days Since Last Use": int((as_of.normalize() - days.max()).days),
             "Months Used": ", ".join(pd.Timestamp(2000, m, 1).strftime("%b") for m in months),
-            "Day Share %": round(day_share * 100),
             "Stability %": round(stable * 100),
             "Group": known.mode().iat[0] if len(known) else "Unrecorded",
-            "Bull-Type Share %": round(float(groups.isin(["Lone bull", "Bull party"]).mean()) * 100),
-            "Herd Size (median)": float(pd.to_numeric(members["Total Count"], errors="coerce")
-                                        .median()) if "Total Count" in members else float("nan"),
+            "Bull-Type Share %": round(float(groups.isin(["Lone bull", "Bull party"]).mean())
+                                       * 100) if len(groups) else 0,
+            "Herd Size (median)": float(pd.to_numeric(direct["Total Count"], errors="coerce")
+                                        .median()) if "Total Count" in direct and len(direct)
+            else float("nan"),
         }
         if land_cover is not None:
             window = land_cover.window(lat, lon, WINDOW_HALF_M)
@@ -385,30 +423,24 @@ def find_refuges(
                 row.update(cover_metrics(window))
         rows.append(row)
 
-    feeding = [r for r in rows if r["Day Share %"] < MIN_DAY_SHARE]
-    rows = [r for r in rows if r["Day Share %"] >= MIN_DAY_SHARE]
-    if feeding:
-        caveats.append(f"{len(feeding)} place(s) with repeated day sightings were mostly seen "
-                       "at night or raided -- feeding grounds, not refuges -- and are left "
-                       "out.")
     if not rows:
-        return _empty(caveats + [f"No place had daytime sightings on {min_days} or more "
-                                 "separate days and mostly daytime use."], len(timed), day_n,
-                      ctx=ctx)
+        return _empty(caveats + [f"No block of forest had elephant evidence on {min_days} or "
+                                 "more separate days."], *counts, ctx=ctx)
 
     table = pd.DataFrame(rows)
-    known = table[["Latitude", "Longitude"]].copy()   # every day-use place, raids or not
+    known = table[["Latitude", "Longitude"]].copy()   # every refuge, raids or not
     links = _link_raids(table, use_days, raids, link_km, link_days)
+    chance = chance_links(table, use_days, raids, link_km, link_days)
     table = _attach_links(table, links)
     if require_raids:
         quiet = int((table["Linked Raids"] == 0).sum())
         table = table[table["Linked Raids"] > 0].reset_index(drop=True)
         if quiet:
-            caveats.append(f"{quiet} place(s) used by day but with no night raid linked "
+            caveats.append(f"{quiet} forest block(s) used by elephants but with no raid linked "
                            "to them are left out.")
         if table.empty:
-            return _empty(caveats + ["No day refuge had a night raid linked to it."],
-                          len(timed), day_n, ctx=ctx, known=known)
+            return _empty(caveats + ["No forest refuge had a raid linked to it."], *counts,
+                          ctx=ctx, known=known, chance=chance)
     table = _attach_villages(table, villages, link_km)
     table = _attach_admin(table)
     table["Confidence"] = table.apply(_confidence, axis=1, land_cover=land_cover is not None)
@@ -428,8 +460,8 @@ def find_refuges(
                                   land_cover, link_km)
 
     if land_cover is None:
-        caveats.append("No land cover loaded: refuges rest on sighting evidence alone, and "
-                       "none can reach Confirmed without the cover check.")
+        caveats.append("No land cover loaded: refuges rest on the forest layer and the "
+                       "reports alone, and none can reach Confirmed without the cover check.")
     elif getattr(land_cover, "failures", None):
         caveats.append(f"Land cover could not be read for {len(land_cover.failures)} "
                        "source(s); refuges there carry no cover figures.")
@@ -440,45 +472,90 @@ def find_refuges(
     caveats += [
         "Positions are the observer's, not the elephant's; cover is measured over a "
         f"{COVER_DISC_M:.0f} m disc rather than the single pixel for that reason.",
-        "A refuge appears only where trackers go by day. No refuge in an area is not "
-        "evidence that elephants do not lie up there.",
+        "A refuge appears only where trackers report elephants in forest. No refuge in an "
+        "area is not evidence that elephants do not lie up there.",
         f"Raids are linked by place ({link_km:g} km) and time (a night within {link_days} "
-        "day(s) of a reported day in use), not identity: consistent with coming from the "
-        "refuge, not proof. Same-night links are the strongest.",
-        "Damage is taken to have happened the night before its entry (the night itself if "
-        f"entered after {NIGHT_START}:00), since it is found and recorded the next morning.",
+        "day(s) of a day the refuge had forest evidence), not identity: consistent with "
+        "coming from the refuge, not proof. Compare the count with the chance baseline.",
+        "Damage and indirect reports are taken to record the night before their entry (the "
+        f"night itself if entered after {NIGHT_START}:00).",
     ]
-    summary = {
-        "timed": len(timed), "day_sightings": day_n, "refuges": len(table),
+    summary = _summary(counts, raids, scattered, areas, chance)
+    summary.update({
+        "refuges": len(table),
         "confirmed": int((table["Confidence"] == CONFIRMED).sum()),
         "probable": int((table["Confidence"] == PROBABLE).sum()),
         "linked_raids": int(len(links)),
         "same_night": int((links["Link"] == SAME_NIGHT).sum()) if len(links) else 0,
-        "night_raids": int(len(raids)),
         "villages_to_warn": int(len(set(", ".join(table["Villages Within Reach"].dropna())
                                        .split(", ")) - {""})),
-        "areas": int(len(areas)),
-        "area_raids": int(areas["Raids"].sum()) if len(areas) else 0,
-        "scattered_raids": int(scattered),
-    }
+        "forest": forest_used,
+    })
     return {"refuges": table, "links": links, "windows": windows, "areas": areas,
             "summary": summary, "caveats": caveats}
 
 
-def _empty(caveats, timed=0, day=0, ctx=None, known=None) -> Dict[str, object]:
+def _summary(counts, raids, scattered, areas, chance) -> Dict[str, object]:
+    reports, evidence = counts
+    return {
+        "reports": int(reports), "forest_evidence": int(evidence),
+        "refuges": 0, "confirmed": 0, "probable": 0, "linked_raids": 0, "same_night": 0,
+        "night_raids": int(len(raids)), "villages_to_warn": 0,
+        "areas": int(len(areas)),
+        "area_raids": int(areas["Raids"].sum()) if len(areas) else 0,
+        "scattered_raids": int(scattered),
+        "chance_links": float(chance), "forest": "none",
+    }
+
+
+def chance_links(table: pd.DataFrame, use_days: Dict[int, set], raids: pd.DataFrame,
+                 link_km: float, link_days: int, draws: int = CHANCE_DRAWS,
+                 seed: int = 7) -> float:
+    """Raids that would link by coincidence: refuge days shifted by 20-60 days.
+
+    Same refuges, same places, the same spread of days through the year,
+    but the day-to-day tie between a refuge in use and a raid is broken.
+    The average count over ``draws`` shifts is what place and season alone
+    produce; links above it are the association the refuges explain.
+    """
+    if raids is None or not len(raids) or table.empty:
+        return 0.0
+    rlat = raids["Latitude"].to_numpy(float)
+    rlon = raids["Longitude"].to_numpy(float)
+    nights = raids["Night Of"].to_numpy("datetime64[D]")
+    reach = np.stack([_km(r["Latitude"], r["Longitude"], rlat, rlon) <= link_km
+                      for _, r in table.iterrows()])           # refuges x raids
+    days = [np.array(sorted(use_days[i]), dtype="datetime64[D]") for i in table["_i"]]
+    rng = np.random.default_rng(seed)
+    lo, hi = CHANCE_SHIFT_DAYS
+    totals = []
+    for _ in range(draws):
+        hit = np.zeros(len(raids), dtype=bool)
+        for k, d in enumerate(days):
+            if not reach[k].any():
+                continue
+            shifted = d + np.timedelta64(int(rng.integers(lo, hi + 1))
+                                         * int(rng.choice([-1, 1])), "D")
+            gap = shifted[:, None] - nights[None, reach[k]]           # use - night
+            gap = gap.astype(int)
+            near = ((gap >= -link_days) & (gap <= link_days + 1)).any(axis=0)
+            idx = np.nonzero(reach[k])[0]
+            hit[idx[near]] = True
+        totals.append(int(hit.sum()))
+    return float(np.mean(totals))
+
+
+def _empty(caveats, reports=0, evidence=0, ctx=None, known=None,
+           chance=0.0) -> Dict[str, object]:
     ctx = ctx or {}
     raids = ctx.get("raids")
     raids = raids if raids is not None else pd.DataFrame()
     areas, scattered = raid_areas(raids, known, ctx.get("villages"), ctx.get("land_cover"),
                                   ctx.get("link_km", LINK_KM))
+    summary = _summary((reports, evidence), raids, scattered, areas, chance)
+    summary["forest"] = ctx.get("forest", "none")
     return {"refuges": pd.DataFrame(), "links": pd.DataFrame(), "windows": {}, "areas": areas,
-            "summary": {"timed": timed, "day_sightings": day, "refuges": 0, "confirmed": 0,
-                        "probable": 0, "linked_raids": 0, "same_night": 0,
-                        "night_raids": int(len(raids)), "villages_to_warn": 0,
-                        "areas": int(len(areas)),
-                        "area_raids": int(areas["Raids"].sum()) if len(areas) else 0,
-                        "scattered_raids": int(scattered)},
-            "caveats": caveats}
+            "summary": summary, "caveats": caveats}
 
 
 # ---------------------------------------------------------------------------
@@ -734,13 +811,15 @@ def _attach_admin(table: pd.DataFrame) -> pd.DataFrame:
 
 
 def _confidence(row, land_cover: bool) -> str:
-    """Confirmed needs every test passed; failing the cover test caps at Possible."""
+    """Confirmed needs every test passed and someone to have seen the
+    elephants there; failing the cover test caps at Possible."""
     cover = row.get("Cover Share %", np.nan)
     assessed = cover == cover
     if assessed and cover < COVER_FAIL:
         return POSSIBLE
     if (row["Days Used"] >= CONFIRM_DAYS and row["Stability %"] >= 67
-            and row["Day Share %"] >= 50 and land_cover and assessed and cover >= COVER_PASS):
+            and row["Direct Sightings"] > 0
+            and land_cover and assessed and cover >= COVER_PASS):
         return CONFIRMED
     if row["Days Used"] >= MIN_DAYS and row["Stability %"] >= 34:
         return PROBABLE
@@ -752,8 +831,8 @@ def _flags(row) -> str:
     cover = row.get("Cover Share %", np.nan)
     if cover == cover and cover < COVER_FAIL:
         flags.append("Little cover at the reported position")
-    if row["Day Share %"] < 50:
-        flags.append("Also used at night")
+    if not row["Direct Sightings"]:
+        flags.append("Signs only: nobody has seen the elephants here")
     near = row.get("To Nearest Village (km)", np.nan)
     if near == near and near < 0.5:
         flags.append("Within 500 m of a village")
@@ -785,6 +864,8 @@ def _actions(row) -> str:
     if cover == cover and cover < COVER_FAIL:
         acts.append("Verify on the ground: little cover at the reported position "
                     "(tall crop, plantation, or a position error)")
+    if not row["Direct Sightings"]:
+        acts.append("Confirm by day: only pug marks and other signs so far")
     if not acts:
         acts.append("Keep under daytime watch; confirm with a site visit")
     return "; ".join(acts)
@@ -875,11 +956,17 @@ def headlines(result: Dict[str, object]) -> List[str]:
     s, table = result["summary"], result["refuges"]
     lines = []
     if s["night_raids"]:
+        chance = s.get("chance_links", 0.0)
         lines.append(f"Of {s['night_raids']:,} night raids (damage and indirect reports dated "
-                     f"to the night before their entry): {s['linked_raids']:,} link to a known day refuge "
-                     f"({s['same_night']:,} the same night), {s['area_raids']:,} fall in "
-                     f"{s['areas']} raid area(s) with no daytime refuge on record, and "
+                     f"to the night before their entry): {s['linked_raids']:,} link to a forest "
+                     f"refuge in use ({s['same_night']:,} the same night), {s['area_raids']:,} "
+                     f"fall in {s['areas']} raid area(s) with no refuge on record, and "
                      f"{s['scattered_raids']:,} are scattered.")
+        if s["linked_raids"]:
+            lines.append(f"With the refuges' dates shuffled, about {chance:.0f} raids would "
+                         "link by coincidence of place and season; "
+                         f"{max(s['linked_raids'] - chance, 0):.0f} links are what the refuges "
+                         f"explain ({s['linked_raids'] / max(chance, 1):.1f}x chance).")
     areas = result.get("areas")
     if areas is not None and len(areas):
         top = areas.iloc[0]
@@ -887,19 +974,30 @@ def headlines(result: Dict[str, object]) -> List[str]:
         lines.append(f"The biggest raid area with no known refuge, {top['Area']} around "
                      f"{where}, saw {top['Raids']} raids on {top['Nights']} nights: an "
                      "unreported refuge lies within a night's walk of it.")
-    lines.append(f"{s['day_sightings']:,} of {s['timed']:,} timed direct sightings fall in "
-                 "the daytime rest window; indirect signs are stale and never count as day "
-                 "rest.")
+    if s.get("forest", "none") == "none":
+        lines.append(f"All {s['reports']:,} sightings and signs are refuge evidence: no forest "
+                     "layer was used.")
+    else:
+        lines.append(f"{s['forest_evidence']:,} of {s['reports']:,} sightings and signs fall "
+                     f"inside forest -- {FOREST_LABELS[s['forest']]} -- and are the refuge "
+                     "evidence.")
     if not s["refuges"]:
         return lines
-    lines.append(f"{s['refuges']} day refuge(s) send raids: {s['confirmed']} confirmed, "
+    lines.append(f"{s['refuges']} forest refuge(s) send raids: {s['confirmed']} confirmed, "
                  f"{s['probable']} probable, the rest possible.")
     top = table.sort_values("Linked Raids", ascending=False).iloc[0]
     if top["Linked Raids"]:
         lines.append(
             f"{top['Refuge']} ({top.get('Beat', '')}) feeds the most raids: "
-            f"{top['Linked Raids']}, heading {top['Raids Head']} a median "
-            f"{top['Raid Distance (km, median)']} km, into {top['Villages Raided'] or 'nearby fields'}.")
+            f"{top['Linked Raids']}, "
+            + (f"heading {top['Raids Head']}" if top["Raids Head"] in COMPASS
+               else "in several directions")
+            + f" a median {top['Raid Distance (km, median)']} km, into "
+            f"{top['Villages Raided'] or 'nearby fields'}.")
+    signs_only = int((table["Direct Sightings"] == 0).sum())
+    if signs_only:
+        lines.append(f"{signs_only} refuge(s) rest on signs alone -- nobody has seen the "
+                     "elephants there: confirm them by day.")
     if "Tree Patch (ha)" in table:
         small = table[(table["Tree Patch (ha)"] > 0) & (table["Tree Patch (ha)"] < 25)
                       & ~table["Patch Extends Beyond Window"].fillna(False).astype(bool)]

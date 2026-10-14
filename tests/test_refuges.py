@@ -24,9 +24,16 @@ def tif(tmp_path_factory):
     return fx.landcover_tif(tmp_path_factory.mktemp("lc") / "esri.tif")
 
 
+def run(tif, df=None, **kwargs):
+    """Refuges over the synthetic landscape, forest taken from its land cover."""
+    kwargs.setdefault("forest", "landcover")
+    return rf.find_refuges(fx.register() if df is None else df, fx.villages(),
+                           lc.LandCover([tif]), **kwargs)
+
+
 @pytest.fixture(scope="module")
 def result(tif):
-    return rf.find_refuges(fx.register(), fx.villages(), lc.LandCover([tif]))
+    return run(tif)
 
 
 def _at(table, xy, km=0.6):
@@ -48,21 +55,27 @@ def test_the_planted_refuges_are_found_with_the_right_confidence(result):
     assert 5 <= b["Tree Patch (ha)"] <= 15
 
 
-def test_a_night_feeding_ground_is_not_a_refuge(result):
+def test_a_feeding_ground_in_fields_is_not_a_refuge(result):
     assert _at(result["refuges"], fx.FEEDING, km=0.4) is None
-    assert any("feeding grounds" in c for c in result["caveats"])
+    assert any("outside forest" in c for c in result["caveats"])
 
 
 def test_one_afternoon_of_sightings_is_a_passage_not_a_refuge(result):
     assert _at(result["refuges"], fx.PASSAGE) is None
 
 
-def test_day_use_without_cover_is_flagged_and_capped(result):
-    open_day = _at(result["refuges"], fx.OPEN_DAY)
-    assert open_day is not None
-    assert open_day["Confidence"] == rf.POSSIBLE
-    assert "Little cover" in open_day["Flags"]
-    assert "Verify on the ground" in open_day["Recommended Action"]
+def test_day_use_in_open_fields_is_not_a_refuge(result):
+    assert _at(result["refuges"], fx.OPEN_DAY) is None
+
+
+def test_a_forest_block_with_no_cover_on_the_ground_is_capped_and_flagged():
+    # Notified forest can be bare on the ground: the cover check still caps it.
+    row = {"Cover Share %": 10.0, "Days Used": 9, "Stability %": 100, "Direct Sightings": 6,
+           "To Nearest Village (km)": 3.0, "Tree Patch (ha)": 0.0, "Days Since Last Use": 2,
+           "Linked Raids": 0, "Group": "Mixed", "Bull-Type Share %": 0, "Nearest Village": "X"}
+    assert rf._confidence(row, land_cover=True) == rf.POSSIBLE
+    assert "Little cover" in rf._flags(row)
+    assert "Verify on the ground" in rf._actions(row)
 
 
 def test_damage_entered_next_morning_is_a_raid_not_a_refuge(result):
@@ -89,15 +102,20 @@ def test_the_night_a_report_belongs_to():
     assert nights == {0: day_before, 1: d, 2: day_before, 4: day_before}  # 3: a day injury
 
 
-def test_indirect_signs_logged_by_day_are_not_day_rest(tif):
-    out = rf.find_refuges(fx.register(), fx.villages(), lc.LandCover([tif]),
-                          require_raids=False)
+def test_signs_in_fields_are_not_a_refuge_but_signs_in_forest_are(tif, result):
+    out = run(tif, require_raids=False)
     assert _at(out["refuges"], fx.PUGMARKS) is None
-    assert any("indirect sign(s)" in c for c in out["caveats"])
-    # Counted as sightings at their hour, they would have made a refuge.
-    seen = fx.register().assign(**{"Sighting Type": "Direct"})
-    naive = rf.find_refuges(seen, fx.villages(), lc.LandCover([tif]), require_raids=False)
-    assert _at(naive["refuges"], fx.PUGMARKS) is not None
+    signs = _at(result["refuges"], fx.FOREST_SIGNS)
+    assert signs is not None and signs["Direct Sightings"] == 0 and signs["Indirect Signs"] == 8
+    assert signs["Confidence"] == rf.PROBABLE        # never Confirmed on signs alone
+    assert "Signs only" in signs["Flags"] and "Confirm by day" in signs["Recommended Action"]
+    assert signs["Same-Night Raids"] == 4
+
+
+def test_links_beat_the_chance_baseline(result):
+    s = result["summary"]
+    assert 0 <= s["chance_links"] < s["linked_raids"] / 2
+    assert any("by coincidence" in line for line in rf.headlines(result))
 
 
 def test_an_indirectly_reported_injury_is_a_raid_of_the_night_before():
@@ -122,14 +140,12 @@ def test_raids_with_no_known_refuge_become_an_area_to_search(result):
     d = rf._km(lat, lon, areas["Latitude"].to_numpy(float), areas["Longitude"].to_numpy(float))
     area = areas[d <= 1.0].iloc[0]
     assert area["Raids"] == 5 and area["Nights"] == 5
-    # The open-field day-use site 1.4 km off was not in use on these nights.
-    assert area["To Nearest Known Refuge (km)"] > 1
+    assert area["To Nearest Known Refuge (km)"] > rf.LINK_KM
     # The forest block is the nearest patch big enough to hide a herd.
     assert area["Search Patch (ha)"] > 300 and area["Search Patch Extends Beyond Window"]
     assert area["Search Direction"] in ("W", "SW", "NW")
     assert 3.5 <= area["Search Distance (km)"] <= 4.6
-    # The open-field site 1.4 km off is within reach: check it after raids.
-    assert "known day-use site" in area["Recommended Action"]
+    assert "search the" in area["Recommended Action"]
     assert any("no known refuge" in line for line in rf.headlines(result))
 
 
@@ -141,28 +157,29 @@ def test_a_raid_days_after_a_reported_day_still_links(tif):
             "Division": "Test", "Range": "Test", "Beat": "Test", "Total Count": 3,
             "Crop Damage": 1, "House Damage": 0, "Injury": 0, "Death": 0}
     reg = pd.concat([df, pd.DataFrame([late])], ignore_index=True)
-    wide = rf.find_refuges(reg, fx.villages(), lc.LandCover([tif]))["links"]
+    wide = run(tif, reg, link_days=7)["links"]
     hit = wide[wide["Night Of"] == pd.Timestamp("2026-02-01")]
     assert len(hit) == 1 and hit.iloc[0]["Link"] == "4 day(s) apart"
-    strict = rf.find_refuges(reg, fx.villages(), lc.LandCover([tif]), link_days=1)["links"]
+    strict = run(tif, reg)["links"]           # the default: the night before or after
     assert not (strict["Night Of"] == pd.Timestamp("2026-02-01")).any()
 
 
 def test_a_refuge_with_no_raids_linked_is_left_out(result):
     assert _at(result["refuges"], fx.QUIET) is None
-    assert any("no night raid linked" in c for c in result["caveats"])
+    assert any("no raid linked" in c for c in result["caveats"])
     assert (result["refuges"]["Linked Raids"] > 0).all()
 
 
 def test_quiet_refuges_can_still_be_listed_on_request(tif):
-    out = rf.find_refuges(fx.register(), fx.villages(), lc.LandCover([tif]), require_raids=False)
+    out = run(tif, require_raids=False)
     quiet = _at(out["refuges"], fx.QUIET)
     assert quiet is not None and quiet["Linked Raids"] == 0
 
 
-def test_dawn_and_dusk_sightings_are_not_rest(result):
+def test_every_report_inside_forest_counts_whatever_its_hour(result):
     a = _at(result["refuges"], fx.REFUGE_A)
-    assert a["Day Sightings"] == 30  # 10 days x 3 rest-hour reports; 06 and 17 h left out
+    # 10 days x 3 rest-hour sightings plus the 06:00 and 17:00 ones.
+    assert a["Reports"] == 50 and a["Direct Day Sightings"] == 30
 
 
 def test_raids_link_to_the_refuge_in_use_and_point_the_right_way(result):
@@ -185,23 +202,23 @@ def test_a_raid_long_after_the_refuge_was_used_is_not_linked(tif):
     far_night = {"Date": pd.Timestamp("2026-06-15"), "Hour": 22, "Latitude": lat,
                  "Longitude": lon, "Division": "Test", "Range": "Test", "Beat": "Test",
                  "Total Count": 3, "Crop Damage": 1, "House Damage": 0, "Injury": 0, "Death": 0}
-    out = rf.find_refuges(pd.concat([df, pd.DataFrame([far_night])], ignore_index=True),
-                          fx.villages(), lc.LandCover([tif]))
+    out = run(tif, pd.concat([df, pd.DataFrame([far_night])], ignore_index=True))
     assert not (out["links"]["Date"] == pd.Timestamp("2026-06-15")).any()
 
 
 def test_without_land_cover_nothing_is_confirmed():
-    out = rf.find_refuges(fx.register(), fx.villages(), None)
+    out = rf.find_refuges(fx.register(), fx.villages(), None, forest="none")
     assert len(out["refuges"]) >= 2
     assert (out["refuges"]["Confidence"] != rf.CONFIRMED).all()
     assert any("No land cover" in c for c in out["caveats"])
 
 
-def test_no_hours_means_no_refuges_and_says_why():
-    df = fx.register().assign(Hour=pd.NA)
-    out = rf.find_refuges(df, None, None)
-    assert out["refuges"].empty
-    assert any("without an hour" in c for c in out["caveats"])
+def test_refuges_do_not_need_the_hour(tif):
+    # Forest evidence counts at any hour, so a register without times still
+    # finds the refuges; only the daytime-sighting count is lost.
+    out = run(tif, fx.register().assign(Hour=pd.NA))
+    a = _at(out["refuges"], fx.REFUGE_A)
+    assert a is not None and a["Direct Day Sightings"] == 0
 
 
 def test_a_lat_lon_raster_measures_the_same_as_utm(tif, tmp_path):
@@ -254,7 +271,7 @@ def test_the_brief_carries_the_raiding_refuges_only(result):
     assert "<h2>Day Refuges" in html
     for ref in result["refuges"]["Refuge"]:
         assert f"<td>{ref}</td>" in html
-    assert "no night raid linked" in html
+    assert "no raid linked" in html
     assert "Elephant day refuges, linked raids and raid areas" in html  # the map
     assert "Day Refuges" not in generate_html_report(df, df["Date"].min(), df["Date"].max())
 
@@ -295,9 +312,11 @@ def test_view_reads_the_conflict_views_register(tmp_path):
     at.session_state["loaded_register"] = (data, "register.csv")
     at.session_state["view"] = "Day refuges"
     at.session_state["refuge_lc_source"] = "None"
+    # The synthetic register lies outside the vendored forest boundaries.
+    at.session_state["refuge_forest"] = "No forest test"
     at.run()
     assert not at.exception, at.exception
-    assert any(m.label == "Day refuges" for m in at.metric)
+    assert any(m.label == "Forest refuges" for m in at.metric)
     labels = {b.label for b in at.get("download_button")}
     assert {"Refuges (CSV)", "Refuges + raids (GeoJSON)", "Refuges (KML, Google Earth)"} <= labels
 
@@ -328,7 +347,7 @@ def test_generate_brief_in_the_app_includes_refuges():
         data=df.to_csv(index=False).encode(), name="register.csv", rows=len(df), pages=1,
         start_date="01/01/2026", end_date="01/03/2026", fetched_at="today")
     at.session_state[refuge_view.LAST_USED_KEY] = (
-        ("none", None), ((rf.DAY_START, rf.DAY_END), rf.EPS_KM, rf.MIN_DAYS, rf.LINK_KM))
+        ("none", None), ("none", rf.EPS_KM, rf.MIN_DAYS, rf.LINK_KM, rf.LINK_DAYS))
     at.run()
     assert not at.exception, at.exception
     next(b for b in at.button if b.label == "Generate brief").click().run()

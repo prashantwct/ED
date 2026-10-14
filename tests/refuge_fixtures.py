@@ -18,6 +18,9 @@ register in which the truth is planted:
   use; it is a night raid and must not become a refuge.
 * Pug marks -- indirect signs logged by day in open crop on six days.
   Stale traces of night visits: never day rest.
+* Signs-only refuge -- pug marks and dung inside the forest block on four
+  days, nobody sighting the herd, raids south on the same nights. A
+  refuge, flagged for confirmation by day.
 * Unknown refuge -- raids on five nights in fields 4 km east of the big
   forest block, with no daytime sighting anywhere within reach. A raid
   area to search, with the forest block as the place to look.
@@ -50,6 +53,7 @@ VILLAGE = (7200.0, 2200.0)
 DAMAGE_FIELD = (5500.0, 4000.0)   # open crop, damage entered in the morning
 UNKNOWN_RAIDS = (8500.0, 8500.0)  # raided, no day sighting within 5 km
 PUGMARKS = (3000.0, 2500.0)       # fresh pug marks logged by day in open crop
+FOREST_SIGNS = (3800.0, 4600.0)   # pug marks and dung inside the forest block, no sighting
 QUIET = (1000.0, 4500.0)          # inside the big block; used after the raiding season
 
 
@@ -134,6 +138,13 @@ def register(seed=7) -> pd.DataFrame:
         for hour in (10, 13):
             add(PUGMARKS, base + pd.Timedelta(days=3 * k + 1), hour, jitter=80,
                 kind="Indirect")
+    # A refuge known only from signs inside the forest, raiding fields 1.6 km
+    # south on the same nights; damage entered the next morning.
+    for k in range(4):
+        day = base + pd.Timedelta(days=70 + 3 * k)
+        for hour in (8, 11):
+            add(FOREST_SIGNS, day, hour, jitter=80, kind="Indirect")
+        add((FOREST_SIGNS[0], FOREST_SIGNS[1] - 1600), day, 8, jitter=120, crop=1)
     # Raids from a refuge nobody reports, entered the next morning.
     for k in range(5):
         add(UNKNOWN_RAIDS, base + pd.Timedelta(days=61 + k), 8, jitter=200, crop=1)

@@ -415,20 +415,24 @@ cover (read online by year, or uploaded as the GeoTIFFs Esri's Land Cover
 Explorer downloads). A place is a candidate refuge only if it passes every
 test, and each decoy it rejects is planted in the tests:
 
-* Sightings between 09:00 and 16:00 only -- dawn and dusk are movement, not
-  rest -- clustered (DBSCAN, 0.75 km) and seen on at least three separate days,
-  so one afternoon's passage is dropped.
-* At least 40% of all sightings there by day; a night-heavy place is a feeding
-  ground and is dropped and reported as such.
+* Inside forest: every sighting and sign that is not a conflict event --
+  direct sightings and indirect signs (pug marks, dung, broken branches,
+  sounds) alike, at any hour -- counts as refuge evidence when it falls in
+  notified forest (the vendored forest beat boundaries), or, where they do
+  not cover the register, in tree, rangeland or flooded-vegetation cover in
+  Esri land cover. A sign is stale about the hour but not about the forest
+  block: elephants used it. Signs and sightings in fields are feeding,
+  raiding or passing, never refuge evidence.
+* Evidence clustered (DBSCAN, 0.75 km) and seen on at least three separate
+  days, so one day's passage is dropped; the block must reappear when the
+  cluster radius changes (0.5-1 km).
 * Cover: tree, flooded-vegetation and rangeland share within 250 m, and the
-  size of the tree patch it sits in. Day use without cover is kept but capped
-  at Possible and flagged for ground verification.
-* Stability: the refuge must reappear when the day window (08-17, 09-16,
-  10-15) and cluster radius (0.5-1 km) change.
-* Confirmed needs five days, two-thirds stability, a majority day share and
-  passing cover; without land cover nothing is Confirmed.
-* Raids: a place used by day that no night raid links to is left out,
-  and counted in the caveats. Such a place is not a management priority.
+  size of the tree patch it sits in. Notified forest with no cover on the
+  ground is capped at Possible and flagged for ground verification.
+* Confirmed needs five days, two-thirds stability, at least one direct
+  sighting and passing cover; without land cover nothing is Confirmed. A
+  refuge known from signs alone is flagged to be confirmed by day.
+* Raids: a block no raid links to is left out, and counted in the caveats.
 
 Only a direct sighting puts elephants at a place at the hour entered.
 Everything else -- pug marks, dung, broken branches, sounds, and damage
@@ -446,11 +450,14 @@ entries are never counted as day sightings, so a 10 am damage report in a
 field cannot become a "refuge"; they count as night use of the place.
 Injuries and deaths keep their reported hour and are raids only at night.
 
-A night raid within 5 km is linked to a refuge reported in use within 7
-days of the raid night (adjustable): herds stay in one block of cover for
-days but are not reported there every day. Each link says how close in time
-it is ("Same night" when the refuge was reported the day before or after),
-and a refuge reported the same night wins over a nearer one that was not.
+A raid within 5 km is linked to a refuge with forest evidence the day its
+night began or the day after (adjustable to a wider window). Each link says
+how close in time it is, and a refuge in use the same night wins over a
+nearer one that was not. Every run also re-links the raids with each
+refuge's dates shifted by 20-60 days and reports that count as the chance
+baseline: on the October 2026 register, 358 of 603 raids linked against
+about 91 by chance, while a 7-day window linked more raids but mostly by
+coincidence.
 This gives the direction raids head, their median distance and the villages
 hit.
 

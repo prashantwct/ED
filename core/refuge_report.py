@@ -19,7 +19,8 @@ AREA_COLOR = "#2F5D8A"     # raid areas with no known refuge
 
 BRIEF_COLUMNS = [
     ("Refuge", "Refuge"), ("Confidence", "Confidence"), ("Beat", "Beat"),
-    ("Days Used", "Days used"), ("Last Used", "Last used"), ("Group", "Group"),
+    ("Days Used", "Days used"), ("Direct Sightings", "Seen"), ("Indirect Signs", "Signs"),
+    ("Last Used", "Last used"), ("Group", "Group"),
     ("Cover Share %", "Cover"), ("Linked Raids", "Raids"), ("Same-Night Raids", "Same night"),
     ("Raids Head", "Raids head"),
     ("Raid Distance (km, median)", "Reach (km)"), ("Villages Raided", "Villages raided"),
