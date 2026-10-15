@@ -330,31 +330,50 @@ def sightings_map_svg(
     categories = classify_conflict(points)
     body: List[str] = []
 
-    # Draw presence first so casualties are not hidden underneath.
+    # Draw presence first so casualties are not hidden underneath; each
+    # class has its own symbol, the same as on the interactive map.
     order = ["Presence", "Crop", "House", "Injury", "Death"]
     for category in order:
-        colour = CATEGORY_COLORS.get(category, (120, 120, 120))
-        fill = "rgb({},{},{})".format(*colour)
-        radius = SIGHTING_RADIUS_PX * (1.8 if category in ("Death", "Injury") else 1.0)
+        size = SYMBOL_PX.get(category, 10)
         for _, row in points[categories == category].iterrows():
             x, y = project(float(row["Latitude"]), float(row["Longitude"]))
             if not _inside(x, y):
                 continue
-            body.append(
-                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius:.1f}" fill="{fill}" '
-                f'fill-opacity="0.85" stroke="#1b1b1b" stroke-width="0.4"/>'
-            )
+            body.append(_symbol(category, x, y, size))
 
     if _has_hotspots(hotspots):
         body.extend(_hotspot_shapes(hotspots, project, zoom, centre_lat))
 
-    legend = _legend_rows(
-        [(CATEGORY_LABELS[c], CATEGORY_COLORS[c]) for c in reversed(order)]
-    )
+    legend = _symbol_legend(list(reversed(order)))
     basemap = _basemap_data_uri(
         centre_lat, centre_lon, zoom, MAP_WIDTH, MAP_HEIGHT, style_name
     )
     return _svg_document(body, basemap, legend)
+
+
+# Symbol size in the exported map, in pixels of the 900 px frame.
+SYMBOL_PX = {"Death": 15, "Injury": 14, "House": 12, "Crop": 10, "Presence": 6}
+
+
+def _symbol(category: str, x: float, y: float, size: float) -> str:
+    """A class symbol (24-unit grid) centred on (x, y), ``size`` px across."""
+    from core.ui import CATEGORY_SYMBOLS
+
+    k = size / 24.0
+    return (f'<g transform="translate({x - 12 * k:.1f},{y - 12 * k:.1f}) scale({k:.3f})">'
+            f'{CATEGORY_SYMBOLS.get(category, CATEGORY_SYMBOLS["Presence"])}</g>')
+
+
+def _symbol_legend(categories: List[str]) -> str:
+    chips = []
+    for index, category in enumerate(categories):
+        x = 12 + index * 170
+        chips.append(
+            _symbol(category, x + 8, 14, 14)
+            + f'<text x="{x + 20}" y="18" font-family="Segoe UI, Arial, sans-serif" '
+            f'font-size="11.5" fill="#33413a">{escape(CATEGORY_LABELS[category])}</text>'
+        )
+    return "".join(chips)
 
 
 def village_map_svg(

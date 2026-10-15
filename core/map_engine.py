@@ -12,6 +12,7 @@ keyless Carto basemap.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import math
@@ -33,7 +34,7 @@ from core.config import (
     RADIUS_MAX_PIXELS,
     RADIUS_MIN_PIXELS,
 )
-from core.ui import CATEGORY_STYLE, TIER_STYLE, category_legend, map_legend
+from core.ui import CATEGORY_STYLE, CATEGORY_SYMBOLS, TIER_STYLE, category_legend, map_legend
 
 logger = logging.getLogger(__name__)
 
@@ -348,8 +349,15 @@ def render_map(
     show_boundaries: bool = True,
     boundary_level: Optional[str] = None,
     beat_stats: Optional[pd.DataFrame] = None,
+    focus: Optional[Dict[str, object]] = None,
 ) -> None:
-    """Render the operational map with the requested layers."""
+    """Render the operational map with the requested layers.
+
+    ``focus`` narrows the view to one thing picked in a table: ``mask``
+    (sightings to keep bright, the rest fade), ``bounds`` (lat_min,
+    lat_max, lon_min, lon_max to zoom to), ``beat`` (outline to draw) and
+    ``hotspot`` (footprint to ring), any of them optional.
+    """
     if df.empty:
         st.info("No data available to display on the map with the current filters.")
         return
@@ -357,19 +365,26 @@ def render_map(
         st.warning("No valid coordinates available to plot.")
         return
 
-    plot_df = _prepare_sightings(df)
-    view_state = _adaptive_view_state(plot_df)
+    focus = focus or {}
+    mask = focus.get("mask")
+    plot_df = _prepare_sightings(df, mask)
+    view_state = _focus_view(plot_df, focus)
 
     layers = []
     layers.extend(boundary_layers(
         view_state, boundary_level, beat_stats, show_reserves=show_boundaries
     ) if show_boundaries else [])
+    if focus.get("beat"):
+        layers.extend(_beat_outline(str(focus["beat"])))
     if show_hotspots and hotspots is not None and not hotspots.empty:
         layers.extend(_hotspot_layers(hotspots))
-    if show_sightings:
-        layers.append(_sighting_layer(plot_df))
+        if focus.get("hotspot") is not None:
+            layers.extend(_hotspot_ring(hotspots, focus["hotspot"]))
     if show_villages and villages is not None and not villages.empty:
         layers.extend(_village_layers(villages, view_state))
+    # Sightings last, so village discs never hide an incident symbol.
+    if show_sightings:
+        layers.append(_sighting_layer(plot_df))
 
     if not layers:
         st.info("All map layers are switched off. Enable one in the sidebar.")
@@ -585,9 +600,27 @@ def _boundary_tooltip(level: str, properties: dict) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 # Layers
 # ---------------------------------------------------------------------------
-def _prepare_sightings(df: pd.DataFrame) -> pd.DataFrame:
+# Symbol size on screen, in pixels: casualties largest, presence smallest,
+# so the worst events stay findable at landscape zoom.
+SYMBOL_PX = {"Death": 26, "Injury": 24, "House": 20, "Crop": 17, "Presence": 10}
+# Draw order: presence underneath, casualties on top.
+SYMBOL_ORDER = {"Presence": 0, "Crop": 1, "House": 2, "Injury": 3, "Death": 4}
+FADED_ALPHA, FULL_ALPHA = 45, 235
+
+
+def _prepare_sightings(df: pd.DataFrame, mask: Optional[pd.Series] = None) -> pd.DataFrame:
     plot_df = df.copy()
     plot_df["_category"] = classify_conflict(plot_df)
+    plot_df["_category"] = plot_df["_category"].where(
+        plot_df["_category"].isin(list(SYMBOL_PX)), "Presence")
+    plot_df["_isize"] = plot_df["_category"].map(SYMBOL_PX)
+    if mask is not None:
+        keep = mask.reindex(plot_df.index).fillna(False).astype(bool)
+        plot_df["_alpha"] = np.where(keep, FULL_ALPHA, FADED_ALPHA)
+    else:
+        plot_df["_alpha"] = FULL_ALPHA
+    plot_df = plot_df.assign(_o=plot_df["_category"].map(SYMBOL_ORDER)).sort_values(
+        ["_o", "_alpha"], kind="stable").drop(columns="_o")
     plot_df["_category_label"] = (
         plot_df["_category"].map(CATEGORY_LABELS).fillna("Unknown")
     )
@@ -664,21 +697,109 @@ def _sighting_layer(plot_df: pd.DataFrame) -> pdk.Layer:
     # Ship only what the layer and tooltip use: the frame is serialised to
     # JSON for the browser, and timestamps do not survive that round trip.
     columns = [
-        "Longitude", "Latitude", "_radius", "_r", "_g", "_b", *TOOLTIP_FIELDS,
+        "Longitude", "Latitude", "_category", "_isize", "_alpha", *TOOLTIP_FIELDS,
     ]
+    atlas, mapping = symbol_atlas()
     return pdk.Layer(
-        "ScatterplotLayer",
+        "IconLayer",
         data=plot_df[columns],
         get_position="[Longitude, Latitude]",
-        get_radius="_radius",
-        get_fill_color="[_r, _g, _b, 190]",
-        get_line_color=[30, 30, 30, 200],
-        line_width_min_pixels=1,
-        radius_min_pixels=RADIUS_MIN_PIXELS,
-        radius_max_pixels=RADIUS_MAX_PIXELS,
+        icon_atlas=pdk.types.String(atlas),
+        icon_mapping=mapping,
+        get_icon="_category",
+        get_size="_isize",
+        size_units="'pixels'",
+        size_scale=1,
+        # Coloured icons, not masks: only the alpha channel applies, which
+        # is what fades everything outside a table selection.
+        get_color="[255, 255, 255, _alpha]",
         pickable=True,
         auto_highlight=True,
     )
+
+
+SYMBOL_ATLAS_PX = 64
+
+
+@functools.lru_cache(maxsize=1)
+def symbol_atlas() -> Tuple[str, Dict[str, Dict[str, object]]]:
+    """The class symbols drawn into one PNG strip, and where each sits.
+
+    One small image shipped once, rather than an SVG per sighting: 1,700
+    data URIs would add most of a megabyte to every rerun.
+    """
+    import base64
+
+    import resvg_py
+
+    size = SYMBOL_ATLAS_PX
+    scale = size / 24.0
+    keys = list(CATEGORY_SYMBOLS)
+    groups = "".join(
+        f'<g transform="translate({k * size},0) scale({scale:.4f})">{CATEGORY_SYMBOLS[key]}</g>'
+        for k, key in enumerate(keys))
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size * len(keys)}" '
+           f'height="{size}" viewBox="0 0 {size * len(keys)} {size}">{groups}</svg>')
+    png = bytes(resvg_py.svg_to_bytes(svg_string=svg))
+    uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+    mapping = {key: {"x": k * size, "y": 0, "width": size, "height": size,
+                     "anchorY": size // 2, "mask": False}
+               for k, key in enumerate(keys)}
+    return uri, mapping
+
+
+def _focus_view(plot_df: pd.DataFrame, focus: Dict[str, object]) -> pdk.ViewState:
+    """The whole map, or the thing picked in a table with some margin."""
+    bounds = focus.get("bounds")
+    mask = focus.get("mask")
+    if bounds is not None:
+        lat0, lat1, lon0, lon1 = bounds
+        frame = pd.DataFrame({"Latitude": [lat0, lat1], "Longitude": [lon0, lon1]})
+        return _adaptive_view_state(frame)
+    if mask is not None:
+        keep = mask.reindex(plot_df.index).fillna(False).astype(bool)
+        if keep.any():
+            return _adaptive_view_state(plot_df[keep])
+    return _adaptive_view_state(plot_df)
+
+
+def _beat_outline(name: str) -> list:
+    """The picked beat drawn bold over the other boundaries."""
+    if not boundaries.available():
+        return []
+    key = boundaries.normalise(name)
+    features = [f for f in boundaries.load(boundaries.BEAT)["features"]
+                if f["properties"].get("_key") == key]
+    if not features:
+        return []
+    return [pdk.Layer(
+        "GeoJsonLayer",
+        data={"type": "FeatureCollection", "features": features},
+        stroked=True, filled=True,
+        get_fill_color=[255, 255, 255, 25],
+        get_line_color=[20, 28, 24, 255],
+        line_width_min_pixels=3,
+        pickable=False,
+    )]
+
+
+def _hotspot_ring(hotspots: pd.DataFrame, hotspot_id: object) -> list:
+    """A bold ring round the picked hotspot's footprint."""
+    row = hotspots[hotspots["Hotspot"].astype(str) == str(hotspot_id)]
+    if row.empty:
+        return []
+    frame = row[["Centre Longitude", "Centre Latitude"]].assign(
+        _radius_m=row["Radius (km)"].astype(float).to_numpy() * 1000)
+    return [pdk.Layer(
+        "ScatterplotLayer",
+        data=frame,
+        get_position="[Centre Longitude, Centre Latitude]",
+        get_radius="_radius_m",
+        filled=False, stroked=True,
+        get_line_color=[20, 28, 24, 255],
+        line_width_min_pixels=4,
+        pickable=False,
+    )]
 
 
 def _hotspot_layers(hotspots: pd.DataFrame, labels: bool = True) -> list:

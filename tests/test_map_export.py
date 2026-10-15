@@ -441,3 +441,35 @@ def test_report_header_does_not_carry_raw_html_from_filters():
     )
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
+
+
+# ---------------------------------------------------------------------------
+# One symbol per conflict class
+# ---------------------------------------------------------------------------
+def test_each_class_has_its_own_symbol_in_the_exported_map(monkeypatch):
+    from core import map_export as mx
+    from core.ui import CATEGORY_SYMBOLS
+
+    monkeypatch.setattr(mx, "_basemap_data_uri", lambda *a, **k: None)
+    svg = sightings_map_svg(_sightings())
+    for key in ("Death", "Injury", "House", "Crop", "Presence"):
+        assert CATEGORY_SYMBOLS[key] in svg          # drawn on the map and in the legend
+    assert len({v for v in CATEGORY_SYMBOLS.values()}) == len(CATEGORY_SYMBOLS)
+
+
+def test_the_interactive_map_draws_symbols_and_fades_outside_a_focus():
+    from core import map_engine as me
+
+    df = _sightings().assign(**{"Severity Score": 1.0})
+    plot = me._prepare_sightings(df, mask=df["Beat"] == "B3")
+    layer = me._sighting_layer(plot)
+    assert layer.type == "IconLayer"
+    atlas, mapping = me.symbol_atlas()
+    assert atlas.startswith("data:image/png;base64,") and set(mapping) == set(me.SYMBOL_PX)
+    picked = plot[plot["Beat"] == "B3"]
+    assert (picked["_alpha"] == me.FULL_ALPHA).all()
+    assert (plot.drop(picked.index)["_alpha"] == me.FADED_ALPHA).all()
+    # Casualties are drawn last, on top.
+    assert plot["_category"].iloc[-1] == "Death"
+    view = me._focus_view(plot, {"mask": df["Beat"] == "B3"})
+    assert abs(view.latitude - 23.03) < 0.01
