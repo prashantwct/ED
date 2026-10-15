@@ -350,25 +350,35 @@ def render_map(
     boundary_level: Optional[str] = None,
     beat_stats: Optional[pd.DataFrame] = None,
     focus: Optional[Dict[str, object]] = None,
+    frame_df: Optional[pd.DataFrame] = None,
 ) -> None:
     """Render the operational map with the requested layers.
+
+    ``frame_df`` sets the view when filters leave ``df`` with no
+    sightings, so the map stays on the picked place rather than vanishing.
 
     ``focus`` narrows the view to one thing picked in a table: ``mask``
     (sightings to keep bright, the rest fade), ``bounds`` (lat_min,
     lat_max, lon_min, lon_max to zoom to), ``beat`` (outline to draw) and
-    ``hotspot`` (footprint to ring), any of them optional.
+    ``hotspot`` (footprint to ring) and ``ring`` (lat, lon, km circle to
+    draw, the reach round a picked village), any of them optional.
     """
-    if df.empty:
+    view_df = df if frame_df is None or not df.empty else frame_df
+    if view_df.empty:
         st.info("No data available to display on the map with the current filters.")
         return
-    if df["Latitude"].isna().all() or df["Longitude"].isna().all():
+    if view_df["Latitude"].isna().all() or view_df["Longitude"].isna().all():
         st.warning("No valid coordinates available to plot.")
         return
 
     focus = focus or {}
     mask = focus.get("mask")
-    plot_df = _prepare_sightings(df, mask)
-    view_state = _focus_view(plot_df, focus)
+    if df.empty:
+        show_sightings = False
+        view_state = _focus_view(view_df, focus)
+    else:
+        plot_df = _prepare_sightings(df, mask)
+        view_state = _focus_view(plot_df, focus)
 
     layers = []
     layers.extend(boundary_layers(
@@ -380,6 +390,11 @@ def render_map(
         layers.extend(_hotspot_layers(hotspots))
         if focus.get("hotspot") is not None:
             layers.extend(_hotspot_ring(hotspots, focus["hotspot"]))
+    if focus.get("ring") is not None:
+        lat, lon, km = focus["ring"]
+        layers.extend(_hotspot_ring(pd.DataFrame({
+            "Hotspot": ["ring"], "Centre Latitude": [lat], "Centre Longitude": [lon],
+            "Radius (km)": [km]}), "ring"))
     if show_villages and villages is not None and not villages.empty:
         layers.extend(_village_layers(villages, view_state))
     # Sightings last, so village discs never hide an incident symbol.
