@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
-import math
 from typing import Optional
 
 import pandas as pd
@@ -19,7 +18,6 @@ import plotly.express as px
 import streamlit as st
 
 from core.analytics import (
-    classify_group,
     compute_is_night,
     compute_kpis,
     compute_severity,
@@ -33,7 +31,7 @@ from core.analytics import (
     severity_distribution,
     window_comparison,
 )
-from core import boundaries, charts, landing, report_charts
+from core import boundaries, charts, landing, map_select, report_charts
 from core.exports import download_menu
 from core.config import LOG_PATH, NIGHT_HOUR_END, NIGHT_HOUR_START
 from core.data_loader import load_and_validate_csv
@@ -67,6 +65,7 @@ from core.map_export import sightings_map_svg, village_map_svg
 from core.report import generate_html_report
 from core.spatial import attach_nearest_village, load_village_centroids
 from core.ui import (
+    CATEGORY_STYLE,
     TIER_STYLE,
     findings,
     inject_theme,
@@ -300,39 +299,16 @@ def _map_pick(event, key: str, kind: str, values: pd.Series, noun: str) -> None:
             st.session_state[MAP_FOCUS_KEY] = (kind, picked)
         elif st.session_state.get(MAP_FOCUS_KEY, (None, None))[0] == kind:
             st.session_state.pop(MAP_FOCUS_KEY, None)
-    if picked is not None:
-        st.caption(f"{noun} **{picked}** is shown on the map above; untick the row to show "
-                   "everything again.")
 
 
-def _map_focus(frame: pd.DataFrame, hotspot_table: pd.DataFrame) -> Optional[dict]:
+def _map_focus(frame: pd.DataFrame, hotspot_table: pd.DataFrame,
+               village_table: pd.DataFrame, village_km: float) -> Optional[dict]:
     """The focus the spatial view should draw, from the latest table pick."""
     picked = st.session_state.get(MAP_FOCUS_KEY)
-    if not picked or frame.empty:
+    if not picked:
         return None
-    kind, value = picked
-    if kind == "beat" and "Beat" in frame:
-        mask = frame["Beat"].astype(str) == str(value)
-        return {"label": f"Beat {value}", "mask": mask, "beat": value} if mask.any() else None
-    if kind == "group":
-        mask = classify_group(frame) == value
-        return {"label": f"{value} sightings", "mask": mask} if mask.any() else None
-    if kind == "hotspot" and not hotspot_table.empty:
-        row = hotspot_table[hotspot_table["Hotspot"].astype(str) == str(value)]
-        if row.empty:
-            return None
-        r = row.iloc[0]
-        lat, lon = float(r["Centre Latitude"]), float(r["Centre Longitude"])
-        km = max(float(r["Radius (km)"]), 0.5) * 1.6
-        dlat = km / 111.32
-        dlon = km / (111.32 * max(math.cos(math.radians(lat)), 0.2))
-        from core.refuges import _km
-
-        d = _km(lat, lon, frame["Latitude"].to_numpy(float), frame["Longitude"].to_numpy(float))
-        return {"label": f"Hotspot {value}", "hotspot": value,
-                "mask": pd.Series(d <= float(r["Radius (km)"]), index=frame.index),
-                "bounds": (lat - dlat, lat + dlat, lon - dlon, lon + dlon)}
-    return None
+    return map_select.focus_for(picked[0], picked[1], frame, hotspot_table,
+                                village_table, village_km)
 
 
 def _open_damage_view() -> None:
@@ -581,9 +557,6 @@ basemap = st.sidebar.selectbox(
     index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP),
     help="Terrain and imagery read better than street cartography here.",
 )
-layer_sightings = st.sidebar.checkbox("Layer: sightings", value=True)
-layer_hotspots = st.sidebar.checkbox("Layer: hotspot footprints", value=True)
-layer_villages = st.sidebar.checkbox("Layer: villages at risk", value=True)
 
 if boundaries.available():
     layer_boundaries = st.sidebar.checkbox("Layer: forest boundaries", value=True)
@@ -856,158 +829,233 @@ with tab_where:
     if not beats_table.empty:
         tier_summary(beats_table["Priority Tier"].value_counts().to_dict())
 
-    map_focus = _map_focus(filtered, hotspots)
-    head, menu = st.columns([14, 1], vertical_alignment="bottom")
-    head.markdown("**Spatial view** -- sightings by conflict type, hotspot footprints to "
-                  "scale, villages by tier")
-    with menu:
-        download_menu("Spatial view",
-                      lambda f=filtered, h=hotspots, b=basemap: sightings_map_svg(f, h, b),
-                      compact=True)
-    if map_focus:
-        focus_col, clear_col = st.columns([4, 1], vertical_alignment="center")
-        focus_col.info(f"Showing {map_focus['label']}, picked in the table below: other "
-                       "sightings are faded.")
-        if clear_col.button("Show everything", key="clear_map_focus", width="stretch"):
-            st.session_state.pop(MAP_FOCUS_KEY, None)
-            st.rerun()
-    render_map(
-        filtered,
-        focus=map_focus,
-        hotspots=hotspots,
-        villages=village_risk,
-        style_name=basemap,
-        show_sightings=layer_sightings,
-        show_hotspots=layer_hotspots,
-        show_villages=layer_villages,
-        show_boundaries=layer_boundaries,
-        boundary_level=boundary_level,
-        beat_stats=beats_table,
+    # Layer filters: what happened, by which animals, and which villages.
+    # They cut the data before anything is drawn, so "crop damage by lone
+    # bulls" is a map of exactly those sightings and the places near them.
+    event_counts, group_counts = map_select.class_counts(filtered)
+    ev_col, grp_col, vil_col = st.columns([5, 5, 4])
+    with ev_col:
+        events = st.pills(
+            "Events", [k for k in map_select.EVENT_CLASSES if event_counts.get(k)],
+            selection_mode="multi", key="layer_events",
+            default=[k for k in map_select.EVENT_CLASSES if event_counts.get(k)],
+            format_func=lambda k, c=event_counts:
+            f"{CATEGORY_STYLE[k]['label']} ({c.get(k, 0):,})",
+            help="Untick a class to drop it from the map. None ticked hides sightings.",
+        ) or []
+    with grp_col:
+        groups = st.pills(
+            "Animals", [g for g in map_select.GROUP_CLASSES if group_counts.get(g)],
+            selection_mode="multi", key="layer_groups",
+            default=[g for g in map_select.GROUP_CLASSES if group_counts.get(g)],
+            format_func=lambda g, c=group_counts: f"{g} ({c.get(g, 0):,})",
+            help="Combine with Events: e.g. Human injury + Lone bull alone.",
+        ) or []
+    with vil_col:
+        tier_options = [t for t in TIER_STYLE
+                        if not village_risk.empty and (village_risk["Tier"] == t).any()]
+        tiers = st.pills(
+            "Villages by tier", tier_options, selection_mode="multi", key="layer_tiers",
+            default=[t for t in tier_options if t != "Routine"],
+            help="Village layer. Routine villages start off to keep the map readable.",
+        ) or []
+        show_hotspots = st.toggle("Hotspot footprints", value=True, key="layer_hotspots")
+
+    table_col, map_col = st.columns([1, 1], gap="medium")
+
+    # The table draws first, so a ticked row reaches the map in the same
+    # run: one click, not two.
+    with table_col:
+        table_options = ["Beats", "Hotspots", "Villages", "Animals"]
+        picker = st.segmented_control(
+            "Tick a row to show only that on the map", table_options,
+            default="Beats", key="where_table",
+        ) or "Beats"
+
+        if picker == "Beats":
+            if beats_table.empty:
+                st.info("Not enough data to rank beats.")
+            else:
+                display_cols = [
+                    "Beat", "Range", "Priority Tier", "Priority Score",
+                    "Conflict Events", "Recent Deaths", "Recent Injuries",
+                    "Bull-Type Conflict %", "Trend", "Recommended Action",
+                ]
+                beat_pick = st.dataframe(
+                    beats_table[display_cols],
+                    width="stretch",
+                    height=520,
+                    hide_index=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="beat_table",
+                    column_config={
+                        "Priority Tier": st.column_config.TextColumn("Tier", width="small"),
+                        "Priority Score": st.column_config.ProgressColumn(
+                            "Score", min_value=0, max_value=100, format="%.0f",
+                            help="Orders beats within a tier only. Moves when filters "
+                            "change.",
+                        ),
+                        "Conflict Events": st.column_config.NumberColumn("Conflicts"),
+                        "Recent Deaths": st.column_config.NumberColumn(
+                            "Killed", format="%.0f",
+                            help=f"In the last {CRITICAL_CASUALTY_WINDOW_DAYS} days. Drives "
+                            "the Critical tier.",
+                        ),
+                        "Recent Injuries": st.column_config.NumberColumn(
+                            "Injured", format="%.0f",
+                            help=f"In the last {CRITICAL_CASUALTY_WINDOW_DAYS} days.",
+                        ),
+                        "Bull-Type Conflict %": st.column_config.NumberColumn(
+                            "Bull-driven", format="%.0f%%",
+                            help="Share of this beat's conflict from lone bulls or small "
+                            "all-male parties.",
+                        ),
+                        "Recommended Action": st.column_config.TextColumn(width="large"),
+                    },
+                )
+                _map_pick(beat_pick, "beat_table", "beat", beats_table["Beat"], "Beat")
+                st.caption(f"Critical = a person killed or injured in the last "
+                           f"{CRITICAL_CASUALTY_WINDOW_DAYS} days. Tiers compare across "
+                           "periods; the score only orders beats within a tier.")
+                st.download_button(
+                    "Download all beat figures (CSV)",
+                    beats_table.to_csv(index=False).encode("utf-8"),
+                    "beat_priorities.csv",
+                    mime="text/csv",
+                    help="Every column, including period casualties, confidence, rates, "
+                    "night and village shares.",
+                )
+
+        elif picker == "Hotspots":
+            if hotspots.empty:
+                st.info("No hotspots at these settings. Try a larger neighbour distance or "
+                        "fewer minimum sightings in the sidebar.")
+            else:
+                hotspot_cols = [c for c in [
+                    "Hotspot", "Tier", "Beats", "Sightings", "Conflict Events",
+                    "Conflict Share %", "Human Deaths", "People Injured", "Night Share %",
+                    "Radius (km)",
+                ] if c in hotspots.columns]
+                hotspot_pick = st.dataframe(
+                    hotspots[hotspot_cols], width="stretch", height=520, hide_index=True,
+                    on_select="rerun", selection_mode="single-row", key="hotspot_table",
+                    column_config={
+                        "Tier": st.column_config.TextColumn(width="small"),
+                        "Conflict Share %": st.column_config.NumberColumn(
+                            "Conflict share", format="%.0f%%"),
+                        "Night Share %": st.column_config.NumberColumn("Night",
+                                                                       format="%.0f%%"),
+                        "Human Deaths": st.column_config.NumberColumn("Killed", format="%.0f"),
+                        "People Injured": st.column_config.NumberColumn("Injured",
+                                                                        format="%.0f"),
+                        "Radius (km)": st.column_config.NumberColumn("Radius",
+                                                                     format="%.1f km"),
+                    },
+                )
+                _map_pick(hotspot_pick, "hotspot_table", "hotspot", hotspots["Hotspot"],
+                          "Hotspot")
+                st.download_button(
+                    "Download hotspots (CSV)",
+                    hotspots.to_csv(index=False).encode("utf-8"),
+                    "hotspots.csv",
+                    mime="text/csv",
+                )
+            for note in hotspot_caveats(hotspots, filtered, villages):
+                st.caption(note)
+
+        elif picker == "Villages":
+            if village_risk.empty:
+                st.info("No village ranking: load a village centroids file in the sidebar.")
+            else:
+                village_cols = [c for c in [
+                    "Village", "Tier", "Conflict Events", "Human Deaths", "People Injured",
+                    "House Damage Events", "Crop Damage Events", "Nearest Hotspot",
+                ] if c in village_risk.columns]
+                village_pick = st.dataframe(
+                    village_risk[village_cols], width="stretch", height=520,
+                    hide_index=True, on_select="rerun", selection_mode="single-row",
+                    key="village_table",
+                    column_config={
+                        "Tier": st.column_config.TextColumn(width="small"),
+                        "Conflict Events": st.column_config.NumberColumn("Conflicts"),
+                        "Human Deaths": st.column_config.NumberColumn("Killed"),
+                        "People Injured": st.column_config.NumberColumn("Injured"),
+                        "House Damage Events": st.column_config.NumberColumn("House"),
+                        "Crop Damage Events": st.column_config.NumberColumn("Crop"),
+                        "Nearest Hotspot": st.column_config.TextColumn("Hotspot"),
+                    },
+                )
+                _map_pick(village_pick, "village_table", "village", village_risk["Village"],
+                          "Village")
+                st.caption(f"A picked village shows the sightings within "
+                           f"{village_radius:g} km of it, the exposure radius in the sidebar.")
+
+        else:
+            if composition.empty or composition["Conflict Events"].sum() == 0:
+                st.info("No group composition recorded for the current filters.")
+            else:
+                st.dataframe(
+                    composition,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Damage Rate %": st.column_config.NumberColumn(
+                            "Damage rate", format="%.1f%%",
+                            help="Share of that group's sightings involving damage, "
+                            "injury or death.",
+                        ),
+                        "Human Deaths": st.column_config.NumberColumn("Killed", format="%.0f"),
+                    },
+                )
+                st.caption(
+                    "Map a group with the Animals filter above. Only bulls carry tusks, so "
+                    "Male Count is the tusker count. A lone bull or small all-male party "
+                    "raids and is tracked and deterred; a breeding herd with calves is "
+                    "given passage and not driven. Unrecorded groups are kept apart "
+                    "rather than guessed."
+                )
+
+    map_focus = _map_focus(filtered, hotspots, village_risk, village_radius)
+    shown, shown_hotspots, shown_villages = map_select.select(
+        filtered, hotspots, village_risk, events=events, groups=groups, tiers=tiers,
+        focus=map_focus, village_km=village_radius,
     )
 
-    picker = st.segmented_control(
-        "Tick a row to show it on the map",
-        ["Beat priorities", "Which animals", "Movement hotspots"],
-        default="Beat priorities", key="where_table",
-    ) or "Beat priorities"
-
-    if picker == "Beat priorities":
-        st.caption(f"Critical = a person killed or injured in the last "
-                   f"{CRITICAL_CASUALTY_WINDOW_DAYS} days. Tiers compare across periods; "
-                   "the score only orders beats within a tier.")
-        if beats_table.empty:
-            st.info("Not enough data to rank beats.")
-        else:
-            display_cols = [
-                "Beat", "Division", "Range", "Priority Tier", "Priority Score",
-                "Conflict Events", "Recent Deaths", "Recent Injuries", "Human Deaths",
-                "People Injured", "Bull-Type Conflict %", "Trend", "Recommended Action",
-            ]
-            beat_pick = st.dataframe(
-                beats_table[display_cols],
-                width="stretch",
-                height=400,
-                hide_index=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="beat_table",
-                column_config={
-                    "Priority Tier": st.column_config.TextColumn("Tier", width="small"),
-                    "Priority Score": st.column_config.ProgressColumn(
-                        "Score", min_value=0, max_value=100, format="%.0f",
-                        help="Orders beats within a tier only. Moves when filters change.",
-                    ),
-                    "Conflict Events": st.column_config.NumberColumn("Conflicts"),
-                    "Recent Deaths": st.column_config.NumberColumn(
-                        "Killed (recent)", format="%.0f",
-                        help=f"In the last {CRITICAL_CASUALTY_WINDOW_DAYS} days. Drives the "
-                        "Critical tier.",
-                    ),
-                    "Recent Injuries": st.column_config.NumberColumn(
-                        "Injured (recent)", format="%.0f"),
-                    "Human Deaths": st.column_config.NumberColumn(
-                        "Killed (period)", format="%.0f",
-                        help="Across the whole filtered period, however long ago.",
-                    ),
-                    "People Injured": st.column_config.NumberColumn(
-                        "Injured (period)", format="%.0f"),
-                    "Bull-Type Conflict %": st.column_config.NumberColumn(
-                        "Bull-driven", format="%.0f%%",
-                        help="Share of this beat's conflict from lone bulls or small "
-                        "all-male parties.",
-                    ),
-                    "Recommended Action": st.column_config.TextColumn(width="large"),
-                },
+    with map_col:
+        head, menu = st.columns([10, 1], vertical_alignment="bottom")
+        head.markdown(f"**Spatial view** -- {len(shown):,} of {len(filtered):,} sightings")
+        with menu:
+            download_menu(
+                "Spatial view",
+                lambda f=shown, h=shown_hotspots if show_hotspots else None, b=basemap:
+                sightings_map_svg(f, h, b),
+                compact=True,
             )
-            _map_pick(beat_pick, "beat_table", "beat", beats_table["Beat"], "Beat")
-            st.download_button(
-                "Download all beat figures (CSV)",
-                beats_table.to_csv(index=False).encode("utf-8"),
-                "beat_priorities.csv",
-                mime="text/csv",
-                help="Every column, including confidence, rates, night and village shares.",
-            )
-
-    elif picker == "Which animals":
-        if composition.empty or composition["Conflict Events"].sum() == 0:
-            st.info("No group composition recorded for the current filters.")
-        else:
-            group_pick = st.dataframe(
-                composition,
-                width="stretch",
-                hide_index=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="group_table",
-                column_config={
-                    "Damage Rate %": st.column_config.NumberColumn(
-                        "Damage rate", format="%.1f%%",
-                        help="Share of that group's sightings involving damage, "
-                        "injury or death.",
-                    ),
-                    "Human Deaths": st.column_config.NumberColumn("Killed", format="%.0f"),
-                },
-            )
-            _map_pick(group_pick, "group_table", "group", composition["Group Type"], "Group")
-            st.caption(
-                "Only bulls carry tusks, so Male Count is the tusker count. A lone bull "
-                "or small all-male party raids and is tracked and deterred; a breeding "
-                "herd with calves is given passage and not driven. Unrecorded groups are "
-                "kept apart rather than guessed."
-            )
-
-    else:
-        if hotspots.empty:
-            st.info("No hotspots at these settings. Try a larger neighbour distance or "
-                    "fewer minimum sightings in the sidebar.")
-        else:
-            hotspot_cols = [c for c in [
-                "Hotspot", "Tier", "Beats", "Divisions", "Sightings", "Conflict Events",
-                "Conflict Share %", "Human Deaths", "People Injured", "Night Share %",
-                "Radius (km)",
-            ] if c in hotspots.columns]
-            hotspot_pick = st.dataframe(
-                hotspots[hotspot_cols], width="stretch", height=400, hide_index=True,
-                on_select="rerun", selection_mode="single-row", key="hotspot_table",
-                column_config={
-                    "Tier": st.column_config.TextColumn(width="small"),
-                    "Conflict Share %": st.column_config.NumberColumn(
-                        "Conflict share", format="%.0f%%"),
-                    "Night Share %": st.column_config.NumberColumn("Night", format="%.0f%%"),
-                    "Human Deaths": st.column_config.NumberColumn("Killed", format="%.0f"),
-                    "People Injured": st.column_config.NumberColumn("Injured", format="%.0f"),
-                    "Radius (km)": st.column_config.NumberColumn("Radius", format="%.1f km"),
-                },
-            )
-            _map_pick(hotspot_pick, "hotspot_table", "hotspot", hotspots["Hotspot"], "Hotspot")
-            st.download_button(
-                "Download hotspots (CSV)",
-                hotspots.to_csv(index=False).encode("utf-8"),
-                "hotspots.csv",
-                mime="text/csv",
-            )
-        for note in hotspot_caveats(hotspots, filtered, villages):
-            st.caption(note)
+        if map_focus:
+            focus_col, clear_col = st.columns([3, 1], vertical_alignment="center")
+            focus_col.info(f"Showing {map_focus['label']} only. Untick the row to show "
+                           "everything again.")
+            if clear_col.button("Show everything", key="clear_map_focus", width="stretch"):
+                st.session_state.pop(MAP_FOCUS_KEY, None)
+                st.rerun()
+        if shown.empty:
+            st.caption("No sightings match the Events and Animals filters"
+                    + (f" in {map_focus['label']}." if map_focus else "."))
+        render_map(
+            shown,
+            frame_df=filtered[map_focus["mask"]] if map_focus else filtered,
+            focus=map_focus,
+            hotspots=shown_hotspots,
+            villages=shown_villages,
+            style_name=basemap,
+            show_sightings=not shown.empty,
+            show_hotspots=show_hotspots,
+            show_villages=not shown_villages.empty,
+            show_boundaries=layer_boundaries,
+            boundary_level=boundary_level,
+            beat_stats=beats_table,
+        )
 
 
 # ---- Villages --------------------------------------------------------------

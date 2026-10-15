@@ -316,9 +316,9 @@ screen:
 * *Is it getting worse?* -- monthly conflict by type, conflict rate,
   casualties, the seasonal grid, divisions over time, escalating beats and
   the conflict rate by division.
-* *Where to act* -- the beat tier counts, the spatial view, and under it one
-  table at a time (beat priorities, which animals, movement hotspots); ticking
-  a row shows it on the map just above.
+* *Where to act* -- the beat tier counts, the layer filters, then a table
+  (beats, hotspots, villages, animals) beside the spatial view. One tick on a
+  row shows only that place on the map.
 * *Villages at risk* -- the village ranking beside its map, and early-warning
   coverage when a registry is loaded.
 * *When* -- the casualty peak window, how many reports count as night raids,
@@ -405,16 +405,22 @@ the view is tight enough to read them. Streamlit's map reports clicks but not
 viewport changes, so that follows the view the filters produce rather than live
 pinch-zoom; the sidebar can pin a level instead.
 
-**Two maps.** The spatial view carries three toggleable layers — sightings
-by what happened, hotspot footprints drawn at true radius, and villages by
-tier. Each conflict class has its own symbol as well as its colour, the same
+**Two maps.** The spatial view's layers are chosen in the *Where to act*
+tab, not the sidebar. *Events* (what happened) and *Animals* (lone bull,
+bull party, family herd, ...) combine, so "crop or grain loss" with "lone
+bull" maps exactly those sightings. *Villages by tier* switches each tier on
+or off (Routine starts off), and hotspot footprints have their own toggle.
+Each conflict class has its own symbol as well as its colour, the same
 on the map, in its legend and in the downloaded map: a diamond with a cross
 for a human fatality, a medical cross for an injury, a house for house or
 store damage, a leaf for crop or grain loss, and a small dot for presence
-only. Casualties draw largest and on top. Ticking a row in the beat
-priorities, which-animals or hotspot table shows it on the spatial view:
-the map zooms to it, outlines the beat or rings the hotspot, and fades every
-other sighting until the row is unticked or "Show everything" is pressed. The village-risk map leads with the settlements: circle size
+only. Casualties draw largest and on top. Ticking a row in the beat,
+hotspot or village table shows only that place: the map zooms to it,
+outlines the beat or rings the hotspot or the village's exposure radius,
+and draws only the sightings inside it. Filters cut before drawing, so
+hotspots stay only where a shown sighting falls in them and villages only
+within the exposure radius of one; the download is the same filtered map.
+The table draws before the map, so one tick is enough. The village-risk map leads with the settlements: circle size
 is conflict count, colour is tier, and the worst are labelled. Basemap is
 selectable (terrain, satellite, hybrid, topographic, streets, minimal).
 
