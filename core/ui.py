@@ -16,6 +16,7 @@ Rules this enforces:
 
 from __future__ import annotations
 
+import re
 from html import escape
 from typing import Optional
 
@@ -66,6 +67,38 @@ CATEGORY_STYLE = {
     "Crop": {"color": "#F0E442", "label": "Crop or grain loss"},
     "Presence": {"color": "#56B4E9", "label": "Presence only"},
 }
+
+# A shape per class as well as a colour, so five classes read apart on a
+# busy map, in print, and to a colourblind reader: a diamond with a cross
+# for a death, a medical cross for an injury, a house, a leaf for crop or
+# grain, a plain dot for presence. 24-unit grid centred on (12, 12); the
+# map, its legend and the exported SVG all draw these.
+CATEGORY_SYMBOLS = {
+    "Death": ('<path d="M12 1.2 22.8 12 12 22.8 1.2 12Z" fill="#7A1E00" stroke="#ffffff" '
+              'stroke-width="1.6" stroke-linejoin="round"/>'
+              '<path d="M8.4 8.4l7.2 7.2M15.6 8.4l-7.2 7.2" stroke="#ffffff" '
+              'stroke-width="2.6" stroke-linecap="round"/>'),
+    "Injury": ('<circle cx="12" cy="12" r="10.4" fill="#D55E00" stroke="#ffffff" '
+               'stroke-width="1.6"/>'
+               '<path d="M12 6.6v10.8M6.6 12h10.8" stroke="#ffffff" stroke-width="3.2" '
+               'stroke-linecap="round"/>'),
+    "House": ('<path d="M12 2.2 22.2 11H19v10.6H5V11H1.8Z" fill="#E69F00" stroke="#3b2a00" '
+              'stroke-width="1.4" stroke-linejoin="round"/>'
+              '<rect x="10" y="14.6" width="4" height="7" fill="#3b2a00"/>'),
+    "Crop": ('<path d="M12 22.4C4.8 17.6 4.4 9 12 1.6c7.6 7.4 7.2 16 0 20.8Z" fill="#F0E442" '
+             'stroke="#4d4500" stroke-width="1.4" stroke-linejoin="round"/>'
+             '<path d="M12 21.4V6.2M12 11l-3.4-2.6M12 15l3.6-2.8M12 18.4l-3.6-2.6" '
+             'stroke="#4d4500" stroke-width="1.2" stroke-linecap="round" fill="none"/>'),
+    "Presence": ('<circle cx="12" cy="12" r="6.4" fill="#56B4E9" stroke="#1d3d52" '
+                 'stroke-width="1.6"/>'),
+}
+
+
+def category_symbol_svg(key: str, size: int = 16) -> str:
+    """The class symbol as a standalone inline SVG, for legends."""
+    inner = CATEGORY_SYMBOLS.get(key, CATEGORY_SYMBOLS["Presence"])
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
+            f'viewBox="0 0 24 24" aria-hidden="true">{inner}</svg>')
 
 # Lucide-style: 24px grid, 1.75 stroke, currentColor for theme adaptation.
 _ICON_PATHS = {
@@ -250,6 +283,7 @@ _THEME_CSS = """
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 0.78rem; color: var(--ci-text-muted);
 }
+.ci-legend__symbol { display: inline-flex; margin-right: 0.35rem; vertical-align: -4px; }
 .ci-legend__dot {
   width: 11px; height: 11px; border-radius: 50%;
   border: 1px solid rgba(0,0,0,.35); flex: 0 0 auto;
@@ -261,8 +295,9 @@ _THEME_CSS = """
 def section(name: str, title: str, subtitle: Optional[str] = None) -> None:
     """Section header with an SVG icon."""
     sub = f'<div class="ci-section__sub">{escape(subtitle)}</div>' if subtitle else ""
+    anchor = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     st.markdown(
-        f'<div class="ci-section">'
+        f'<div class="ci-section" id="{anchor}">'
         f'  <span class="ci-section__icon">{icon(name, 19)}</span>'
         f'  <div><div class="ci-section__title">{escape(title)}</div>{sub}</div>'
         f"</div>",
@@ -370,7 +405,7 @@ def map_legend(title: str, styles: dict) -> None:
 
 
 def category_legend(counts: dict) -> None:
-    """Map legend: colour swatch plus the category name in words."""
+    """Map legend: the class symbol plus the category name in words."""
     items = []
     for key, style in CATEGORY_STYLE.items():
         count = int(counts.get(key, 0))
@@ -378,7 +413,7 @@ def category_legend(counts: dict) -> None:
             continue
         items.append(
             f'<span class="ci-legend__item">'
-            f'<span class="ci-legend__dot" style="background:{style["color"]};"></span>'
+            f'<span class="ci-legend__symbol">{category_symbol_svg(key, 18)}</span>'
             f'{escape(style["label"])} ({count:,})</span>'
         )
     if items:

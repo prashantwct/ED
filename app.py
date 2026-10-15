@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import math
 from typing import Optional
 
 import pandas as pd
@@ -17,6 +18,7 @@ import plotly.express as px
 import streamlit as st
 
 from core.analytics import (
+    classify_group,
     compute_is_night,
     compute_kpis,
     compute_severity,
@@ -278,6 +280,61 @@ if view == DAMAGE_VIEW:
     )
     damage_view.render(damage_df, damage_notes, register_df, damage_basemap)
     st.stop()
+
+
+MAP_FOCUS_KEY = "map_focus"
+
+
+def _map_pick(event, key: str, kind: str, values: pd.Series, noun: str) -> None:
+    """Send the row picked in a table to the spatial view.
+
+    The latest pick in any table wins; clearing a table's pick clears the
+    map focus only if that table set it.
+    """
+    rows = event.selection.rows if event is not None else []
+    picked = values.iloc[rows[0]] if rows else None
+    previous = st.session_state.get(f"_pick_{key}")
+    if picked != previous:
+        st.session_state[f"_pick_{key}"] = picked
+        if picked is not None:
+            st.session_state[MAP_FOCUS_KEY] = (kind, picked)
+        elif st.session_state.get(MAP_FOCUS_KEY, (None, None))[0] == kind:
+            st.session_state.pop(MAP_FOCUS_KEY, None)
+    if picked is not None:
+        st.caption(f"{noun} **{picked}** is shown on the [spatial view](#spatial-view) map "
+                   "below; untick the row to show everything again.")
+    else:
+        st.caption("Tick a row to show it on the spatial view map.")
+
+
+def _map_focus(frame: pd.DataFrame, hotspot_table: pd.DataFrame) -> Optional[dict]:
+    """The focus the spatial view should draw, from the latest table pick."""
+    picked = st.session_state.get(MAP_FOCUS_KEY)
+    if not picked or frame.empty:
+        return None
+    kind, value = picked
+    if kind == "beat" and "Beat" in frame:
+        mask = frame["Beat"].astype(str) == str(value)
+        return {"label": f"Beat {value}", "mask": mask, "beat": value} if mask.any() else None
+    if kind == "group":
+        mask = classify_group(frame) == value
+        return {"label": f"{value} sightings", "mask": mask} if mask.any() else None
+    if kind == "hotspot" and not hotspot_table.empty:
+        row = hotspot_table[hotspot_table["Hotspot"].astype(str) == str(value)]
+        if row.empty:
+            return None
+        r = row.iloc[0]
+        lat, lon = float(r["Centre Latitude"]), float(r["Centre Longitude"])
+        km = max(float(r["Radius (km)"]), 0.5) * 1.6
+        dlat = km / 111.32
+        dlon = km / (111.32 * max(math.cos(math.radians(lat)), 0.2))
+        from core.refuges import _km
+
+        d = _km(lat, lon, frame["Latitude"].to_numpy(float), frame["Longitude"].to_numpy(float))
+        return {"label": f"Hotspot {value}", "hotspot": value,
+                "mask": pd.Series(d <= float(r["Radius (km)"]), index=frame.index),
+                "bounds": (lat - dlat, lat + dlat, lon - dlon, lon + dlon)}
+    return None
 
 
 def _open_damage_view() -> None:
@@ -722,10 +779,13 @@ else:
         "Night Conflict %", "Near Village %", "Bull-Type Conflict %",
         "Trend", "Recent vs Prior", "Recommended Action",
     ]
-    st.dataframe(
+    beat_pick = st.dataframe(
         beats_table[display_cols],
         width="stretch",
         hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="beat_table",
         column_config={
             "Priority Tier": st.column_config.TextColumn("Tier", width="small"),
             "Priority Score": st.column_config.ProgressColumn(
@@ -758,6 +818,7 @@ else:
             "Recommended Action": st.column_config.TextColumn(width="large"),
         },
     )
+    _map_pick(beat_pick, "beat_table", "beat", beats_table["Beat"], "Beat")
     st.download_button(
         "Download beat priorities (CSV)",
         beats_table.to_csv(index=False).encode("utf-8"),
@@ -778,10 +839,13 @@ if not composition.empty and composition["Conflict Events"].sum() > 0:
     )
     comp_col, note_col = st.columns([3, 2])
     with comp_col:
-        st.dataframe(
+        group_pick = st.dataframe(
             composition,
             width="stretch",
             hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="group_table",
             column_config={
                 "Damage Rate %": st.column_config.NumberColumn(
                     "Damage rate", format="%.1f%%",
@@ -793,6 +857,7 @@ if not composition.empty and composition["Conflict Events"].sum() > 0:
                 ),
             },
         )
+        _map_pick(group_pick, "group_table", "group", composition["Group Type"], "Group")
     with note_col:
         st.markdown(
             "Only bulls carry tusks in this species, so **Male Count** is the "
@@ -837,7 +902,10 @@ else:
                 hotspot_card(row.to_dict())
 
     with st.expander(f"All {len(hotspots)} hotspots as a table", expanded=False):
-        st.dataframe(hotspots, width="stretch", hide_index=True)
+        hotspot_pick = st.dataframe(hotspots, width="stretch", hide_index=True,
+                                    on_select="rerun", selection_mode="single-row",
+                                    key="hotspot_table")
+        _map_pick(hotspot_pick, "hotspot_table", "hotspot", hotspots["Hotspot"], "Hotspot")
         st.download_button(
             "Download hotspots (CSV)",
             hotspots.to_csv(index=False).encode("utf-8"),
@@ -1100,8 +1168,17 @@ section(
     "Sightings by conflict type, hotspot footprints to scale, villages by "
     "tier. Toggle layers in the sidebar.",
 )
+map_focus = _map_focus(filtered, hotspots)
+if map_focus:
+    focus_col, clear_col = st.columns([4, 1])
+    focus_col.info(f"Showing {map_focus['label']}, picked in the table above: other "
+                   "sightings are faded.")
+    if clear_col.button("Show everything", key="clear_map_focus"):
+        st.session_state.pop(MAP_FOCUS_KEY, None)
+        st.rerun()
 render_map(
     filtered,
+    focus=map_focus,
     hotspots=hotspots,
     villages=village_risk,
     style_name=basemap,

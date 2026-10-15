@@ -384,8 +384,15 @@ viewport changes, so that follows the view the filters produce rather than live
 pinch-zoom; the sidebar can pin a level instead.
 
 **Two maps.** The spatial view carries three toggleable layers — sightings
-coloured by what happened, hotspot footprints drawn at true radius, and
-villages by tier. The village-risk map leads with the settlements: circle size
+by what happened, hotspot footprints drawn at true radius, and villages by
+tier. Each conflict class has its own symbol as well as its colour, the same
+on the map, in its legend and in the downloaded map: a diamond with a cross
+for a human fatality, a medical cross for an injury, a house for house or
+store damage, a leaf for crop or grain loss, and a small dot for presence
+only. Casualties draw largest and on top. Ticking a row in the beat
+priorities, which-animals or hotspot table shows it on the spatial view:
+the map zooms to it, outlines the beat or rings the hotspot, and fades every
+other sighting until the row is unticked or "Show everything" is pressed. The village-risk map leads with the settlements: circle size
 is conflict count, colour is tier, and the worst are labelled. Basemap is
 selectable (terrain, satellite, hybrid, topographic, streets, minimal).
 

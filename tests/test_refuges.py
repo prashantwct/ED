@@ -391,3 +391,23 @@ def test_downloaded_map_renders_to_png_and_pdf(result):
     svg = map_svg(result["refuges"], result["links"], areas=result["areas"])
     assert exports.to_png(svg, scale=1).startswith(b"\x89PNG")
     assert exports.to_pdf(svg).startswith(b"%PDF")
+
+
+def test_a_beat_picked_in_the_table_is_shown_on_the_map():
+    from types import SimpleNamespace
+
+    from streamlit.testing.v1 import AppTest
+
+    df = fx.register()
+    df["Date"] = df["Date"].dt.strftime("%d/%m/%Y")
+    app = str(Path(__file__).resolve().parent.parent / "app.py")
+    at = AppTest.from_file(app, default_timeout=240)
+    at.session_state["fetched_register"] = SimpleNamespace(
+        data=df.to_csv(index=False).encode(), name="register.csv", rows=len(df), pages=1,
+        start_date="01/01/2026", end_date="01/03/2026", fetched_at="today")
+    at.session_state["map_focus"] = ("beat", "Test")
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Showing Beat Test" in i.value for i in at.info)
+    next(b for b in at.button if b.label == "Show everything").click().run()
+    assert not any("Showing Beat" in i.value for i in at.info)
