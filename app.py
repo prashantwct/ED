@@ -1,8 +1,9 @@
 """Elephant Conflict Intelligence -- Streamlit entry point.
 
 All data logic lives in core/; this file handles layout, widgets and
-wiring only. Page order follows the order a manager decides in:
-situation, which beats, where exactly, which villages, then evidence.
+wiring only. The headline numbers and assessment sit on top; the rest is
+one tab per question a manager asks: is it getting worse, where to act,
+which villages, when, and the data behind it.
 """
 
 from __future__ import annotations
@@ -68,7 +69,6 @@ from core.spatial import attach_nearest_village, load_village_centroids
 from core.ui import (
     TIER_STYLE,
     findings,
-    hotspot_card,
     inject_theme,
     section,
     tier_summary,
@@ -301,10 +301,8 @@ def _map_pick(event, key: str, kind: str, values: pd.Series, noun: str) -> None:
         elif st.session_state.get(MAP_FOCUS_KEY, (None, None))[0] == kind:
             st.session_state.pop(MAP_FOCUS_KEY, None)
     if picked is not None:
-        st.caption(f"{noun} **{picked}** is shown on the [spatial view](#spatial-view) map "
-                   "below; untick the row to show everything again.")
-    else:
-        st.caption("Tick a row to show it on the spatial view map.")
+        st.caption(f"{noun} **{picked}** is shown on the map above; untick the row to show "
+                   "everything again.")
 
 
 def _map_focus(frame: pd.DataFrame, hotspot_table: pd.DataFrame) -> Optional[dict]:
@@ -680,674 +678,638 @@ if filtered.empty:
 
 brief = management_brief(filtered, recent_days=recent_days, as_of=period_end)
 
-
-# ---------------------------------------------------------------------------
-# 4. Assessment
-# ---------------------------------------------------------------------------
-section("assessment", "Assessment", f"{len(filtered):,} reports in the selected period")
-findings(brief["headlines"])
-
-with st.expander("How to read this", expanded=False):
-    for caveat in brief["caveats"]:
-        st.markdown(f"- {caveat}")
-
-
-# ---------------------------------------------------------------------------
-# 4b. Conflict trends
-# ---------------------------------------------------------------------------
-section(
-    "trend",
-    "Conflict trends",
-    "Is it getting worse, where, and when in the year. The shaded band is "
-    "the escalation window set in the sidebar.",
-)
-
-if len(monthly) < 2:
-    st.info("The selected period covers less than two months, so there is no trend to draw.")
-else:
-    st.markdown("**Conflict events per month, by type**")
-    _plot(charts.conflict_type_trend(monthly, recent_days=recent_days, as_of=period_end))
-    # Each figure downloads from its SVG twin. Values are bound as default
-    # arguments: the callable runs on click, after this script has moved on
-    # and reassigned names like ``months``.
-    download_menu("Conflict events per month by type",
-                  lambda m=monthly, d=recent_days, e=period_end:
-                  report_charts.conflict_type_trend_svg(m, d, e))
-    st.caption(
-        "Darkest at the base is the most severe. A rising dark band matters "
-        "more than a rising total."
-    )
-
-    rate_col, casualty_col = st.columns(2)
-    with rate_col:
-        st.markdown("**Conflict rate** -- share of reports that were conflict")
-        _plot(charts.conflict_rate_trend(monthly, kpis["conflict_rate"]))
-        download_menu("Conflict rate per month",
-                      lambda m=monthly, r=kpis["conflict_rate"]:
-                      report_charts.conflict_rate_svg(m, r))
-    with casualty_col:
-        st.markdown("**People killed and injured per month**")
-        if float((monthly["Human Deaths"] + monthly["People Injured"]).sum()) == 0:
-            st.success("No casualties recorded in the selected period.")
-        else:
-            _plot(charts.casualty_trend(monthly))
-            download_menu("People killed and injured per month",
-                          lambda m=monthly: report_charts.casualty_svg(m))
-
-    season_col, division_col = st.columns(2)
-    with season_col:
-        st.markdown("**Seasonal pattern** -- conflict events by month and year")
-        _plot(charts.seasonal_heatmap(seasonal_matrix(filtered)))
-        download_menu("Seasonal pattern",
-                      lambda f=filtered: report_charts.seasonal_heatmap_svg(seasonal_matrix(f)))
-        st.caption("Read down a column to compare the same month across years.")
-    with division_col:
-        st.markdown("**By division** -- conflict events per month")
-        division_long = division_monthly_conflict(filtered)
-        if division_long["Division"].nunique() < 2:
-            st.info("One division selected. Widen the Division filter to compare.")
-        else:
-            _plot(charts.division_trend(
-                division_long, charts.division_colors(df["Division"].unique())
-            ))
-            download_menu("Conflict events per month by division",
-                          lambda d=division_long, c=charts.division_colors(df["Division"].unique()):
-                          report_charts.division_trend_svg(d, c))
-            st.caption("Three-month average, so one busy month does not read as a trend.")
-
-
-# ---------------------------------------------------------------------------
-# 5. Beat priorities
-# ---------------------------------------------------------------------------
-section(
-    "target",
-    "Beat priorities",
-    f"Critical = a casualty in the last {CRITICAL_CASUALTY_WINDOW_DAYS} days. "
-    "Tiers are comparable across periods; the score only orders within a tier.",
-)
-
-beats_table = brief["beats"]
-if beats_table.empty:
-    st.info("Not enough data to rank beats.")
-else:
-    tier_summary(beats_table["Priority Tier"].value_counts().to_dict())
-
-    display_cols = [
-        "Beat", "Division", "Range", "Priority Tier", "Priority Score", "Confidence",
-        "Reports", "Conflict Events", "Adj. Conflict Rate %",
-        "Recent Deaths", "Recent Injuries", "Human Deaths", "People Injured",
-        "Night Conflict %", "Near Village %", "Bull-Type Conflict %",
-        "Trend", "Recent vs Prior", "Recommended Action",
-    ]
-    beat_pick = st.dataframe(
-        beats_table[display_cols],
-        width="stretch",
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        key="beat_table",
-        column_config={
-            "Priority Tier": st.column_config.TextColumn("Tier", width="small"),
-            "Priority Score": st.column_config.ProgressColumn(
-                "Score", min_value=0, max_value=100, format="%.0f",
-                help="Orders beats within a tier only. Moves when filters change.",
-            ),
-            "Adj. Conflict Rate %": st.column_config.NumberColumn(
-                "Adj. rate", format="%.1f%%",
-                help="Shrunk toward the landscape average, so one incident "
-                "cannot top the ranking.",
-            ),
-            "Recent Deaths": st.column_config.NumberColumn(
-                "Killed (recent)", format="%.0f",
-                help=f"In the last {CRITICAL_CASUALTY_WINDOW_DAYS} days. Drives the "
-                "Critical tier.",
-            ),
-            "Recent Injuries": st.column_config.NumberColumn("Injured (recent)", format="%.0f"),
-            "Human Deaths": st.column_config.NumberColumn(
-                "Killed (period)", format="%.0f",
-                help="Across the whole filtered period, however long ago.",
-            ),
-            "People Injured": st.column_config.NumberColumn("Injured (period)", format="%.0f"),
-            "Night Conflict %": st.column_config.NumberColumn("Night", format="%.0f%%"),
-            "Near Village %": st.column_config.NumberColumn("Near village", format="%.0f%%"),
-            "Bull-Type Conflict %": st.column_config.NumberColumn(
-                "Bull-driven", format="%.0f%%",
-                help="Share of this beat's conflict from lone bulls or small "
-                "all-male parties.",
-            ),
-            "Recommended Action": st.column_config.TextColumn(width="large"),
-        },
-    )
-    _map_pick(beat_pick, "beat_table", "beat", beats_table["Beat"], "Beat")
-    st.download_button(
-        "Download beat priorities (CSV)",
-        beats_table.to_csv(index=False).encode("utf-8"),
-        "beat_priorities.csv",
-        mime="text/csv",
-    )
-
-
-# ---------------------------------------------------------------------------
-# 5b. Who is causing it
-# ---------------------------------------------------------------------------
-composition = brief["composition"]
-if not composition.empty and composition["Conflict Events"].sum() > 0:
-    section(
-        "target",
-        "Which animals",
-        "Damage rate by the kind of group seen",
-    )
-    comp_col, note_col = st.columns([3, 2])
-    with comp_col:
-        group_pick = st.dataframe(
-            composition,
-            width="stretch",
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row",
-            key="group_table",
-            column_config={
-                "Damage Rate %": st.column_config.NumberColumn(
-                    "Damage rate", format="%.1f%%",
-                    help="Share of that group's sightings involving damage, "
-                    "injury or death.",
-                ),
-                "Human Deaths": st.column_config.NumberColumn(
-                    "Killed", format="%.0f"
-                ),
-            },
-        )
-        _map_pick(group_pick, "group_table", "group", composition["Group Type"], "Group")
-    with note_col:
-        st.markdown(
-            "Only bulls carry tusks in this species, so **Male Count** is the "
-            "tusker count. A lone bull or a small all-male party raids and "
-            "occasionally kills. A breeding herd with calves is trying to avoid "
-            "people.\n\n"
-            "The two need opposite handling -- a bull is tracked and deterred, a "
-            "herd is given passage and not driven -- so the beat table carries "
-            "the split as **Bull-driven %**."
-        )
-    st.caption(
-        "Groups with no composition recorded are shown as Unrecorded rather "
-        "than folded into a class they may not belong to."
-    )
-
-
-# ---------------------------------------------------------------------------
-# 6. Movement hotspots
-# ---------------------------------------------------------------------------
-section(
-    "hotspot",
-    "Movement hotspots",
-    "Density clusters in the point data. A herd working a beat boundary reads "
-    "as one hotspot here, not moderate pressure in two beats.",
-)
-
+# Everything the tabs share is worked out once, before any tab draws.
 hotspots = _hotspots(filtered, eps_km, min_samples, period_end)
-
-if hotspots.empty:
-    st.info(
-        "No hotspots at these settings. Try a larger neighbour distance or "
-        "fewer minimum sightings."
-    )
-else:
-    notable = hotspots[hotspots["Tier"] != "Routine"]
-    shown = notable if not notable.empty else hotspots.head(3)
-
-    for chunk_start in range(0, len(shown), 2):
-        cols = st.columns(2)
-        for col, (_, row) in zip(cols, shown.iloc[chunk_start : chunk_start + 2].iterrows()):
-            with col:
-                hotspot_card(row.to_dict())
-
-    with st.expander(f"All {len(hotspots)} hotspots as a table", expanded=False):
-        hotspot_pick = st.dataframe(hotspots, width="stretch", hide_index=True,
-                                    on_select="rerun", selection_mode="single-row",
-                                    key="hotspot_table")
-        _map_pick(hotspot_pick, "hotspot_table", "hotspot", hotspots["Hotspot"], "Hotspot")
-        st.download_button(
-            "Download hotspots (CSV)",
-            hotspots.to_csv(index=False).encode("utf-8"),
-            "hotspots.csv",
-            mime="text/csv",
-        )
-
-for note in hotspot_caveats(hotspots, filtered, villages):
-    st.caption(note)
-
-
-# ---------------------------------------------------------------------------
-# 7. Villages at risk
-# ---------------------------------------------------------------------------
-section(
-    "village",
-    "Villages at risk",
-    f"Conflict within {village_radius:g} km of each village, so a settlement "
-    "between two hotspots counts both.",
-)
-
 village_risk = villages_at_risk(
     filtered, villages, hotspots, radius_km=village_radius, as_of=period_end
 )
-
-if village_risk.empty:
-    st.info(
-        "No village ranking. Sighting exports carry no village field, so this "
-        "needs a centroids file (Village, Latitude, Longitude) -- the Census "
-        "village directory, a forest department layer, or OpenStreetMap places."
-    )
-else:
-    st.dataframe(
-        village_risk,
-        width="stretch",
-        hide_index=True,
-        column_config={
-            "Tier": st.column_config.TextColumn(width="small"),
-            "Night Share %": st.column_config.NumberColumn("Night", format="%.0f%%"),
-            "Distance to Hotspot (km)": st.column_config.NumberColumn(
-                "To hotspot", format="%.1f km"
-            ),
-            "Inside Hotspot": st.column_config.CheckboxColumn("In hotspot"),
-        },
-    )
-    st.download_button(
-        "Download village risk (CSV)",
-        village_risk.to_csv(index=False).encode("utf-8"),
-        "villages_at_risk.csv",
-        mime="text/csv",
-    )
-    for note in village_caveats(village_risk, filtered, village_radius):
-        st.caption(note)
-
-    st.markdown("**Village risk map**")
-    render_village_map(
-        village_risk, hotspots, style_name=basemap,
-        show_boundaries=layer_boundaries, boundary_level=boundary_level,
-    )
-    download_menu("Village risk map",
-                  lambda v=village_risk, h=hotspots, b=basemap: village_map_svg(v, h, b))
-
-
-# ---------------------------------------------------------------------------
-# 7b. Early-warning coverage
-# ---------------------------------------------------------------------------
 coverage_table = pd.DataFrame()
 coverage_stats: dict = {}
-
 if registry is not None:
     coverage_table, coverage_stats = _ews().village_coverage(
         village_risk, villages, registry
     )
+beats_table = brief["beats"]
+composition = brief["composition"]
+escalating = brief["escalating"]
+temporal = brief["temporal"]
+division_palette = charts.division_colors(df["Division"].unique())
 
-if not coverage_table.empty:
-    section(
-        "broadcast",
-        "Early-warning coverage",
-        "The villages the ranking says are exposed, against the people "
-        "registered to be warned there.",
-    )
-    ews = _ews()
-    min_contacts = int(coverage_stats["min_contacts"])
-    findings(ews.coverage_headlines(coverage_table, coverage_stats))
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Registrations placed", f"{coverage_stats['matched']:,}")
-    m2.metric("Villages reached", f"{coverage_stats['villages_reached']:,}")
-    m3.metric(
-        "Exposed, no contact",
-        f"{coverage_stats['no_contact']:,}",
-        delta=f"of {coverage_stats['exposed']:,} exposed villages",
-        delta_color="off",
-    )
-    m4.metric(
-        "Critical / High short of contacts",
-        f"{coverage_stats['urgent']:,}",
-        delta=f"of {coverage_stats['at_risk']:,} in those tiers",
-        delta_color="off",
-    )
-
-    gaps = ews.coverage_gaps(coverage_table)
-    gap_cols = [
-        "Village", "Tier", "Registered Contacts", "Coverage", "Conflict Events",
-        "Human Deaths", "People Injured", "Nearest Hotspot",
-    ]
-    coverage_config = {
-        "Tier": st.column_config.TextColumn(width="small"),
-        "Registered Contacts": st.column_config.NumberColumn(
-            "Registered", format="%d",
-            help="People enrolled for early warning within "
-            f"{coverage_stats['radius_km']:g} km of the village centroid.",
-        ),
-        "Coverage": st.column_config.TextColumn(
-            width="small",
-            help=f"Fewer than {min_contacts} registrations counts as thin.",
-        ),
-    }
-
-    if gaps.empty:
-        st.success(
-            "Every Critical and High village has at least "
-            f"{min_contacts} registered contacts."
-        )
-    else:
-        st.markdown("**Enrolment queue** -- worst tier and thinnest cover first")
-        st.dataframe(
-            gaps[[c for c in gap_cols if c in gaps.columns]],
-            width="stretch", hide_index=True, column_config=coverage_config,
-        )
-        st.download_button(
-            "Download enrolment queue (CSV)",
-            gaps.to_csv(index=False).encode("utf-8"),
-            "ews_enrolment_queue.csv",
-            mime="text/csv",
-        )
-
-    with st.expander(
-        f"All {len(coverage_table)} exposed villages with their coverage",
-        expanded=False,
-    ):
-        st.dataframe(
-            coverage_table[[c for c in gap_cols if c in coverage_table.columns]],
-            width="stretch", hide_index=True, column_config=coverage_config,
-        )
-
-    enrol_col, staff_col = st.columns(2)
-    labels = ews.division_labels(filtered)
-
-    with enrol_col:
-        st.markdown("**Enrolment by division**")
-        enrolment = ews.enrolment_by_division(registry, labels)
-        st.dataframe(enrolment, width="stretch", hide_index=True)
-        st.caption(
-            "Whole registry, not the filtered period -- enrolment is a standing "
-            "figure, and the divisions it is thinnest in are the ones to work on."
-        )
-
-    with staff_col:
-        st.markdown("**Reporting against registered users**")
-        if roster is None:
-            st.info(
-                "Upload the registered app-user list in the sidebar to compare "
-                "reporting volume against the staff enrolled in each division."
-            )
-        else:
-            staffing = ews.division_staffing(filtered, roster)
-            st.dataframe(
-                staffing,
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "Reports per User": st.column_config.NumberColumn(
-                        "Reports / user", format="%.1f",
-                        help="Blank where reports arrived from a division with "
-                        "no registered user.",
-                    ),
-                },
-            )
-            st.caption(
-                "Division only: Range was a placeholder for almost every user "
-                "in this export, and Beat for all of them. A low figure is as "
-                "likely to mean accounts created and unused as a quiet division."
-            )
-
-    for note in ews.coverage_caveats(coverage_stats):
+def _figure(title: str, fig, download_name: str, make_svg, note: Optional[str] = None,
+            subtitle: str = "") -> None:
+    """A chart under one header row: its title, and its Download menu at the right."""
+    head, menu = st.columns([14, 1], vertical_alignment="bottom")
+    head.markdown(f"**{title}**" + (f" -- {subtitle}" if subtitle else ""))
+    with menu:
+        download_menu(download_name, make_svg, compact=True)
+    _plot(fig)
+    if note:
         st.caption(note)
 
-elif registry is not None and not village_risk.empty:
-    st.info(
-        "The registry loaded but nobody could be placed against the exposed "
-        "villages. Check that its coordinates cover the same landscape as the "
-        "centroids file."
+
+# ---------------------------------------------------------------------------
+# 4. Assessment, and the brief beside it
+# ---------------------------------------------------------------------------
+section("assessment", "Assessment", f"{len(filtered):,} reports in the selected period")
+findings(brief["headlines"])
+
+how_col, brief_col = st.columns([3, 1], vertical_alignment="top")
+with how_col:
+    with st.expander("How to read this", expanded=False):
+        for caveat in brief["caveats"]:
+            st.markdown(f"- {caveat}")
+with brief_col:
+    if st.button("Generate brief", type="primary", width="stretch",
+                 help="Self-contained HTML with the maps embedded, for printing or email."):
+        from core import refuge_view
+
+        try:
+            try:
+                brief_refuges = refuge_view.for_brief(filtered, villages)
+            except Exception:  # noqa: BLE001 - the brief goes out without the section
+                logger.exception("Day refuges for the brief failed")
+                brief_refuges = None
+            html = generate_html_report(
+                filtered,
+                filtered["Date"].min(),
+                filtered["Date"].max(),
+                recent_days=recent_days,
+                hotspots=hotspots,
+                village_risk=village_risk,
+                filters={
+                    "divisions": divisions,
+                    "ranges": ranges,
+                    "beats": beats,
+                    "severity": severity_choice,
+                },
+                basemap_style_name=basemap,
+                coverage=coverage_table,
+                coverage_stats=coverage_stats,
+                refuges=brief_refuges,
+            )
+        except Exception as exc:  # noqa: BLE001 - report generation must never 500
+            logger.exception("Report generation failed")
+            st.error(f"Could not generate the brief: {exc}")
+        else:
+            st.download_button(
+                "Download brief (HTML)", html, "Elephant_Conflict_Brief.html",
+                mime="text/html", width="stretch",
+            )
+            st.success("Brief ready: download it above.")
+
+
+# ---------------------------------------------------------------------------
+# 5. One tab per question a manager asks
+# ---------------------------------------------------------------------------
+tab_trend, tab_where, tab_villages, tab_when, tab_data = st.tabs([
+    ":material/trending_up: Is it getting worse?",
+    ":material/map: Where to act",
+    ":material/home: Villages at risk",
+    ":material/schedule: When",
+    ":material/table_chart: Data",
+])
+
+
+# ---- Trends ---------------------------------------------------------------
+with tab_trend:
+    if len(monthly) < 2:
+        st.info("The selected period covers less than two months, so there is no trend "
+                "to draw.")
+    else:
+        # Each figure downloads from its SVG twin. Values are bound as
+        # default arguments: the callable runs on click, after this script
+        # has moved on and reassigned names like ``monthly``.
+        _figure(
+            "Conflict events per month, by type",
+            charts.conflict_type_trend(monthly, recent_days=recent_days, as_of=period_end),
+            "Conflict events per month by type",
+            lambda m=monthly, d=recent_days, e=period_end:
+            report_charts.conflict_type_trend_svg(m, d, e),
+            note="Darkest at the base is the most severe; the shaded band is the "
+                 "escalation window set in the sidebar.",
+        )
+
+        rate_col, casualty_col = st.columns(2)
+        with rate_col:
+            _figure("Conflict rate", charts.conflict_rate_trend(monthly, kpis["conflict_rate"]),
+                    "Conflict rate per month",
+                    lambda m=monthly, r=kpis["conflict_rate"]:
+                    report_charts.conflict_rate_svg(m, r),
+                    subtitle="share of reports that were conflict")
+        with casualty_col:
+            if float((monthly["Human Deaths"] + monthly["People Injured"]).sum()) == 0:
+                st.markdown("**People killed and injured**")
+                st.success("No casualties recorded in the selected period.")
+            else:
+                _figure("People killed and injured", charts.casualty_trend(monthly),
+                        "People killed and injured per month",
+                        lambda m=monthly: report_charts.casualty_svg(m))
+
+        season_col, division_col = st.columns(2)
+        with season_col:
+            _figure("Seasonal pattern", charts.seasonal_heatmap(seasonal_matrix(filtered)),
+                    "Seasonal pattern",
+                    lambda f=filtered: report_charts.seasonal_heatmap_svg(seasonal_matrix(f)),
+                    note="Read down a column to compare the same month across years.")
+        with division_col:
+            division_long = division_monthly_conflict(filtered)
+            if division_long["Division"].nunique() < 2:
+                st.markdown("**By division**")
+                st.info("One division selected. Widen the Division filter to compare.")
+            else:
+                _figure("By division", charts.division_trend(division_long, division_palette),
+                        "Conflict events per month by division",
+                        lambda d=division_long, c=division_palette:
+                        report_charts.division_trend_svg(d, c),
+                        subtitle="three-month average")
+
+    esc_col, rate_div_col = st.columns(2)
+    with esc_col:
+        if escalating.empty:
+            st.markdown(f"**Escalating beats** -- last {recent_days} days vs the "
+                        f"{recent_days} before")
+            st.info("No beat shows a materially higher conflict count than the prior window.")
+        else:
+            _figure("Escalating beats", charts.escalation_dumbbell(escalating),
+                    "Escalating beats", lambda e=escalating: report_charts.escalation_svg(e),
+                    subtitle=f"last {recent_days} days vs the {recent_days} before",
+                    note=f"Grey is the earlier window, red the recent one; "
+                         f"{len(escalating)} beat(s) escalating.")
+    with rate_div_col:
+        rates = division_conflict_rate(filtered)
+        if rates.empty:
+            st.markdown("**Conflict rate by division**")
+            st.info("No division data for the current filters.")
+        else:
+            _figure("Conflict rate by division",
+                    charts.division_rate_bars(rates, kpis["conflict_rate"], division_palette),
+                    "Conflict rate by division",
+                    lambda r=rates, k=kpis["conflict_rate"], c=division_palette:
+                    report_charts.division_rate_svg(r, k, c),
+                    note="Rate, not raw volume: sighting counts mostly track reporting "
+                         "effort.")
+
+
+# ---- Where to act -------------------------------------------------------------
+with tab_where:
+    if not beats_table.empty:
+        tier_summary(beats_table["Priority Tier"].value_counts().to_dict())
+
+    map_focus = _map_focus(filtered, hotspots)
+    head, menu = st.columns([14, 1], vertical_alignment="bottom")
+    head.markdown("**Spatial view** -- sightings by conflict type, hotspot footprints to "
+                  "scale, villages by tier")
+    with menu:
+        download_menu("Spatial view",
+                      lambda f=filtered, h=hotspots, b=basemap: sightings_map_svg(f, h, b),
+                      compact=True)
+    if map_focus:
+        focus_col, clear_col = st.columns([4, 1], vertical_alignment="center")
+        focus_col.info(f"Showing {map_focus['label']}, picked in the table below: other "
+                       "sightings are faded.")
+        if clear_col.button("Show everything", key="clear_map_focus", width="stretch"):
+            st.session_state.pop(MAP_FOCUS_KEY, None)
+            st.rerun()
+    render_map(
+        filtered,
+        focus=map_focus,
+        hotspots=hotspots,
+        villages=village_risk,
+        style_name=basemap,
+        show_sightings=layer_sightings,
+        show_hotspots=layer_hotspots,
+        show_villages=layer_villages,
+        show_boundaries=layer_boundaries,
+        boundary_level=boundary_level,
+        beat_stats=beats_table,
     )
 
+    picker = st.segmented_control(
+        "Tick a row to show it on the map",
+        ["Beat priorities", "Which animals", "Movement hotspots"],
+        default="Beat priorities", key="where_table",
+    ) or "Beat priorities"
 
-# ---------------------------------------------------------------------------
-# 8. Escalation & timing
-# ---------------------------------------------------------------------------
-esc_col, time_col = st.columns([1, 1])
-
-with esc_col:
-    section("trend", "Escalating", f"Last {recent_days} days vs the {recent_days} before")
-    escalating = brief["escalating"]
-    if escalating.empty:
-        st.info("No beat shows a materially higher conflict count than the prior window.")
-    else:
-        _plot(charts.escalation_dumbbell(escalating))
-        download_menu("Escalating beats",
-                      lambda e=escalating: report_charts.escalation_svg(e))
-        st.caption(
-            f"Grey is the earlier window, red the recent one. "
-            f"{len(escalating)} beat(s) escalating; the largest rises are shown."
-        )
-        with st.expander("Escalating beats as a table", expanded=False):
-            st.dataframe(
-                escalating[
-                    ["Beat", "Division", "Recent vs Prior", "Human Deaths",
-                     "People Injured"]
-                ],
+    if picker == "Beat priorities":
+        st.caption(f"Critical = a person killed or injured in the last "
+                   f"{CRITICAL_CASUALTY_WINDOW_DAYS} days. Tiers compare across periods; "
+                   "the score only orders beats within a tier.")
+        if beats_table.empty:
+            st.info("Not enough data to rank beats.")
+        else:
+            display_cols = [
+                "Beat", "Division", "Range", "Priority Tier", "Priority Score",
+                "Conflict Events", "Recent Deaths", "Recent Injuries", "Human Deaths",
+                "People Injured", "Bull-Type Conflict %", "Trend", "Recommended Action",
+            ]
+            beat_pick = st.dataframe(
+                beats_table[display_cols],
                 width="stretch",
+                height=400,
                 hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="beat_table",
+                column_config={
+                    "Priority Tier": st.column_config.TextColumn("Tier", width="small"),
+                    "Priority Score": st.column_config.ProgressColumn(
+                        "Score", min_value=0, max_value=100, format="%.0f",
+                        help="Orders beats within a tier only. Moves when filters change.",
+                    ),
+                    "Conflict Events": st.column_config.NumberColumn("Conflicts"),
+                    "Recent Deaths": st.column_config.NumberColumn(
+                        "Killed (recent)", format="%.0f",
+                        help=f"In the last {CRITICAL_CASUALTY_WINDOW_DAYS} days. Drives the "
+                        "Critical tier.",
+                    ),
+                    "Recent Injuries": st.column_config.NumberColumn(
+                        "Injured (recent)", format="%.0f"),
+                    "Human Deaths": st.column_config.NumberColumn(
+                        "Killed (period)", format="%.0f",
+                        help="Across the whole filtered period, however long ago.",
+                    ),
+                    "People Injured": st.column_config.NumberColumn(
+                        "Injured (period)", format="%.0f"),
+                    "Bull-Type Conflict %": st.column_config.NumberColumn(
+                        "Bull-driven", format="%.0f%%",
+                        help="Share of this beat's conflict from lone bulls or small "
+                        "all-male parties.",
+                    ),
+                    "Recommended Action": st.column_config.TextColumn(width="large"),
+                },
+            )
+            _map_pick(beat_pick, "beat_table", "beat", beats_table["Beat"], "Beat")
+            st.download_button(
+                "Download all beat figures (CSV)",
+                beats_table.to_csv(index=False).encode("utf-8"),
+                "beat_priorities.csv",
+                mime="text/csv",
+                help="Every column, including confidence, rates, night and village shares.",
             )
 
-with time_col:
-    section("clock", "Timing", "When to staff the shift")
-    temporal = brief["temporal"]
-    st.markdown(f"**Injuries and deaths peak:** {format_window(temporal['peak_window'])}")
-    if temporal.get("night_damage"):
-        st.markdown(
-            f"**Damage and indirect reports:** {temporal['night_damage']:,} conflict "
-            f"report(s), counted as night raids ({NIGHT_HOUR_START:02d}:00-"
-            f"{NIGHT_HOUR_END:02d}:00). Damage and indirect signs are recorded after the "
-            "night, so their entry hour is not when they happened. Only direct sightings "
-            "are timed."
+    elif picker == "Which animals":
+        if composition.empty or composition["Conflict Events"].sum() == 0:
+            st.info("No group composition recorded for the current filters.")
+        else:
+            group_pick = st.dataframe(
+                composition,
+                width="stretch",
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="group_table",
+                column_config={
+                    "Damage Rate %": st.column_config.NumberColumn(
+                        "Damage rate", format="%.1f%%",
+                        help="Share of that group's sightings involving damage, "
+                        "injury or death.",
+                    ),
+                    "Human Deaths": st.column_config.NumberColumn("Killed", format="%.0f"),
+                },
+            )
+            _map_pick(group_pick, "group_table", "group", composition["Group Type"], "Group")
+            st.caption(
+                "Only bulls carry tusks, so Male Count is the tusker count. A lone bull "
+                "or small all-male party raids and is tracked and deterred; a breeding "
+                "herd with calves is given passage and not driven. Unrecorded groups are "
+                "kept apart rather than guessed."
+            )
+
+    else:
+        if hotspots.empty:
+            st.info("No hotspots at these settings. Try a larger neighbour distance or "
+                    "fewer minimum sightings in the sidebar.")
+        else:
+            hotspot_cols = [c for c in [
+                "Hotspot", "Tier", "Beats", "Divisions", "Sightings", "Conflict Events",
+                "Conflict Share %", "Human Deaths", "People Injured", "Night Share %",
+                "Radius (km)",
+            ] if c in hotspots.columns]
+            hotspot_pick = st.dataframe(
+                hotspots[hotspot_cols], width="stretch", height=400, hide_index=True,
+                on_select="rerun", selection_mode="single-row", key="hotspot_table",
+                column_config={
+                    "Tier": st.column_config.TextColumn(width="small"),
+                    "Conflict Share %": st.column_config.NumberColumn(
+                        "Conflict share", format="%.0f%%"),
+                    "Night Share %": st.column_config.NumberColumn("Night", format="%.0f%%"),
+                    "Human Deaths": st.column_config.NumberColumn("Killed", format="%.0f"),
+                    "People Injured": st.column_config.NumberColumn("Injured", format="%.0f"),
+                    "Radius (km)": st.column_config.NumberColumn("Radius", format="%.1f km"),
+                },
+            )
+            _map_pick(hotspot_pick, "hotspot_table", "hotspot", hotspots["Hotspot"], "Hotspot")
+            st.download_button(
+                "Download hotspots (CSV)",
+                hotspots.to_csv(index=False).encode("utf-8"),
+                "hotspots.csv",
+                mime="text/csv",
+            )
+        for note in hotspot_caveats(hotspots, filtered, villages):
+            st.caption(note)
+
+
+# ---- Villages --------------------------------------------------------------
+with tab_villages:
+    st.caption(f"Conflict within {village_radius:g} km of each village, so a settlement "
+               "between two hotspots counts both.")
+    if village_risk.empty:
+        st.info(
+            "No village ranking. Sighting exports carry no village field, so this "
+            "needs a centroids file (Village, Latitude, Longitude) -- the Census "
+            "village directory, a forest department layer, or OpenStreetMap places."
         )
+    else:
+        table_col, map_col = st.columns([1, 1])
+        with table_col:
+            village_cols = [c for c in [
+                "Village", "Tier", "Conflict Events", "Human Deaths", "People Injured",
+                "House Damage Events", "Crop Damage Events", "Nearest Hotspot",
+            ] if c in village_risk.columns]
+            st.dataframe(
+                village_risk[village_cols],
+                width="stretch",
+                height=520,
+                hide_index=True,
+                column_config={
+                    "Tier": st.column_config.TextColumn(width="small"),
+                    "Conflict Events": st.column_config.NumberColumn("Conflicts"),
+                    "Human Deaths": st.column_config.NumberColumn("Killed"),
+                    "People Injured": st.column_config.NumberColumn("Injured"),
+                    "House Damage Events": st.column_config.NumberColumn("House"),
+                    "Crop Damage Events": st.column_config.NumberColumn("Crop"),
+                    "Nearest Hotspot": st.column_config.TextColumn("Hotspot"),
+                },
+            )
+            st.download_button(
+                "Download all village figures (CSV)",
+                village_risk.to_csv(index=False).encode("utf-8"),
+                "villages_at_risk.csv",
+                mime="text/csv",
+            )
+        with map_col:
+            head, menu = st.columns([8, 1], vertical_alignment="bottom")
+            head.markdown("**Village risk map**")
+            with menu:
+                download_menu("Village risk map",
+                              lambda v=village_risk, h=hotspots, b=basemap:
+                              village_map_svg(v, h, b), compact=True)
+            render_village_map(
+                village_risk, hotspots, style_name=basemap,
+                show_boundaries=layer_boundaries, boundary_level=boundary_level,
+            )
+        for note in village_caveats(village_risk, filtered, village_radius):
+            st.caption(note)
+
+    if not coverage_table.empty:
+        section(
+            "broadcast",
+            "Early-warning coverage",
+            "The villages the ranking says are exposed, against the people "
+            "registered to be warned there.",
+        )
+        ews = _ews()
+        min_contacts = int(coverage_stats["min_contacts"])
+        findings(ews.coverage_headlines(coverage_table, coverage_stats))
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Registrations placed", f"{coverage_stats['matched']:,}")
+        m2.metric("Villages reached", f"{coverage_stats['villages_reached']:,}")
+        m3.metric(
+            "Exposed, no contact",
+            f"{coverage_stats['no_contact']:,}",
+            delta=f"of {coverage_stats['exposed']:,} exposed villages",
+            delta_color="off",
+        )
+        m4.metric(
+            "Critical / High short of contacts",
+            f"{coverage_stats['urgent']:,}",
+            delta=f"of {coverage_stats['at_risk']:,} in those tiers",
+            delta_color="off",
+        )
+
+        gaps = ews.coverage_gaps(coverage_table)
+        gap_cols = [
+            "Village", "Tier", "Registered Contacts", "Coverage", "Conflict Events",
+            "Human Deaths", "People Injured", "Nearest Hotspot",
+        ]
+        coverage_config = {
+            "Tier": st.column_config.TextColumn(width="small"),
+            "Registered Contacts": st.column_config.NumberColumn(
+                "Registered", format="%d",
+                help="People enrolled for early warning within "
+                f"{coverage_stats['radius_km']:g} km of the village centroid.",
+            ),
+            "Coverage": st.column_config.TextColumn(
+                width="small",
+                help=f"Fewer than {min_contacts} registrations counts as thin.",
+            ),
+        }
+
+        if gaps.empty:
+            st.success(
+                "Every Critical and High village has at least "
+                f"{min_contacts} registered contacts."
+            )
+        else:
+            st.markdown("**Enrolment queue** -- worst tier and thinnest cover first")
+            st.dataframe(
+                gaps[[c for c in gap_cols if c in gaps.columns]],
+                width="stretch", hide_index=True, column_config=coverage_config,
+            )
+            st.download_button(
+                "Download enrolment queue (CSV)",
+                gaps.to_csv(index=False).encode("utf-8"),
+                "ews_enrolment_queue.csv",
+                mime="text/csv",
+            )
+
+        with st.expander(
+            f"All {len(coverage_table)} exposed villages with their coverage",
+            expanded=False,
+        ):
+            st.dataframe(
+                coverage_table[[c for c in gap_cols if c in coverage_table.columns]],
+                width="stretch", hide_index=True, column_config=coverage_config,
+            )
+
+        enrol_col, staff_col = st.columns(2)
+        labels = ews.division_labels(filtered)
+
+        with enrol_col:
+            st.markdown("**Enrolment by division**")
+            enrolment = ews.enrolment_by_division(registry, labels)
+            st.dataframe(enrolment, width="stretch", hide_index=True)
+            st.caption(
+                "Whole registry, not the filtered period -- enrolment is a standing "
+                "figure, and the divisions it is thinnest in are the ones to work on."
+            )
+
+        with staff_col:
+            st.markdown("**Reporting against registered users**")
+            if roster is None:
+                st.info(
+                    "Upload the registered app-user list in the sidebar to compare "
+                    "reporting volume against the staff enrolled in each division."
+                )
+            else:
+                staffing = ews.division_staffing(filtered, roster)
+                st.dataframe(
+                    staffing,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Reports per User": st.column_config.NumberColumn(
+                            "Reports / user", format="%.1f",
+                            help="Blank where reports arrived from a division with "
+                            "no registered user.",
+                        ),
+                    },
+                )
+                st.caption(
+                    "Division only: Range was a placeholder for almost every user "
+                    "in this export, and Beat for all of them. A low figure is as "
+                    "likely to mean accounts created and unused as a quiet division."
+                )
+
+        for note in ews.coverage_caveats(coverage_stats):
+            st.caption(note)
+
+    elif registry is not None and not village_risk.empty:
+        st.info(
+            "The registry loaded but nobody could be placed against the exposed "
+            "villages. Check that its coordinates cover the same landscape as the "
+            "centroids file."
+        )
+    elif registry is None:
+        st.caption("Upload the early-warning villager registry in the sidebar to see which "
+                   "exposed villages have nobody enrolled to be warned.")
+
+
+# ---- When ------------------------------------------------------------------
+with tab_when:
     months = temporal["peak_months"]
-    st.markdown(
-        f"**Seasonal peak:** {', '.join(months)}"
-        if months
-        else "**Seasonal peak:** none marked - conflict is spread through the year."
+    w1, w2, w3 = st.columns(3)
+    w1.metric("Injuries and deaths peak",
+              format_window(temporal["peak_window"]).split(" (")[0]
+              if temporal["peak_window"] else "Not enough timed casualties",
+              border=True)
+    w2.metric("Counted as night raids", f"{temporal.get('night_damage', 0):,}",
+              delta="damage and indirect reports", delta_color="off", border=True)
+    w3.metric("Seasonal peak", ", ".join(months) if months else "Spread through the year",
+              border=True)
+    st.caption(
+        f"Damage and indirect signs are recorded after the night, so they count as night "
+        f"raids ({NIGHT_HOUR_START:02d}:00-{NIGHT_HOUR_END:02d}:00) whatever hour they were "
+        "entered; only direct sightings are timed. "
+        + (f"Peak window detail: {format_window(temporal['peak_window'])}."
+           if temporal["peak_window"] else "")
     )
-    hourly = temporal["hourly"]
-    if float(hourly.sum()) > 0:
-        _plot(charts.hourly_profile(hourly, NIGHT_HOUR_START, NIGHT_HOUR_END))
-        download_menu("Injuries and deaths by hour",
-                      lambda h=hourly: report_charts.hourly_svg(h, NIGHT_HOUR_START,
-                                                                NIGHT_HOUR_END))
-    else:
-        st.info("No timed injuries or deaths, so no hour-of-day risk window can be "
-                "identified. Damage is counted as night conflict.")
+
+    hour_col, nd_col = st.columns(2)
+    with hour_col:
+        hourly = temporal["hourly"]
+        if float(hourly.sum()) > 0:
+            _figure("Injuries and deaths by hour",
+                    charts.hourly_profile(hourly, NIGHT_HOUR_START, NIGHT_HOUR_END),
+                    "Injuries and deaths by hour",
+                    lambda h=hourly: report_charts.hourly_svg(h, NIGHT_HOUR_START,
+                                                              NIGHT_HOUR_END))
+        else:
+            st.markdown("**Injuries and deaths by hour**")
+            st.info("No timed injuries or deaths, so no hour-of-day risk window can be "
+                    "identified. Damage is counted as night conflict.")
+    with nd_col:
+        nd = night_day_comparison(filtered)
+        if nd.empty:
+            st.markdown("**Night and day**")
+            st.info("Night/day classification unavailable (no Hour/Time column).")
+        else:
+            fig = px.bar(nd, x="Period", y="Entries", text="Entries")
+            fig.update_traces(marker_color=BRAND)
+            fig.update_layout(
+                height=320, margin=dict(t=10, b=10), showlegend=False,
+                xaxis_title="", yaxis_title="Reports",
+                yaxis_gridcolor="rgba(128,128,128,0.2)",
+            )
+            _figure("Night and day", fig, "Night and day",
+                    lambda n=nd: report_charts.bars_svg(
+                        n["Period"].tolist(), n["Entries"].tolist(), "Night and day"),
+                    subtitle="all reports, stale ones counted as night")
 
 
-# ---------------------------------------------------------------------------
-# 9. Map
-# ---------------------------------------------------------------------------
-section(
-    "map",
-    "Spatial view",
-    "Sightings by conflict type, hotspot footprints to scale, villages by "
-    "tier. Toggle layers in the sidebar.",
-)
-map_focus = _map_focus(filtered, hotspots)
-if map_focus:
-    focus_col, clear_col = st.columns([4, 1])
-    focus_col.info(f"Showing {map_focus['label']}, picked in the table above: other "
-                   "sightings are faded.")
-    if clear_col.button("Show everything", key="clear_map_focus"):
-        st.session_state.pop(MAP_FOCUS_KEY, None)
-        st.rerun()
-render_map(
-    filtered,
-    focus=map_focus,
-    hotspots=hotspots,
-    villages=village_risk,
-    style_name=basemap,
-    show_sightings=layer_sightings,
-    show_hotspots=layer_hotspots,
-    show_villages=layer_villages,
-    show_boundaries=layer_boundaries,
-    boundary_level=boundary_level,
-    beat_stats=brief["beats"],
-)
-download_menu("Spatial view",
-              lambda f=filtered, h=hotspots, b=basemap: sightings_map_svg(f, h, b))
-st.caption("The downloaded map shows sightings and hotspot footprints over the basemap.")
+# ---- Data ------------------------------------------------------------------
+with tab_data:
+    trend_col, sev_col = st.columns(2)
+    with trend_col:
+        trend = monthly_trend(filtered)
+        if trend.empty:
+            st.markdown("**Monthly sightings and conflict events**")
+            st.info("Not enough data to chart a monthly trend.")
+        else:
+            fig = px.line(
+                trend.reset_index(), x="Month", y=["Sightings", "Conflict Events"],
+                markers=True, color_discrete_sequence=[BRAND, BRAND_ALT],
+            )
+            fig.update_layout(
+                height=320, margin=dict(t=10, b=10), legend_title_text="",
+                yaxis_title="Reports", xaxis_title="Month",
+                yaxis_gridcolor="rgba(128,128,128,0.2)",
+            )
+            _figure("Monthly sightings and conflict events", fig,
+                    "Monthly sightings and conflict events",
+                    lambda t=trend: report_charts.sightings_vs_conflict_svg(t),
+                    note="Sightings mostly track reporting effort; read the conflict "
+                         "line, or the rate on the first tab.")
+    with sev_col:
+        bands = severity_distribution(filtered)
+        if bands.empty or int(bands["Count"].sum()) == 0:
+            st.markdown("**Severity distribution**")
+            st.info("No severity data to chart.")
+        else:
+            fig = px.bar(bands, x="Band", y="Count")
+            fig.update_traces(marker_color=BRAND)
+            fig.update_layout(
+                height=320, margin=dict(t=10, b=10), showlegend=False,
+                xaxis_title="", yaxis_title="Reports",
+                yaxis_gridcolor="rgba(128,128,128,0.2)",
+            )
+            _figure("Severity distribution", fig, "Severity distribution",
+                    lambda b=bands: report_charts.bars_svg(
+                        b["Band"].tolist(), b["Count"].tolist(), "Severity distribution"))
 
-
-# ---------------------------------------------------------------------------
-# 10. Trends & distributions
-# ---------------------------------------------------------------------------
-section("chart", "Supporting evidence", "The detail behind the rankings above")
-
-trend_col1, trend_col2 = st.columns(2)
-
-with trend_col1:
-    st.markdown("**Monthly sightings vs. conflict events**")
-    trend = monthly_trend(filtered)
-    if trend.empty:
-        st.info("Not enough data to chart a monthly trend.")
-    else:
-        fig = px.line(
-            trend.reset_index(), x="Month", y=["Sightings", "Conflict Events"],
-            markers=True, color_discrete_sequence=[BRAND, BRAND_ALT],
-        )
-        fig.update_layout(
-            height=320, margin=dict(t=10, b=10), legend_title_text="",
-            yaxis_title="Reports", xaxis_title="Month",
-            yaxis_gridcolor="rgba(128,128,128,0.2)",
-        )
-        st.plotly_chart(fig, width="stretch")
-        download_menu("Monthly sightings and conflict events",
-                      lambda t=trend: report_charts.sightings_vs_conflict_svg(t))
-
-with trend_col2:
-    st.markdown("**Conflict rate by division**")
     rates = division_conflict_rate(filtered)
-    if rates.empty:
-        st.info("No division data for the current filters.")
-    else:
-        _plot(charts.division_rate_bars(
-            rates, kpis["conflict_rate"], charts.division_colors(df["Division"].unique())
-        ))
-        download_menu("Conflict rate by division",
-                      lambda r=rates, k=kpis["conflict_rate"],
-                      c=charts.division_colors(df["Division"].unique()):
-                      report_charts.division_rate_svg(r, k, c))
-        st.caption(
-            "Rate, not raw volume: sighting counts mostly track reporting effort."
-        )
+    if not rates.empty:
         with st.expander("Division figures as a table", expanded=False):
             st.dataframe(rates, width="stretch")
+    if not escalating.empty:
+        with st.expander("Escalating beats as a table", expanded=False):
+            st.dataframe(
+                escalating[["Beat", "Division", "Recent vs Prior", "Human Deaths",
+                            "People Injured"]],
+                width="stretch", hide_index=True,
+            )
 
-dist_col1, dist_col2 = st.columns(2)
-
-with dist_col1:
-    st.markdown("**Severity distribution**")
-    bands = severity_distribution(filtered)
-    if bands.empty or int(bands["Count"].sum()) == 0:
-        st.info("No severity data to chart.")
-    else:
-        fig = px.bar(bands, x="Band", y="Count")
-        fig.update_traces(marker_color=BRAND)
-        fig.update_layout(
-            height=320, margin=dict(t=10, b=10), showlegend=False,
-            xaxis_title="", yaxis_title="Reports",
-            yaxis_gridcolor="rgba(128,128,128,0.2)",
-        )
-        st.plotly_chart(fig, width="stretch")
-        download_menu("Severity distribution",
-                      lambda b=bands: report_charts.bars_svg(
-                          b["Band"].tolist(), b["Count"].tolist(), "Severity distribution"))
-
-with dist_col2:
-    st.markdown("**Night vs. day**")
-    nd = night_day_comparison(filtered)
-    if nd.empty:
-        st.info("Night/day classification unavailable (no Hour/Time column).")
-    else:
-        fig = px.bar(nd, x="Period", y="Entries", text="Entries")
-        fig.update_traces(marker_color=BRAND)
-        fig.update_layout(
-            height=320, margin=dict(t=10, b=10), showlegend=False,
-            xaxis_title="", yaxis_title="Reports",
-            yaxis_gridcolor="rgba(128,128,128,0.2)",
-        )
-        st.plotly_chart(fig, width="stretch")
-        download_menu("Night and day",
-                      lambda n=nd: report_charts.bars_svg(
-                          n["Period"].tolist(), n["Entries"].tolist(), "Night and day"))
-
-
-# ---------------------------------------------------------------------------
-# 11. Data preview + download
-# ---------------------------------------------------------------------------
-section("table", "Filtered data", f"{len(filtered):,} rows after filters")
-
-preview_cols = [
-    c
-    for c in [
-        "Date", "Division", "Range", "Beat", "Latitude", "Longitude",
-        "Severity Score", "Is_Night", "Nearest Village", "Distance to Village (km)",
-        "Crop Damage", "Grain Damage", "House Damage", "Injury", "Death",
+    st.markdown(f"**Filtered reports** -- {len(filtered):,} rows after filters")
+    preview_cols = [
+        c
+        for c in [
+            "Date", "Division", "Range", "Beat", "Latitude", "Longitude",
+            "Severity Score", "Is_Night", "Nearest Village", "Distance to Village (km)",
+            "Crop Damage", "Grain Damage", "House Damage", "Injury", "Death",
+        ]
+        if c in filtered.columns
     ]
-    if c in filtered.columns
-]
-st.dataframe(filtered[preview_cols].head(500), width="stretch")
-st.caption(f"Showing up to 500 of {len(filtered):,} filtered rows.")
-st.download_button(
-    "Download filtered data (CSV)",
-    filtered.to_csv(index=False).encode("utf-8"),
-    "filtered_elephant_data.csv",
-    mime="text/csv",
-)
-st.warning(
-    "Field exports carry victim and reporter names, often in the free-text "
-    "description. This app has no access control -- check before sharing."
-)
-
-
-# ---------------------------------------------------------------------------
-# 12. Report generation
-# ---------------------------------------------------------------------------
-section(
-    "report",
-    "Intelligence brief",
-    "Self-contained HTML with the maps embedded, for printing or email",
-)
-
-if st.button("Generate brief", type="primary"):
-    from core import refuge_view
-
-    try:
-        try:
-            brief_refuges = refuge_view.for_brief(filtered, villages)
-        except Exception:  # noqa: BLE001 - the brief goes out without the section
-            logger.exception("Day refuges for the brief failed")
-            brief_refuges = None
-        html = generate_html_report(
-            filtered,
-            filtered["Date"].min(),
-            filtered["Date"].max(),
-            recent_days=recent_days,
-            hotspots=hotspots,
-            village_risk=village_risk,
-            filters={
-                "divisions": divisions,
-                "ranges": ranges,
-                "beats": beats,
-                "severity": severity_choice,
-            },
-            basemap_style_name=basemap,
-            coverage=coverage_table,
-            coverage_stats=coverage_stats,
-            refuges=brief_refuges,
-        )
-    except Exception as exc:  # noqa: BLE001 - report generation must never 500
-        logger.exception("Report generation failed")
-        st.error(f"Could not generate the brief: {exc}")
-    else:
-        st.download_button(
-            "Download brief (HTML)", html, "Elephant_Conflict_Brief.html",
-            mime="text/html",
-        )
-        st.success("Brief generated. Click the button above to download.")
+    st.dataframe(filtered[preview_cols].head(500), width="stretch", height=360)
+    st.caption(f"Showing up to 500 of {len(filtered):,} filtered rows.")
+    st.download_button(
+        "Download filtered data (CSV)",
+        filtered.to_csv(index=False).encode("utf-8"),
+        "filtered_elephant_data.csv",
+        mime="text/csv",
+    )
+    st.warning(
+        "Field exports carry victim and reporter names, often in the free-text "
+        "description. This app has no access control -- check before sharing."
+    )

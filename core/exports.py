@@ -86,7 +86,7 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "figure"
 
 
-def download_menu(name: str, make_svg: Callable[[], Optional[str]]) -> None:
+def download_menu(name: str, make_svg: Callable[[], Optional[str]], compact: bool = False) -> None:
     """A small Download menu under a figure: SVG, PNG and PDF.
 
     ``make_svg`` is called only when a button is pressed, once per press.
@@ -112,7 +112,12 @@ def download_menu(name: str, make_svg: Callable[[], Optional[str]]) -> None:
                 return f"{name} could not be exported: {type(exc).__name__}: {exc}\n".encode()
         return run
 
-    with st.popover("Download", icon=":material/download:"):
+    # Compact is the bare icon, for a chart's title row; it says what it
+    # does on hover, and opens the same menu.
+    popover = (st.popover(":material/download:", type="tertiary",
+                          help=f"Download {name} as SVG, PNG or PDF")
+               if compact else st.popover("Download", icon=":material/download:"))
+    with popover:
         st.caption(name)
         st.download_button("SVG (vector)", guarded(lambda: svg().encode("utf-8")),
                            f"{slug}.svg", mime="image/svg+xml", on_click="ignore",

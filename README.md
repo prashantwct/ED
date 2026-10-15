@@ -308,7 +308,29 @@ it is picked up automatically; the same applies to any partner added to
 
 ## What it produces
 
-**Conflict trends.** Directly under the assessment, before any ranking: monthly
+**How the page reads.** The headline numbers and the assessment stay at the
+top, with the Generate brief button beside them. Everything else sits in five
+tabs, one per question a manager asks, so no question pushes another off the
+screen:
+
+* *Is it getting worse?* -- monthly conflict by type, conflict rate,
+  casualties, the seasonal grid, divisions over time, escalating beats and
+  the conflict rate by division.
+* *Where to act* -- the beat tier counts, the spatial view, and under it one
+  table at a time (beat priorities, which animals, movement hotspots); ticking
+  a row shows it on the map just above.
+* *Villages at risk* -- the village ranking beside its map, and early-warning
+  coverage when a registry is loaded.
+* *When* -- the casualty peak window, how many reports count as night raids,
+  the seasonal peak, the hour-of-day and night/day charts.
+* *Data* -- monthly sightings, severity, division and escalation tables, the
+  filtered rows and their download.
+
+Each chart's download sits as an icon in its title row rather than a button
+under it, and wide tables show the columns a decision needs, with every
+column in their CSV.
+
+**Conflict trends.** First on the trends tab, before any ranking: monthly
 conflict stacked by type (fatality darkest, at the base, so a growing dark band
 reads before a growing total) with a three-month average and the escalation
 window shaded; the monthly conflict rate against the period average, so more
