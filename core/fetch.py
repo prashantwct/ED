@@ -143,13 +143,11 @@ def fetch_sightings(
             failure. Never a traceback.
     """
     try:
-        from tools.scrape_sightings import (
+        from tools.fetch_sightings import (
             BASE_URL,
-            START_DATE,
-            ScrapeError,
-            records_to_csv,
-            scrape,
-            today,
+            FetchError as ClientError,
+            ForestAlertsClient,
+            rows_to_csv_text,
         )
     except ImportError as error:  # requests missing from the deployment
         raise FetchError(
@@ -158,7 +156,13 @@ def fetch_sightings(
             "add requests to requirements.txt and reboot the app."
         ) from error
 
-    window_end = end_date or today()
+    if not (email and password):
+        raise FetchError(
+            "Enter your Forest Alerts email and password to fetch the register. "
+            "The sign-in happens once and nothing is stored."
+        )
+
+    window_start, window_end = window(end_date)
     pages = 0
 
     def _on_page(page: int, rows: int) -> None:
@@ -168,22 +172,13 @@ def fetch_sightings(
             progress(page, rows)
 
     try:
-        records = scrape(
-            base_url=base_url or BASE_URL,
-            email=email or None,
-            password=password or None,
-            cookie=cookie or None,
-            api_path=api_path or None,
-            api_login_path=api_login_path or None,
-            export_path=export_path or None,
-            headers=headers or None,
-            start_date=START_DATE,
-            end_date=window_end,
-            delay=delay,
-            progress=_on_page,
-        )
-        text, columns = records_to_csv(records)
-    except ScrapeError as error:
+        client = ForestAlertsClient(base_url or BASE_URL, verify=True)
+        client.login(email, password)
+        # The site's listing is the whole register; it is not windowed by
+        # date here, so a fetch is always a full, gap-free pull.
+        records = client.fetch_sightings(delay=delay, on_page=_on_page)
+        text, columns = rows_to_csv_text(records)
+    except ClientError as error:
         # Deliberately not chained into the UI: the message is written to
         # be read by a forest officer, and a traceback is not.
         raise FetchError(str(error)) from error
@@ -195,12 +190,12 @@ def fetch_sightings(
 
     stamp = date.today().isoformat()
     return FetchResult(
-        data=text.encode("utf-8"),
-        name=f"forestalerts-{START_DATE}-to-{window_end}.csv",
+        data=text.encode("utf-8-sig"),
+        name=f"forestalerts-{stamp}.csv",
         rows=len(records),
         pages=pages,
         columns=columns,
-        start_date=START_DATE,
+        start_date=window_start,
         end_date=window_end,
         fetched_at=stamp,
     )

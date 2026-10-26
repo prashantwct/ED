@@ -241,51 +241,16 @@ def fetch_panel(
     with st.expander("Sign in to Forest Alerts and fetch the register", expanded=False):
         st.markdown(
             f'<div class="lp-fetch__lede">Signs in to '
-            f'<code>{escape(SOURCE_URL)}</code> and reads the sightings '
-            f'listing page by page, from {escape(start_date)} to '
-            f'{escape(end_date)}, into the same CSV the uploader takes.</div>',
+            f'<code>{escape(SOURCE_URL)}</code> with your account and reads the '
+            f'whole sightings register into the same CSV the uploader takes. '
+            f'Every fetch is a full refresh.</div>',
             unsafe_allow_html=True,
         )
-        st.markdown(f'<div class="lp-note">{escape(BROWSER_NOTE)}</div>',
-                    unsafe_allow_html=True)
         with st.form("forestalerts_signin", clear_on_submit=True):
             email = st.text_input("Email", autocomplete="username",
                                   placeholder="you@mpforest.gov.in")
             password = st.text_input("Password", type="password",
                                      autocomplete="current-password")
-            cookie = st.text_input(
-                "Session cookie (only if your sign-in needs a one-time code)",
-                type="password", placeholder="laravel_session=...",
-                help="Some accounts sign in with an OTP or through single "
-                     "sign-on, which a form cannot complete. Copy the session "
-                     "cookie from a browser already signed in and paste it "
-                     "here instead of the email and password.",
-            )
-            st.caption(
-                "Forest Alerts serves its rows over an API rather than in the "
-                "page, so the app has to be told where to ask. Open the "
-                "sightings screen with the browser's Network tab showing and "
-                "read the addresses off it."
-            )
-            export = st.text_input(
-                "Export endpoint", value=export_path,
-                placeholder="/admin/sightings/export",
-                help="What the listing's Export button requests -- click it "
-                     "with the Network tab open. This is the best source "
-                     "there is: one request for the register as the "
-                     "department publishes it. Given this, the rows endpoint "
-                     "below is not used.",
-            )
-            api = st.text_input("Rows endpoint", value=api_path,
-                                placeholder="/api/sightings",
-                                help="What the page requests to fill its "
-                                     "table. Used when there is no export.")
-            api_login = st.text_input(
-                "Sign-in endpoint", value=api_login_path,
-                placeholder="/api/login",
-                help="Only needed to use an email and password. Leave it empty "
-                     "and sign in with a session cookie instead.",
-            )
             submitted = st.form_submit_button("Fetch the register",
                                               type="primary")
         st.markdown(f'<div class="lp-note">{escape(CREDENTIAL_NOTE)}</div>',
@@ -293,9 +258,7 @@ def fetch_panel(
 
     if not submitted:
         return None
-    return FetchRequest(email=email.strip(), password=password,
-                        cookie=cookie.strip(), export_path=export.strip(),
-                        api_path=api.strip(), api_login_path=api_login.strip())
+    return FetchRequest(email=email.strip(), password=password, cookie="")
 
 
 def source_note(label: str, detail: str) -> None:
