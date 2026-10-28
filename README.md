@@ -513,8 +513,35 @@ with the linked raids, and a land-cover card per refuge shows what is around
 it. Clusters of sightings say where herds were reported, not where every herd
 is: a refuge nobody reports from will not appear.
 
-The view is laid out as a field atlas plate: the map sheet on the left, a
-register panel beside it. The panel leads with **what to act on tonight** --
+The view opens on the **Dashboard** tab: the atlas plate itself, embedded and
+filled with the current run. `assets/refuge_dashboard.html` is the plate, a
+D3 sheet with a register panel, a village finder, a watch list and the
+charts, vendored with its data lifted out and five placeholders in its place.
+`core/refuge_dashboard.py` puts the analysis back in — one FeatureCollection
+of refuges, raid areas and a line per linked raid, under `core/refuges.py`'s
+own column names, so it is a pass-through rather than a translation. The
+same bytes are offered as a download: the file carries its own register, so
+it opens on a phone in a range office with no app behind it.
+
+The plate is vendored rather than generated. It is a design, and the honest
+way to keep a design is to keep it; rebuilding that sheet out of Python every
+release would be a slow way of losing it.
+
+Two things there are easy to get wrong. The day every recency band is
+measured from comes off the register's own last day, not the clock, so a file
+that ends in March does not open with every refuge two seasons stale. And the
+register is an uploaded CSV, so a village or beat name is attacker-controllable
+text that ends up inside a `<script>` in a frame with same-origin access to
+the app — `json.dumps` does not escape `<`, so the embedded JSON escapes
+`<`, `>`, `&` and the two line separators JSON allows and JavaScript does not.
+They are ordinary JSON string escapes, so the value a reader sees is
+unchanged; it simply cannot carry a tag.
+
+The **Map and tables** tab keeps what the plate does not do: the pydeck map
+over a real basemap with the forest boundary outlines under the marks,
+sortable registers, the CSV/GeoJSON/KML downloads and the land-cover card per
+refuge. It is laid out as a field atlas plate too: the map sheet on the left,
+a register panel beside it. The panel leads with **what to act on tonight** --
 the refuges used in the last seven days, newest first, each with the edge to
 watch at dusk and the villages to warn before dark, and the lot copyable as a
 message, because that is how it reaches a range office.
@@ -620,6 +647,7 @@ core/esri_landcover.py Windowed reads of Esri 10 m land cover
 core/refuges.py      Day refuges: detection, cover, raid links, actions
 core/refuge_view.py  The day refuges view
 core/refuge_report.py Day refuges map and brief section
+core/refuge_dashboard.py The vendored atlas plate, filled with a run
 core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief

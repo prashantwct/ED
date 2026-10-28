@@ -1,0 +1,1248 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Elephant Day Refuges</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: field atlas plate. Map sheet dominates on the left; a register panel (key, timing, refuge list, detail) runs beside it. Stacks to one column on phones. */
+:root{
+  --paper:#F4F5EF; --sheet:#E6E9DD; --panel:#FAFBF6; --ink:#1C241F; --muted:#56615A; --faint:#8B948A; --rule:#D2D7C8;
+  --water:#4F86A8; --rail:#857E70; --road:#B5AC96; --state:#86759A;
+  --raid:#D55E00; --raid-strong:#8A2F00;
+  --g-lone:#0072B2; --g-party:#009E73; --g-family:#CC79A7; --g-mixed:#E69F00; --g-unrec:#7B857C;
+  --r0:#00474D; --r1:#2B8187; --r2:#78B2AD; --r3:#B2C4BA;
+  --bar:#7C887F; --bar-pk:#1C241F; --band:#E4E8DB; --crop-bar:#A7B094;
+  --lc-tree:#4C7B4B; --lc-range:#B4AB72; --lc-crop:#E0BF5E; --lc-built:#958A80; --lc-water:#4F86A8;
+  --tip-bg:#1C241F; --tip-fg:#F4F5EF;
+  --font-display:"Barlow Semi Condensed","Arial Narrow",Arial,sans-serif;
+  --font-body:"Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#121714; --sheet:#18201B; --panel:#1A221D; --ink:#E1E7DE; --muted:#9DA99F; --faint:#6D786F; --rule:#2C3730;
+    --water:#6C9FC0; --rail:#8C8576; --road:#4E4C40; --state:#9887AE;
+    --raid:#F0782A; --raid-strong:#FFB385;
+    --g-lone:#4AA3E2; --g-party:#2CC196; --g-family:#E392C3; --g-mixed:#F2B53F; --g-unrec:#8F998F;
+    --r0:#86EADF; --r1:#43ADA5; --r2:#2E716D; --r3:#34433E;
+    --bar:#7E8B82; --bar-pk:#E1E7DE; --band:#1F2924; --crop-bar:#79826A;
+    --lc-tree:#6EA06B; --lc-range:#A29A68; --lc-crop:#C8A84D; --lc-built:#857B74; --lc-water:#6C9FC0;
+    --tip-bg:#E1E7DE; --tip-fg:#121714;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#121714; --sheet:#18201B; --panel:#1A221D; --ink:#E1E7DE; --muted:#9DA99F; --faint:#6D786F; --rule:#2C3730;
+  --water:#6C9FC0; --rail:#8C8576; --road:#4E4C40; --state:#9887AE;
+  --raid:#F0782A; --raid-strong:#FFB385;
+  --g-lone:#4AA3E2; --g-party:#2CC196; --g-family:#E392C3; --g-mixed:#F2B53F; --g-unrec:#8F998F;
+  --r0:#86EADF; --r1:#43ADA5; --r2:#2E716D; --r3:#34433E;
+  --bar:#7E8B82; --bar-pk:#E1E7DE; --band:#1F2924; --crop-bar:#79826A;
+  --lc-tree:#6EA06B; --lc-range:#A29A68; --lc-crop:#C8A84D; --lc-built:#857B74; --lc-water:#6C9FC0;
+  --tip-bg:#E1E7DE; --tip-fg:#121714;
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{height:100%}
+body{height:100%;background:var(--paper);color:var(--ink);font-family:var(--font-body);font-size:14px;line-height:1.45}
+button,select,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--g-lone);outline-offset:2px}
+
+.app{height:100%;display:flex;flex-direction:column;gap:12px;padding-block:14px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:10px 32px}
+.top h1{font-family:var(--font-display);font-weight:700;font-size:28px;line-height:1;margin:0;letter-spacing:.005em;text-wrap:balance}
+.sub{margin:6px 0 0;color:var(--muted);max-width:72ch;font-size:13.5px}
+.stats{display:flex;flex-wrap:wrap;gap:8px 28px;margin:0}
+.stats>div{display:grid;grid-template-columns:auto;align-content:end}
+.stats dt{font-family:var(--font-display);font-weight:600;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.stats dd{margin:0;font-family:var(--font-display);font-weight:600;font-size:26px;line-height:1.05;font-variant-numeric:tabular-nums}
+.stats dd small{font-family:var(--font-body);font-weight:400;font-size:12px;color:var(--muted);margin-left:6px}
+
+.main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,392px);gap:16px}
+.sheet{position:relative;min-height:0;min-width:0;background:var(--sheet);border:1px solid var(--rule);border-radius:4px;overflow:hidden}
+#map{display:block;width:100%;height:100%;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
+#map:active{cursor:grabbing}
+.panel{min-height:0;min-width:0;overflow-y:auto;padding-right:4px;scrollbar-gutter:stable}
+
+/* map overlays */
+.ctl{position:absolute;display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--rule);border-radius:4px;padding:4px}
+.ctl.tl{top:10px;left:10px}
+.ctl.tr{top:10px;right:10px;flex-direction:column;padding:3px;gap:2px}
+.ctl-lab{font-family:var(--font-display);font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-left:4px}
+.zbtn{width:30px;height:30px;border:0;background:transparent;border-radius:3px;cursor:pointer;font-size:17px;line-height:1;display:grid;place-items:center;color:var(--ink)}
+.zbtn:hover{background:var(--sheet)}
+.north{display:grid;place-items:center;padding:4px 0 2px;border-top:1px solid var(--rule);margin-top:2px}
+.north svg{display:block}
+.scalebox{position:absolute;left:12px;bottom:10px;display:flex;flex-direction:column;gap:2px;pointer-events:none}
+.scalebox .proj{font-family:var(--font-mono);font-size:10px;color:var(--muted)}
+.credit{position:absolute;right:10px;bottom:8px;font-size:10.5px;color:var(--faint);text-align:right;pointer-events:none;max-width:60%}
+.tip{position:absolute;z-index:5;pointer-events:none;background:var(--tip-bg);color:var(--tip-fg);font-size:12.5px;line-height:1.35;padding:7px 9px;border-radius:3px;max-width:260px;box-shadow:0 2px 10px rgb(0 0 0 / .18)}
+.tip b{font-family:var(--font-display);font-weight:700;font-size:13.5px;letter-spacing:.02em}
+
+/* segmented + chips */
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:3px;overflow:hidden;background:var(--panel)}
+.seg button{border:0;background:transparent;padding:4px 10px;cursor:pointer;font-size:12.5px;color:var(--muted);white-space:nowrap}
+.seg button+button{border-left:1px solid var(--rule)}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+.ctl .seg{border:0}
+
+.panel h2.p-h{font-family:var(--font-display);font-weight:700;font-size:13px;letter-spacing:.1em;text-transform:uppercase;margin:0;color:var(--ink)}
+.p-sec{display:flex;flex-direction:column;gap:10px;padding:14px 0 16px;border-bottom:1px solid var(--rule)}
+.p-sec:first-child{padding-top:2px}
+.key-block{display:flex;flex-direction:column;gap:6px}
+.key-block h3{margin:0;font-size:12px;font-weight:700;color:var(--muted);display:flex;justify-content:space-between;gap:8px}
+.key-block h3 .hint{font-weight:400;color:var(--faint)}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--rule);background:var(--panel);border-radius:3px;padding:3px 8px 3px 6px;cursor:pointer;font-size:12.5px;line-height:1.3}
+.chip .n{font-family:var(--font-mono);font-size:11px;color:var(--muted)}
+.chip[aria-pressed="false"]{opacity:.45;text-decoration:line-through;text-decoration-color:var(--faint)}
+.chip.static{cursor:default}
+.sw{display:inline-block;width:11px;height:11px;border-radius:50%;background:var(--c);flex:none}
+.c-lone{--c:var(--g-lone)} .c-party{--c:var(--g-party)} .c-family{--c:var(--g-family)} .c-mixed{--c:var(--g-mixed)} .c-unrec{--c:var(--g-unrec)}
+.c-r0{--c:var(--r0)} .c-r1{--c:var(--r1)} .c-r2{--c:var(--r2)} .c-r3{--c:var(--r3)}
+.mode-recency #groupChips .sw{display:none}
+.ring{display:inline-block;width:15px;height:15px;flex:none}
+.ring circle{fill:none;stroke:var(--muted);stroke-width:1.5}
+.sym{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink)}
+.sym svg{flex:none;overflow:visible}
+.symrow{display:flex;flex-wrap:wrap;gap:4px 14px}
+.tog{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer}
+.tog input{accent-color:var(--ink);margin:0}
+.rowline{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+.ctx-key{font-size:12px;color:var(--muted)}
+.p-note{margin:0;font-size:13px;color:var(--muted)}
+.p-note strong{color:var(--ink);font-weight:700}
+.chart svg{display:block;width:100%;height:auto}
+.chart text{font-family:var(--font-mono);font-size:9.5px;fill:var(--muted)}
+.chart .lab{font-family:var(--font-body);font-size:10px}
+.chart .grid{stroke:var(--rule);stroke-width:1}
+.chart .band{fill:var(--band)}
+.chart .bar{fill:var(--bar)}
+.chart .bar.pk{fill:var(--bar-pk)}
+.chart .b-crop{fill:var(--crop-bar)} .chart .b-house{fill:var(--raid)} .chart .b-injury{fill:var(--raid-strong)}
+.legend-inline{display:flex;gap:12px;font-size:12px;color:var(--muted)}
+.legend-inline i{display:inline-block;width:9px;height:9px;margin-right:5px;vertical-align:-1px}
+
+/* list */
+.list-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+.list-head select{border:1px solid var(--rule);background:var(--panel);border-radius:3px;padding:3px 6px;font-size:12.5px}
+.list{display:flex;flex-direction:column}
+.row{display:grid;grid-template-columns:14px 38px minmax(0,1fr) auto;align-items:center;gap:4px 10px;width:100%;text-align:left;border:0;border-bottom:1px solid var(--rule);background:transparent;padding:8px 4px;cursor:pointer}
+.row:hover{background:var(--sheet)}
+.row .id{font-family:var(--font-display);font-weight:700;font-size:15px;letter-spacing:.02em}
+.row .what{min-width:0}
+.row .what span{display:block;font-size:12.5px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .what .s2{color:var(--muted);font-size:12px}
+.row .num{text-align:right;font-variant-numeric:tabular-nums;font-size:12.5px;line-height:1.3;white-space:nowrap}
+.row .num .s2{display:block;color:var(--muted);font-size:11.5px}
+.row .hot{color:var(--ink);font-weight:700}
+.dia{width:11px;height:11px;flex:none}
+.dia path{fill:var(--raid);stroke:none}
+.dia.gap path{fill:none;stroke:var(--raid);stroke-width:1.8}
+.list-empty{padding:14px 4px;color:var(--muted);font-size:13px}
+
+/* detail */
+#detail{padding-top:2px}
+.back{border:1px solid var(--rule);background:var(--panel);border-radius:3px;padding:4px 10px;cursor:pointer;font-size:12.5px}
+.d-head{display:flex;flex-direction:column;gap:8px;padding-bottom:14px;border-bottom:1px solid var(--rule)}
+.d-title{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-top:6px}
+.d-title h2{font-family:var(--font-display);font-weight:700;font-size:34px;line-height:1;margin:0;letter-spacing:.01em}
+.d-title .k{font-size:15px;color:var(--muted)}
+.d-title .sw{width:13px;height:13px;align-self:center}
+.d-title .dia{width:14px;height:14px;align-self:center}
+.pills{display:flex;flex-wrap:wrap;gap:5px}
+.pill{font-size:11.5px;border:1px solid var(--rule);border-radius:3px;padding:1px 7px;color:var(--muted)}
+.pill.strong{border-color:var(--ink);color:var(--ink);font-weight:700}
+.pill.warn{border-color:var(--raid);color:var(--raid-strong)}
+.d-status{margin:0;font-size:13.5px}
+.d-sec{display:flex;flex-direction:column;gap:8px;padding:14px 0;border-bottom:1px solid var(--rule)}
+.d-sec h3{margin:0;font-family:var(--font-display);font-weight:700;font-size:12.5px;letter-spacing:.1em;text-transform:uppercase}
+.actions{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+.actions li{position:relative;padding-left:16px;font-size:13.5px;line-height:1.4}
+.actions li::before{content:"";position:absolute;left:2px;top:.55em;width:7px;height:7px;border:1.5px solid var(--ink);transform:rotate(45deg)}
+.kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px;margin:0}
+.kv.one{grid-template-columns:minmax(0,1fr)}
+.kv dt{font-size:11.5px;color:var(--muted)}
+.kv dd{margin:0;font-size:14px;font-variant-numeric:tabular-nums}
+.kv dd small{color:var(--muted);font-size:12px}
+.mstrip{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:3px;max-width:330px}
+.mstrip span{display:grid;place-items:center;height:22px;font-family:var(--font-mono);font-size:10.5px;color:var(--faint);border:1px solid var(--rule);border-radius:2px}
+.mstrip span.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.cover{display:flex;height:12px;border-radius:2px;overflow:hidden;max-width:330px}
+.cover i{display:block;height:100%}
+.cover-key{display:flex;flex-wrap:wrap;gap:3px 12px;font-size:12px;color:var(--muted)}
+.cover-key i{display:inline-block;width:9px;height:9px;margin-right:5px;vertical-align:-1px}
+.lc-tree{background:var(--lc-tree)} .lc-range{background:var(--lc-range)} .lc-crop{background:var(--lc-crop)} .lc-built{background:var(--lc-built)} .lc-water{background:var(--lc-water)}
+.coords{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.coords code{font-family:var(--font-mono);font-size:12.5px;user-select:all;-webkit-user-select:all}
+.linkbtn{border:0;background:none;padding:0;color:inherit;text-decoration:underline;text-decoration-color:var(--faint);text-underline-offset:2px;cursor:pointer;font-weight:700}
+.copy{border:1px solid var(--rule);background:var(--panel);border-radius:3px;padding:2px 8px;font-size:12px;cursor:pointer}
+.mini figcaption{font-size:12px;color:var(--muted);margin-top:2px}
+.mini{margin:0}
+
+/* map symbols */
+.ctx-river{fill:none;stroke:var(--water);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.ctx-rail-a{fill:none;stroke:var(--rail);stroke-width:2.6}
+.ctx-rail-b{fill:none;stroke:var(--sheet);stroke-width:1.2;stroke-dasharray:7 7}
+.ctx-road{fill:none;stroke:var(--road);stroke-width:1.3;stroke-linecap:round}
+.ctx-state{fill:none;stroke:var(--state);stroke-width:1.3;stroke-dasharray:9 3 2 3}
+.river-label{fill:var(--water);font-family:var(--font-body);font-style:italic;font-size:12.5px}
+.state-label{fill:var(--state);font-family:var(--font-display);font-weight:600;font-size:12px;letter-spacing:.24em}
+.town{fill:var(--sheet);stroke:var(--ink);stroke-width:1.2}
+.town-label{fill:var(--ink);font-family:var(--font-display);font-weight:600;font-size:12.5px}
+.div-label{fill:var(--faint);font-family:var(--font-display);font-weight:600;font-size:11.5px;letter-spacing:.2em;text-transform:uppercase}
+.halo{paint-order:stroke fill;stroke:var(--sheet);stroke-width:3.5px;stroke-linejoin:round}
+.fp{fill:var(--c);fill-opacity:.15;stroke:var(--c);stroke-width:1.3;cursor:pointer}
+.fp.conf-Probable{stroke-dasharray:5 3}
+.fp.conf-Possible{stroke-dasharray:1.4 2.6}
+.fp:hover{fill-opacity:.28}
+.fp.is-sel{stroke-width:2.6;fill-opacity:.3}
+.ctr{fill:var(--c);stroke:var(--sheet);stroke-width:1.2;cursor:pointer}
+.lnk{stroke:var(--c);stroke-opacity:.5;stroke-width:.9;fill:none;pointer-events:none}
+.ep{cursor:default}
+.ep-crop{fill:var(--c)}
+.ep-house{fill:var(--raid);stroke:var(--sheet);stroke-width:.8}
+.ep-injury{fill:none;stroke:var(--raid-strong);stroke-width:2}
+.ra{fill:var(--raid);stroke:var(--sheet);stroke-width:1.3;cursor:pointer}
+.ra.gap{fill:var(--sheet);stroke:var(--raid);stroke-width:2.2}
+.ra.hurt{stroke:var(--ink);stroke-width:2}
+.ra.is-sel{stroke:var(--ink);stroke-width:2.6}
+.dim{opacity:.2}
+.id-label{fill:var(--ink);font-family:var(--font-display);font-weight:700;font-size:11.5px;pointer-events:none}
+.id-label.ra-l{fill:var(--raid-strong)}
+.sel-line{fill:none;stroke:var(--ink);stroke-width:1.4;stroke-dasharray:4 3}
+.sel-cross{fill:none;stroke:var(--ink);stroke-width:1.8}
+.sel-text{fill:var(--ink);font-family:var(--font-mono);font-size:10.5px}
+
+/* refinements */
+.ctl.tl{flex-direction:column;align-items:stretch;gap:3px}
+.ctl-row{display:flex;align-items:center;gap:6px}
+.ctl-row .ctl-lab{min-width:66px}
+.jump button{color:var(--ink)}
+.jump button:hover{background:var(--sheet)}
+.fp.hl{stroke-width:3.2;fill-opacity:.4}
+.ctr.hl{stroke:var(--ink);stroke-width:2}
+.ra.hl{stroke:var(--ink);stroke-width:2.8}
+.statbtn{all:unset;cursor:pointer;border-radius:3px;text-decoration:underline dotted var(--faint);text-decoration-thickness:2px;text-underline-offset:4px}
+.statbtn:hover{text-decoration-color:var(--ink)}
+.statbtn:focus-visible{outline:2px solid var(--g-lone);outline-offset:3px}
+.statbtn[aria-pressed="true"]{color:var(--raid-strong);text-decoration-style:solid;text-decoration-color:var(--raid)}
+.finder{display:flex;gap:6px}
+.finder input{flex:1;min-width:0;border:1px solid var(--rule);background:var(--panel);border-radius:3px;padding:6px 9px;font-size:13.5px}
+.finder input::placeholder{color:var(--faint)}
+.vres{display:flex;flex-direction:column;gap:6px;font-size:13px}
+.vres .vname{font-family:var(--font-display);font-weight:700;font-size:16px}
+.vres dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 10px;margin:0}
+.vres dt{color:var(--muted);font-size:12px;padding-top:1px}
+.vres dd{margin:0;display:flex;flex-wrap:wrap;gap:4px 8px}
+.vres .sugg{display:flex;flex-wrap:wrap;gap:5px}
+.tiny{font-size:11.5px;color:var(--faint);margin:0}
+.watch{display:flex;flex-direction:column}
+.wrow{display:grid;grid-template-columns:40px minmax(0,1fr);gap:2px 10px;text-align:left;border:0;border-bottom:1px solid var(--rule);background:transparent;padding:9px 4px;cursor:pointer;width:100%;align-items:start}
+.wrow:hover{background:var(--sheet)}
+.wrow .id{grid-row:1 / span 3;font-family:var(--font-display);font-weight:700;font-size:15px;line-height:1.25;display:flex;align-items:center;gap:5px}
+.wrow .id .sw{width:9px;height:9px}
+.wrow .l1{font-size:12px;color:var(--muted)}
+.wrow .l1 b{color:var(--ink);font-weight:700}
+.wrow .l2{font-size:13px;line-height:1.38}
+.wrow .l3{font-size:12px;color:var(--muted);line-height:1.35}
+.watch-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.watch-tools textarea{width:100%;min-height:140px;border:1px solid var(--rule);background:var(--panel);border-radius:3px;padding:8px;font-family:var(--font-mono);font-size:11.5px}
+.raidviz{display:grid;grid-template-columns:116px minmax(0,1fr);gap:14px;align-items:center}
+.rose{display:block;width:116px;height:116px}
+.rose .ring{fill:none;stroke:var(--rule)}
+.rose .ax{stroke:var(--rule)}
+.rose .wedge{fill:var(--c);fill-opacity:.85;stroke:var(--sheet);stroke-width:.8}
+.rose text{font-family:var(--font-mono);font-size:9px;fill:var(--muted)}
+.raidviz p{margin:0;font-size:13px}
+.raidviz p span{display:block;color:var(--muted);font-size:12px;margin-top:3px}
+.near-areas{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:13px}
+
+@media (max-width:880px){
+  html,body,.app{height:auto}
+  .main{grid-template-columns:minmax(0,1fr)}
+  .sheet{height:64vh;min-height:400px;max-height:620px}
+  .panel{overflow:visible;padding-right:0}
+  .top h1{font-size:25px}
+  .stats dd{font-size:22px}
+}
+@media (max-width:480px){
+  .ctl.tl .ctl-lab{display:none}
+  .credit{display:none}
+  .kv{grid-template-columns:minmax(0,1fr)}
+}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+</style>
+
+<div class="app" id="app">
+  <header class="top">
+    <div>
+      <h1>Elephant Day Refuges</h1>
+      <p class="sub" id="sub">__ED_SUB__</p>
+    </div>
+    <dl class="stats" id="stats"></dl>
+  </header>
+
+  <div class="main">
+    <section class="sheet" id="sheet" aria-label="Map of day refuges and raid areas">
+      <svg id="map" role="img" aria-label="Map of elephant day refuges, raid areas and linked raids"></svg>
+      <div class="ctl tl">
+        <div class="ctl-row">
+          <span class="ctl-lab">Colour by</span>
+          <div class="seg" id="colorSeg" role="group" aria-label="Colour refuges by">
+            <button type="button" data-v="group" aria-pressed="true">Group</button>
+            <button type="button" data-v="recency" aria-pressed="false">Last used</button>
+          </div>
+        </div>
+        <div class="ctl-row">
+          <span class="ctl-lab">Go to</span>
+          <div class="seg jump" id="jumpSeg" role="group" aria-label="Zoom to a forest division">__ED_JUMP__</div>
+        </div>
+      </div>
+      <div class="ctl tr">
+        <button type="button" class="zbtn" id="zin" aria-label="Zoom in">+</button>
+        <button type="button" class="zbtn" id="zout" aria-label="Zoom out">−</button>
+        <button type="button" class="zbtn" id="zreset" aria-label="Show whole area" title="Show whole area">
+          <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true"><path d="M1.5 5V1.5H5M10 1.5h3.5V5M13.5 10v3.5H10M5 13.5H1.5V10" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+        </button>
+        <div class="north" aria-label="North is up">
+          <svg width="20" height="30" viewBox="0 0 20 30" aria-hidden="true"><text x="10" y="9" text-anchor="middle" style="font:700 10px var(--font-display);fill:var(--ink)">N</text><path d="M10 12 L14 27 L10 23.5 L6 27 Z" style="fill:var(--ink)"/></svg>
+        </div>
+      </div>
+      <div class="scalebox"><svg id="scale" width="150" height="26" aria-hidden="true"></svg><span class="proj">UTM zone 44N · WGS 84</span></div>
+      <div class="credit">Rivers, railway, roads, state line: Natural Earth 1:10m. Town positions approximate.</div>
+      <div class="tip" id="tip" hidden></div>
+    </section>
+
+    <aside class="panel" id="panel">
+      <section id="overview">
+        <div class="p-sec">
+          <h2 class="p-h">Find a village</h2>
+          <div class="finder">
+            <input type="search" id="vq" list="vlist" placeholder="Village name, e.g. Bagdari" autocomplete="off" aria-label="Village name">
+            <button type="button" class="copy" id="vclear" hidden>Clear</button>
+          </div>
+          <datalist id="vlist"></datalist>
+          <div class="vres" id="vres"></div>
+        </div>
+
+        <div class="p-sec">
+          <div class="rowline"><h2 class="p-h">Occupied this week</h2><span class="tiny" id="watchCount"></span></div>
+          <p class="p-note">Refuges used in the last 7 days, newest first, with the edge to watch at dusk and the villages to warn before dark.</p>
+          <div class="watch" id="watch"></div>
+          <div class="watch-tools">
+            <button type="button" class="copy" id="copyWatch">Copy as message</button>
+            <span class="tiny" id="copyNote"></span>
+            <textarea id="watchText" readonly hidden aria-label="Watch list text"></textarea>
+          </div>
+        </div>
+
+        <div class="p-sec">
+          <h2 class="p-h">Map key</h2>
+          <div class="key-block">
+            <h3>Day refuges <span class="hint">Tap to show or hide</span></h3>
+            <div class="chips" id="groupChips"></div>
+            <div class="chips" id="recLegend" hidden></div>
+            <div class="rowline">
+              <span class="ctl-lab" style="padding:0">Last used within</span>
+              <div class="seg" id="withinSeg" role="group" aria-label="Show refuges last used within">
+                <button type="button" data-v="any" aria-pressed="true">Any</button>
+                <button type="button" data-v="7" aria-pressed="false">7 days</button>
+                <button type="button" data-v="30" aria-pressed="false">30</button>
+                <button type="button" data-v="60" aria-pressed="false">60</button>
+              </div>
+            </div>
+          </div>
+          <div class="key-block">
+            <h3>Confidence <span class="hint">Outline of the refuge circle</span></h3>
+            <div class="chips" id="confChips"></div>
+          </div>
+          <div class="key-block">
+            <h3>Raids</h3>
+            <div class="rowline">
+              <label class="tog"><input type="checkbox" id="tgAreas" checked> Raid areas</label>
+              <label class="tog"><input type="checkbox" id="tgLinks" checked> Lines from refuge to raid</label>
+            </div>
+            <div class="symrow">
+              <span class="sym"><svg width="14" height="14" viewBox="-7 -7 14 14"><path d="M0 -6 L6 0 L0 6 L-6 0Z" style="fill:var(--raid)"/></svg>Raid area, refuge nearby</span>
+              <span class="sym"><svg width="14" height="14" viewBox="-7 -7 14 14"><path d="M0 -5.5 L5.5 0 L0 5.5 L-5.5 0Z" style="fill:var(--sheet);stroke:var(--raid);stroke-width:2"/></svg>No refuge on record</span>
+              <span class="sym"><svg width="14" height="14" viewBox="-7 -7 14 14"><path d="M0 -5.5 L5.5 0 L0 5.5 L-5.5 0Z" style="fill:var(--raid);stroke:var(--ink);stroke-width:1.8"/></svg>People hurt</span>
+              <span class="sym" style="color:var(--muted)">Diamond size: number of raids</span>
+            </div>
+            <div class="symrow">
+              <span class="sym"><svg width="22" height="10" viewBox="0 -5 22 10"><line x1="0" y1="0" x2="18" y2="0" style="stroke:var(--muted);stroke-width:1"/><circle cx="18" cy="0" r="2" style="fill:var(--muted)"/></svg>Crop raid</span>
+              <span class="sym"><svg width="12" height="12" viewBox="-6 -6 12 12"><rect x="-2.6" y="-2.6" width="5.2" height="5.2" style="fill:var(--raid)"/></svg>House damage</span>
+              <span class="sym"><svg width="14" height="14" viewBox="-7 -7 14 14"><circle r="4.5" style="fill:none;stroke:var(--raid-strong);stroke-width:2"/></svg>Injury</span>
+            </div>
+            <div class="rowline">
+              <span class="ctl-lab" style="padding:0">Raid period</span>
+              <div class="seg" id="periodSeg" role="group" aria-label="Raid period">
+                <button type="button" data-v="all" aria-pressed="true">All</button>
+                <button type="button" data-v="90" aria-pressed="false">90 days</button>
+                <button type="button" data-v="30" aria-pressed="false">30 days</button>
+              </div>
+            </div>
+          </div>
+          <div class="symrow ctx-key">
+            <span class="sym"><svg width="22" height="8" viewBox="0 -4 22 8"><line x1="0" x2="22" y1="0" y2="0" style="stroke:var(--water);stroke-width:1.7"/></svg>River</span>
+            <span class="sym"><svg width="22" height="8" viewBox="0 -4 22 8"><line x1="0" x2="22" y1="0" y2="0" style="stroke:var(--rail);stroke-width:2.6"/><line x1="0" x2="22" y1="0" y2="0" style="stroke:var(--sheet);stroke-width:1.2;stroke-dasharray:4 4"/></svg>Railway</span>
+            <span class="sym"><svg width="22" height="8" viewBox="0 -4 22 8"><line x1="0" x2="22" y1="0" y2="0" style="stroke:var(--road);stroke-width:1.3"/></svg>Road</span>
+            <span class="sym"><svg width="22" height="8" viewBox="0 -4 22 8"><line x1="0" x2="22" y1="0" y2="0" style="stroke:var(--state);stroke-width:1.3;stroke-dasharray:6 2 1.5 2"/></svg>State line</span>
+            <span class="sym"><svg width="10" height="10" viewBox="-5 -5 10 10"><rect x="-3.5" y="-3.5" width="7" height="7" style="fill:var(--sheet);stroke:var(--ink);stroke-width:1.2"/></svg>Town</span>
+          </div>
+        </div>
+
+        <div class="p-sec">
+          <h2 class="p-h">When raids start</h2>
+          <p class="p-note" id="peakNote"></p>
+          <div class="chart" id="hourChart"></div>
+        </div>
+
+        <div class="p-sec">
+          <div class="rowline"><h2 class="p-h">Raids by month</h2>
+            <div class="legend-inline"><span><i class="lc" style="background:var(--crop-bar)"></i>Crop</span><span><i style="background:var(--raid)"></i>House</span><span><i style="background:var(--raid-strong)"></i>Injury</span></div>
+          </div>
+          <div class="chart" id="monthChart"></div>
+        </div>
+
+        <div class="p-sec">
+          <div class="list-head">
+            <div class="seg" id="listTabs" role="group" aria-label="List">
+              <button type="button" data-v="refuges" aria-pressed="true">Refuges</button>
+              <button type="button" data-v="areas" aria-pressed="false">Raid areas</button>
+            </div>
+            <label class="tog"><span class="ctl-lab" style="padding:0">Sort</span>
+              <select id="sortSel" aria-label="Sort list"></select></label>
+          </div>
+          <div class="list" id="list"></div>
+        </div>
+      </section>
+      <section id="detail" hidden></section>
+    </aside>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+(function(){
+const DATA = __ED_DATA__;
+const CTX = {"river":[{"type":"Feature","properties":{"name":"Son"},"geometry":{"type":"LineString","coordinates":[[82.0474,22.7059],[82.0588,22.7683],[82.0435,22.8027],[82.0444,22.8291],[82.0554,22.8704],[82.0849,22.9102],[82.0917,22.9243],[82.0928,22.9346],[82.0725,22.945],[81.9924,23.0272],[81.9771,23.0568],[81.9557,23.0679],[81.8736,23.0838],[81.773,23.1305],[81.7525,23.1332],[81.7036,23.1315],[81.6841,23.138],[81.6627,23.1765],[81.6489,23.1916],[81.6295,23.1851],[81.6176,23.1927],[81.6091,23.2267],[81.6023,23.2198],[81.5681,23.2547],[81.5401,23.2609],[81.513,23.2888],[81.4788,23.2938],[81.4719,23.3093],[81.4706,23.3233],[81.4736,23.3375],[81.4856,23.357],[81.4609,23.397],[81.4514,23.4049],[81.435,23.4055],[81.4075,23.3995],[81.3963,23.4117],[81.4043,23.426],[81.4006,23.4287],[81.3552,23.426],[81.3449,23.4492],[81.3272,23.4567],[81.3113,23.4537],[81.2973,23.4562],[81.2864,23.4806],[81.2891,23.5488],[81.2832,23.5659],[81.2749,23.5705],[81.2516,23.5749],[81.242,23.5799],[81.2379,23.5881],[81.2447,23.6065],[81.2454,23.6177],[81.2286,23.6417],[81.2249,23.6519],[81.2316,23.6962],[81.229,23.7203],[81.2217,23.7371],[81.1846,23.7866],[81.1739,23.8067],[81.1762,23.8228],[81.2009,23.8294],[81.2424,23.8349],[81.2491,23.8433],[81.2385,23.8567],[81.218,23.8567],[81.1923,23.8814],[81.1635,23.8878],[81.1567,23.8956],[81.1548,23.9057],[81.1594,23.9156],[81.1591,23.9235],[81.1287,23.9393],[81.1113,23.9673],[81.102,23.974],[81.061,23.9703],[81.0588,23.9876],[81.0523,24.0009],[81.0151,24.043],[81.0014,24.0662],[80.996,24.0875],[81.0094,24.0969],[81.1294,24.1367],[81.1489,24.1364],[81.1908,24.1155],[81.2076,24.1216],[81.2437,24.1719],[81.2607,24.183],[81.2812,24.1905],[81.3276,24.1945],[81.344,24.1998],[81.3565,24.2103],[81.3836,24.2473],[81.3967,24.2576],[81.4505,24.2651],[81.4507,24.2825],[81.4548,24.2921],[81.4648,24.3008],[81.5332,24.3231],[81.5533,24.3328],[81.5712,24.3474],[81.6172,24.397],[81.6363,24.406],[81.678,24.3985],[81.709,24.4108],[81.7374,24.4177],[81.7791,24.44],[81.8008,24.447],[81.9722,24.4805],[82.0357,24.5052],[82.1435,24.5159],[82.1873,24.5257],[82.2047,24.5358],[82.2118,24.5528],[82.2231,24.5597],[82.2475,24.5549],[82.3086,24.5318],[82.3211,24.5351],[82.3317,24.544],[82.3388,24.5597],[82.3521,24.5624],[82.3751,24.5604],[82.4,24.5531]]}},{"type":"Feature","properties":{"name":"Narmada"},"geometry":{"type":"LineString","coordinates":[[80.4799,22.6],[80.499,22.6137],[80.5055,22.6234],[80.5066,22.6365],[80.4778,22.6747],[80.4972,22.6969],[80.5025,22.7152],[80.5103,22.7261],[80.4915,22.7486],[80.4909,22.7539],[80.4955,22.7601],[80.4993,22.7748],[80.4986,22.7961],[80.4918,22.8158],[80.4767,22.8424],[80.4816,22.8531],[80.5191,22.8807],[80.5315,22.906],[80.5317,22.928],[80.5191,22.953],[80.5383,22.9571],[80.5723,22.9706],[80.5912,22.9735],[80.6294,22.9644],[80.6657,22.9942],[80.679,22.9987],[80.7371,23.0054],[80.7559,23.012],[80.7656,23.0213],[80.7913,22.9988],[80.8024,22.9952],[80.8098,23.0248],[80.8171,23.0395],[80.8282,23.051],[80.8419,23.0554],[80.8928,23.0178],[80.9004,23.0044],[80.9004,22.9879],[80.8891,22.953],[80.9117,22.9556],[80.9319,22.9523],[81.001,22.9304],[81.0064,22.9353],[81.016,22.9769],[81.0352,22.9819],[81.1054,22.953],[81.1498,22.9455],[81.1624,22.9483],[81.1747,22.9407],[81.1765,22.9251],[81.1909,22.9166],[81.233,22.9007],[81.2488,22.8978],[81.2802,22.8773],[81.3141,22.8704],[81.3665,22.8519],[81.4076,22.8426],[81.4214,22.8264],[81.4378,22.7879],[81.4619,22.7652],[81.4981,22.7577],[81.5742,22.7537]]}}],"road":[{"type":"Feature","properties":{"type":"Road"},"geometry":{"type":"LineString","coordinates":[[82.4,25.019],[82.3762,25.013],[82.3597,25.0048],[82.3143,24.9677],[82.2153,24.9099],[82.1658,24.8687],[82.1535,24.8522],[82.1246,24.8439],[82.1163,24.7986],[82.0833,24.7614],[82.0504,24.7449],[82.005,24.6996],[81.9555,24.6954],[81.9142,24.6748],[81.8812,24.6666],[81.8111,24.6707],[81.7493,24.6789],[81.6709,24.6748],[81.5884,24.6583],[81.5513,24.6418]]}},{"type":"Feature","properties":{"type":"Unknown"},"geometry":{"type":"LineString","coordinates":[[81.7479,25.1],[81.7286,25.046],[81.7204,25.013],[81.6915,24.9759],[81.6874,24.9635],[81.6833,24.9099],[81.6379,24.7821],[81.5843,24.7078],[81.5513,24.6418]]}},{"type":"Feature","properties":{"type":"Unknown"},"geometry":{"type":"LineString","coordinates":[[80.5779,24.5635],[80.6769,24.5676],[80.7388,24.58],[80.7677,24.58],[80.8295,24.5676]]}},{"type":"Feature","properties":{"type":"Unknown"},"geometry":{"type":"LineString","coordinates":[[80.4,24.6043],[80.4996,24.5758],[80.5779,24.5635]]}},{"type":"Feature","properties":{"type":"Road"},"geometry":{"type":"LineString","coordinates":[[81.5513,24.6418],[81.5142,24.6253],[81.4688,24.5841],[81.4482,24.58],[81.4193,24.5593],[81.3946,24.5511],[81.3203,24.5346],[81.2708,24.5305],[81.2543,24.5263],[81.1966,24.4892],[81.1677,24.481]]}},{"type":"Feature","properties":{"type":"Unknown"},"geometry":{"type":"LineString","coordinates":[[80.8295,24.5676],[80.9038,24.5511],[80.9615,24.547],[81.0811,24.5016],[81.1677,24.481]]}},{"type":"Feature","properties":{"type":"Road"},"geometry":{"type":"LineString","coordinates":[[81.1677,24.481],[81.1471,24.4645],[81.1059,24.4232],[81.0234,24.3366],[80.9615,24.3036],[80.9161,24.2748],[80.8625,24.2789],[80.8336,24.2665],[80.8048,24.2624],[80.7553,24.2459],[80.7223,24.2088],[80.7017,24.1923],[80.6233,24.1469],[80.5697,24.1222],[80.5532,24.1057],[80.5532,24.1015],[80.4913,24.0562],[80.4253,23.9984],[80.413,23.9943],[80.4047,23.9778],[80.4047,23.9324],[80.4,23.888]]}}],"state":[{"type":"Feature","properties":{"NAME_L":"Madhya Pradesh","NAME_R":"Uttar Pradesh"},"geometry":{"type":"MultiLineString","coordinates":[[[80.805,24.9688],[80.7787,24.9715],[80.7671,24.977],[80.7617,24.9833],[80.762,24.991],[80.7649,25.0001],[80.7831,25.0187],[80.7906,25.0326],[80.7957,25.0599],[80.8221,25.0833],[80.8257,25.1]],[[80.7274,25.1],[80.7292,25.0954],[80.7264,25.0878],[80.7179,25.082],[80.6862,25.0798],[80.6472,25.0701]],[[81.6651,25.0645],[81.6248,25.0743],[81.5852,25.0796],[81.5734,25.0915],[81.574,25.1]],[[81.2394,25.1],[81.2226,25.0685],[81.1771,25.0187],[81.1734,25.0004],[81.1848,24.9729],[81.1814,24.9581],[81.1705,24.9517],[81.1483,24.9509],[81.1312,24.9454],[81.0981,24.9086]],[[80.6472,25.0701],[80.6309,25.0785],[80.6073,25.1]],[[80.46,25.1],[80.4703,25.0737],[80.5111,25.0533],[80.5151,25.0407],[80.4782,25.0183],[80.4584,25.0151]],[[81.7528,25.0205],[81.7345,25.0247],[81.7267,25.0298],[81.7146,25.0605],[81.7076,25.0653]],[[81.7076,25.0653],[81.6651,25.0645]],[[80.4584,25.0151],[80.4469,25.0236],[80.4135,25.0624],[80.4067,25.0638]],[[80.4067,25.0638],[80.4037,25.0572],[80.4111,25.0195],[80.407,25.0134],[80.4003,25.0112]],[[81.9998,24.8599],[81.9802,24.8619],[81.9561,24.871],[81.8811,24.9215],[81.8666,24.9429],[81.8735,24.9619],[81.874,24.9802],[81.8597,25.0001],[81.8539,25.0136],[81.8421,25.0271],[81.8172,25.0358]],[[81.8172,25.0358],[81.8,25.0344],[81.7658,25.0207],[81.7528,25.0205]],[[80.4003,25.0112],[80.4,25.0113]],[[80.9437,24.9533],[80.9249,24.9622],[80.9075,24.9813],[80.893,24.9841]],[[80.893,24.9841],[80.8404,24.9706],[80.805,24.9688]],[[81.0981,24.9086],[81.0687,24.9213],[81.031,24.953],[81.0047,24.9664]],[[81.0047,24.9664],[80.9605,24.9534],[80.9437,24.9533]],[[82.1297,24.8076],[82.1055,24.8134],[82.0566,24.8493],[82.0332,24.8595],[82.0239,24.8603]],[[82.0239,24.8603],[81.9998,24.8599]],[[82.226,24.7563],[82.2188,24.7573],[82.208,24.7643],[82.2049,24.7707],[82.2051,24.7782],[82.2164,24.8063],[82.2124,24.8369],[82.2087,24.8431],[82.2014,24.8459]],[[82.2014,24.8459],[82.155,24.8163],[82.1297,24.8076]],[[82.2808,24.7046],[82.2681,24.7109],[82.2652,24.7154],[82.2664,24.7851],[82.263,24.7912],[82.2579,24.7917]],[[82.2579,24.7917],[82.2383,24.7639],[82.226,24.7563]],[[82.4,24.6333],[82.3952,24.6322]],[[82.307,24.632],[82.3027,24.6381],[82.3262,24.6799],[82.319,24.702],[82.295,24.7095]],[[82.295,24.7095],[82.2808,24.7046]],[[82.3952,24.6322],[82.3571,24.6367]],[[82.3571,24.6367],[82.307,24.632]]]}},{"type":"Feature","properties":{"NAME_L":"Chhattisgarh","NAME_R":"Madhya Pradesh"},"geometry":{"type":"MultiLineString","coordinates":[[[81.8087,23.7947],[81.7782,23.8019],[81.7449,23.8249],[81.7017,23.8705],[81.6819,23.8851],[81.6412,23.8853]],[[81.6412,23.8853],[81.6195,23.8676],[81.6293,23.8583],[81.6304,23.8462],[81.622,23.8338],[81.6249,23.8244],[81.6395,23.8066],[81.6651,23.7479],[81.6809,23.7248],[81.6859,23.7065],[81.6862,23.6903],[81.6796,23.6778],[81.6556,23.6485],[81.6254,23.6354],[81.6189,23.6273],[81.6147,23.5918],[81.6086,23.5791],[81.5914,23.5612],[81.601,23.5363],[81.6283,23.4878],[81.6441,23.4821]],[[82.1077,23.7986],[82.0774,23.8014],[82.0303,23.8273],[82.0049,23.8364],[81.9369,23.8407]],[[81.9369,23.8407],[81.9102,23.8321],[81.861,23.8052],[81.8361,23.7954],[81.8087,23.7947]],[[82.4,23.7833],[82.2625,23.7856],[82.243,23.7884],[82.2036,23.8005]],[[82.2036,23.8005],[82.1077,23.7986]],[[81.7595,23.5435],[81.8006,23.531],[81.8582,23.5077],[81.9072,23.5052],[81.9275,23.4954],[81.9506,23.4667],[81.9755,23.42],[81.9914,23.4005],[82.0054,23.3922]],[[81.6441,23.4821],[81.6577,23.4872],[81.6856,23.5071],[81.7137,23.5183],[81.7446,23.5426],[81.7595,23.5435]],[[82.0174,23.3922],[82.0259,23.3877],[82.0344,23.3676],[82.0434,23.3636]],[[82.0054,23.3922],[82.0174,23.3922]],[[82.0982,23.3717],[82.1133,23.3688],[82.1249,23.3622],[82.1353,23.3499],[82.1737,23.3264],[82.1863,23.3094],[82.1897,23.2887],[82.1646,23.2102],[82.1573,23.1705],[82.1566,23.1483],[82.1417,23.1132],[82.1294,23.0965]],[[82.0434,23.3636],[82.0982,23.3717]],[[82.1294,23.0965],[82.0898,23.1036]],[[82.0898,23.1036],[82.0708,23.1003],[82.0205,23.0714],[81.966,23.0555],[81.9461,23.043],[81.9342,23.0173],[81.9334,22.9992],[81.9446,22.963],[81.9402,22.9458],[81.9065,22.9127],[81.8653,22.8815],[81.7885,22.8529],[81.7793,22.8358],[81.7768,22.8129],[81.7835,22.7809],[81.7852,22.7443],[81.7618,22.7164],[81.7608,22.7022],[81.7667,22.6822],[81.7664,22.664],[81.7515,22.6511],[81.7273,22.6472],[81.6696,22.6093],[81.6621,22.6]]]}}],"rail":[{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[81.2422,25.1],[81.2353,25.0997],[81.2092,25.0819],[81.1978,25.0792],[81.1686,25.0794],[81.1272,25.0631],[81.0708,25.0553]]}},{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[81.0708,25.0553],[81.0128,25.1]]}},{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[81.0708,25.0553],[81.0292,25.0489],[80.9983,25.0361],[80.9617,25.0292],[80.9317,25.0161],[80.9028,25.0164],[80.8797,25.0094],[80.8636,24.9978],[80.8428,24.9744],[80.8328,24.9406],[80.8142,24.93],[80.8072,24.9225],[80.8081,24.91],[80.8519,24.8281],[80.8514,24.7239],[80.8489,24.7122],[80.8281,24.6742],[80.8203,24.6533],[80.8192,24.5758],[80.8119,24.4822],[80.7969,24.4094],[80.7658,24.295],[80.7611,24.2561],[80.7531,24.2336],[80.7369,24.2072],[80.6969,24.1744],[80.5914,24.1158],[80.4442,24.0058],[80.4436,24.0],[80.4242,23.9689],[80.4064,23.8922],[80.4,23.851]]}},{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[81.8842,22.6],[81.9039,22.6161],[81.9233,22.6447],[81.9256,22.655],[81.9225,22.6669],[81.9108,22.6772],[81.9056,22.6872],[81.9025,22.7119],[81.8831,22.7886],[81.8722,22.8692],[81.8706,22.9225],[81.8611,22.9519],[81.8681,22.9708],[81.8664,22.9775],[81.8481,23.0056],[81.8331,23.02],[81.7883,23.0367],[81.7661,23.0494],[81.7344,23.1089],[81.6933,23.1122],[81.6508,23.1322],[81.6194,23.1411],[81.6017,23.1514],[81.5769,23.1892],[81.5642,23.1978],[81.5161,23.2094],[81.4458,23.2356],[81.4136,23.2428],[81.385,23.2647],[81.3536,23.2828],[81.2986,23.2936],[81.2781,23.2906],[81.2536,23.2925],[81.2344,23.3017],[81.2239,23.3136],[81.1958,23.3272],[81.1717,23.3469],[81.1531,23.3564],[81.0447,23.3625],[81.0303,23.3686],[81.005,23.3864],[80.9858,23.3858],[80.965,23.3919],[80.9589,23.4011],[80.9469,23.4389],[80.935,23.4489],[80.9069,23.4625],[80.885,23.4853],[80.8761,23.4906],[80.8597,23.4939],[80.8406,23.5117],[80.8072,23.5242],[80.7689,23.5689],[80.7489,23.5864],[80.7228,23.6033],[80.7081,23.6275],[80.6911,23.6394],[80.6775,23.6653],[80.6497,23.6797],[80.64,23.6933],[80.6097,23.7036],[80.5481,23.7417],[80.5322,23.7458],[80.4956,23.7469],[80.4639,23.7733],[80.4372,23.7894],[80.4,23.8249]]}}]};
+
+const DAY = 864e5;
+const TODAY = new Date(__ED_TODAY__);
+const parseD = s => new Date(s.slice(0, 10) + 'T00:00:00Z');
+const fmtD = d => d.toLocaleDateString('en-GB', {day:'numeric', month:'short', year:'numeric', timeZone:'UTC'});
+const fmtShort = d => d.toLocaleDateString('en-GB', {day:'numeric', month:'short', timeZone:'UTC'});
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const nf = new Intl.NumberFormat('en-IN');
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+const GROUPS = [
+  {key:'lone', name:'Lone bull'},
+  {key:'party', name:'Bull party'},
+  {key:'family', name:'Family herd'},
+  {key:'mixed', name:'Mixed / unsexed'},
+  {key:'unrec', name:'Unrecorded'}
+];
+const gByName = Object.fromEntries(GROUPS.map(g => [g.name, g.key]));
+const gName = Object.fromEntries(GROUPS.map(g => [g.key, g.name]));
+const CONF = ['Confirmed', 'Probable', 'Possible'];
+const REC = [
+  {key:'r0', name:'Last 7 days', max:7},
+  {key:'r1', name:'8–30 days', max:30},
+  {key:'r2', name:'31–60 days', max:60},
+  {key:'r3', name:'Over 60 days', max:Infinity}
+];
+const recKey = d => REC.find(r => d <= r.max).key;
+const DIV_LABEL = __ED_DIV_LABEL__;
+const TOWNS = [
+  {name:'Umaria', lon:80.837, lat:23.525},
+  {name:'Shahdol', lon:81.361, lat:23.297},
+  {name:'Anuppur', lon:81.691, lat:23.104}
+];
+
+/* ---------- data ---------- */
+const refuges = [], areas = [], links = [];
+for (const f of DATA.features) {
+  const p = f.properties;
+  if (p.kind === 'refuge') {
+    const [lon, lat] = f.geometry.coordinates;
+    refuges.push({type:'refuge', id:p.Refuge, p, lon, lat, g:gByName[p.Group] || 'unrec',
+      rec:recKey(p['Days Since Last Use']), last:parseD(p['Last Used']), first:parseD(p['First Used']), links:[]});
+  } else if (p.kind === 'raid area') {
+    const [lon, lat] = f.geometry.coordinates;
+    const last = parseD(p['Last Raid']);
+    areas.push({type:'area', id:p.Area, p, lon, lat, last, first:parseD(p['First Raid']),
+      since:Math.round((TODAY - last) / DAY),
+      gap:/^No daytime refuge/.test(p['Recommended Action']),
+      hurt:(p.Casualties || 0) > 0});
+  } else if (p.kind === 'linked raid') {
+    const c = f.geometry.coordinates;
+    links.push({ref:p.refuge, date:parseD(p.date), night:parseD(p.night_of), hour:p.entry_hour, cat:p.category, dist:p.distance_km, a:c[0], b:c[c.length - 1]});
+  }
+}
+const byId = new Map();
+refuges.forEach(r => byId.set(r.id, r));
+areas.forEach(a => byId.set(a.id, a));
+links.forEach(l => { const r = byId.get(l.ref); l.r = r; if (r) r.links.push(l); });
+const catOrder = {Crop:0, House:1, Injury:2};
+links.sort((x, y) => catOrder[x.cat] - catOrder[y.cat]);
+
+function hv(a, b) {
+  const p = Math.PI / 180;
+  const x = Math.sin((b[1] - a[1]) * p / 2) ** 2 + Math.cos(a[1] * p) * Math.cos(b[1] * p) * Math.sin((b[0] - a[0]) * p / 2) ** 2;
+  return 2 * 6371.0088 * Math.asin(Math.sqrt(x));
+}
+areas.forEach(a => {
+  let best = null, bd = Infinity;
+  refuges.forEach(r => { const d = hv([a.lon, a.lat], [r.lon, r.lat]); if (d < bd) { bd = d; best = r; } });
+  if (best && Math.abs(bd - a.p['To Nearest Known Refuge (km)']) <= 0.15) a.nearest = best;
+});
+
+/* ---------- header stats ---------- */
+(function stats() {
+  const conf = refuges.filter(r => r.p.Confidence === 'Confirmed').length;
+  const week = refuges.filter(r => r.p['Days Since Last Use'] <= 7).length;
+  const house = links.filter(l => l.cat === 'House').length;
+  const inj = links.filter(l => l.cat === 'Injury').length;
+  const first = d3.min(links, l => l.date);
+  document.getElementById('stats').innerHTML = `
+    <div><dt>Day refuges</dt><dd>${refuges.length}<small>${conf} confirmed</small></dd></div>
+    <div><dt>Used in last 7 days</dt><dd><button type="button" class="statbtn" id="weekBtn" aria-pressed="false" aria-label="Show only the ${week} refuges used in the last 7 days" title="Show only these refuges on the map">${week}</button></dd></div>
+    <div><dt>Raid areas</dt><dd>${areas.length}</dd></div>
+    <div><dt>Linked raids</dt><dd>${links.length}<small>${house} house · ${inj} injury</small></dd></div>`;
+  document.getElementById('sub').textContent =
+    `Where bulls and herds lie up by day, and the night raids that leave from them. Bandhavgarh NP, North Shahdol and Anuppur, ${fmtShort(first)} ${first.getUTCFullYear()} to ${fmtD(TODAY)}.`;
+})();
+
+/* ---------- state ---------- */
+const S = {
+  colorBy:'group', groups:new Set(GROUPS.map(g => g.key)), conf:new Set(CONF), within:'any',
+  period:'all', showAreas:true, showLinks:true, sel:null, tab:'refuges', sortR:'recent', sortA:'raids', village:null
+};
+const refVisible = r => S.groups.has(r.g) && S.conf.has(r.p.Confidence) && (S.within === 'any' || r.p['Days Since Last Use'] <= +S.within);
+
+/* village index: which refuges and raid areas name each village */
+const splitList = s => String(s || '').split(/,\s*/).map(v => v.replace(/\s*\(\+\d+ more\)\s*$/, '').trim()).filter(Boolean);
+const vIndex = new Map();
+function addV(name, item, rel) {
+  if (!name) return;
+  const k = name.toLowerCase();
+  if (!vIndex.has(k)) vIndex.set(k, {name, hits:[]});
+  const e = vIndex.get(k);
+  if (!e.hits.some(h => h.item === item && h.rel === rel)) e.hits.push({item, rel});
+}
+refuges.forEach(r => {
+  splitList(r.p['Villages Raided']).forEach(v => addV(v, r, 'raided'));
+  addV(r.p['Nearest Village'], r, 'nearest');
+  splitList(r.p['Villages Within Reach']).forEach(v => addV(v, r, 'reach'));
+});
+areas.forEach(a => splitList(a.p['Villages Raided']).forEach(v => addV(v, a, 'area')));
+const villageIds = () => S.village ? new Set(vIndex.get(S.village).hits.map(h => h.item.id)) : null;
+const inPeriod = l => S.period === 'all' || (TODAY - l.date) / DAY < +S.period;
+const colorClass = r => 'c-' + (S.colorBy === 'group' ? r.g : r.rec);
+
+/* ---------- map ---------- */
+const sheet = document.getElementById('sheet');
+const svg = d3.select('#map');
+const defs = svg.append('defs');
+const root = svg.append('g');
+const L = {};
+['ctx', 'ctxLab', 'fp', 'lnk', 'ep', 'ctr', 'ra', 'sel', 'lab'].forEach(k => L[k] = root.append('g'));
+const proj = d3.geoTransverseMercator().rotate([-81, 0]);
+const path = d3.geoPath(proj);
+let W = 0, H = 0, s0 = 1, t0 = [0, 0], T = d3.zoomIdentity;
+const extentGeo = {type:'MultiPoint', coordinates:[...refuges, ...areas].map(d => [d.lon, d.lat])};
+
+function fit() {
+  W = sheet.clientWidth; H = sheet.clientHeight;
+  svg.attr('viewBox', `0 0 ${W} ${H}`);
+  proj.scale(1).translate([0, 0]);
+  const padX = W < 500 ? 22 : 48;
+  proj.fitExtent([[padX, 58], [W - padX, H - 52]], extentGeo);
+  s0 = proj.scale(); t0 = proj.translate();
+}
+function applyT() { proj.scale(s0 * T.k).translate([T.x + T.k * t0[0], T.y + T.k * t0[1]]); }
+
+const zoom = d3.zoom().scaleExtent([0.6, 60]).on('zoom', e => { T = e.transform; applyT(); position(); });
+svg.call(zoom).on('dblclick.zoom', null);
+svg.on('click', () => { if (S.sel) select(null); });
+
+const circlePath = (x, y, r) => `M${x - r},${y}a${r},${r} 0 1,0 ${2 * r},0a${r},${r} 0 1,0 ${-2 * r},0`;
+const diamond = (x, y, s) => `M${x},${y - s}L${x + s},${y}L${x},${y + s}L${x - s},${y}Z`;
+const raSize = a => 3.6 + Math.sqrt(a.p.Raids) * 1.45;
+const geoCircle = d3.geoCircle().precision(4);
+refuges.forEach(r => { r.circle = geoCircle.center([r.lon, r.lat]).radius(r.p['Radius (km)'] / 6371.0088 * 180 / Math.PI)(); });
+
+/* context layers, drawn once */
+const ctxRiver = L.ctx.append('g'), ctxRail = L.ctx.append('g'), ctxRoad = L.ctx.append('g'), ctxState = L.ctx.append('g');
+ctxRoad.selectAll('path').data(CTX.road).join('path').attr('class', 'ctx-road');
+ctxState.selectAll('path').data(CTX.state).join('path').attr('class', 'ctx-state');
+ctxRail.selectAll('path.a').data(CTX.rail).join('path').attr('class', 'ctx-rail-a a');
+ctxRail.selectAll('path.b').data(CTX.rail).join('path').attr('class', 'ctx-rail-b b');
+ctxRiver.selectAll('path').data(CTX.river).join('path').attr('class', 'ctx-river');
+const riverDefs = defs.selectAll('path').data(CTX.river).join('path').attr('id', (d, i) => 'rv' + i);
+L.ctxLab.selectAll('text.river-label').data(CTX.river).join('text').attr('class', 'river-label halo')
+  .append('textPath').attr('href', (d, i) => '#rv' + i).attr('startOffset', (d, i) => d.properties.name === 'Son' ? '66%' : '72%')
+  .text(d => d.properties.name + ' River');
+const stateLabels = [{name:'CHHATTISGARH', lon:82.13, lat:22.98}];
+const divs = d3.groups([...refuges, ...areas].filter(d => DIV_LABEL[d.p.Division]), d => d.p.Division)
+  .map(([k, arr]) => ({name:DIV_LABEL[k], lon:d3.mean(arr, d => d.lon), lat:d3.max(arr, d => d.lat)}));
+
+function posCtx() {
+  ctxRoad.selectAll('path').attr('d', path);
+  ctxState.selectAll('path').attr('d', path);
+  ctxRail.selectAll('path').attr('d', path);
+  ctxRiver.selectAll('path').attr('d', path);
+  riverDefs.attr('d', path);
+  L.ctxLab.selectAll('text.state-label').data(stateLabels).join('text').attr('class', 'state-label halo')
+    .attr('text-anchor', 'middle').text(d => d.name)
+    .attr('x', d => proj([d.lon, d.lat])[0]).attr('y', d => proj([d.lon, d.lat])[1]);
+  L.ctxLab.selectAll('text.div-label').data(divs).join('text').attr('class', 'div-label halo')
+    .attr('text-anchor', 'middle').text(d => d.name)
+    .attr('x', d => proj([d.lon, d.lat])[0]).attr('y', d => proj([d.lon, d.lat])[1] - 14 - 6 * Math.min(T.k, 4));
+  const tw = L.ctxLab.selectAll('g.townmark').data(TOWNS).join(enter => {
+    const g = enter.append('g').attr('class', 'townmark');
+    g.append('rect').attr('class', 'town').attr('x', -3.5).attr('y', -3.5).attr('width', 7).attr('height', 7);
+    g.append('text').attr('class', 'town-label halo').attr('x', 7).attr('y', 4).text(d => d.name);
+    return g;
+  });
+  tw.attr('transform', d => { const [x, y] = proj([d.lon, d.lat]); return `translate(${x},${y})`; });
+}
+
+/* data layers */
+function render() {
+  const sel = S.sel;
+  const visR = refuges.filter(refVisible);
+  const visSet = new Set(visR.map(r => r.id));
+  const vIds = villageIds();
+  const dimOf = d => (sel ? sel !== d : (vIds ? !vIds.has(d.id) : false)) ? ' dim' : '';
+
+  L.fp.selectAll('path').data(visR.slice().sort((a, b) => b.p['Radius (km)'] - a.p['Radius (km)']), d => d.id)
+    .join('path')
+    .attr('class', d => `fp ${colorClass(d)} conf-${d.p.Confidence}${dimOf(d)}${sel === d ? ' is-sel' : ''}`)
+    .on('mouseenter', tipFor).on('mousemove', tipMove).on('mouseleave', tipHide)
+    .on('click', (e, d) => { e.stopPropagation(); select(d.id); });
+
+  let lk;
+  if (sel && sel.type === 'refuge') lk = sel.links;
+  else if (S.showLinks) lk = links.filter(l => visSet.has(l.ref) && inPeriod(l));
+  else lk = [];
+  const lkDim = l => (sel ? sel.type === 'area' : (vIds ? !vIds.has(l.ref) : false)) ? ' dim' : '';
+  L.lnk.selectAll('line').data(lk).join('line').attr('class', d => `lnk ${colorClass(d.r)}${lkDim(d)}`);
+  L.ep.selectAll('path').data(lk).join('path')
+    .attr('class', d => `ep ep-${d.cat.toLowerCase()} ${colorClass(d.r)}${lkDim(d)}`)
+    .on('mouseenter', tipFor).on('mousemove', tipMove).on('mouseleave', tipHide);
+
+  L.ctr.selectAll('circle').data(visR, d => d.id).join('circle')
+    .attr('class', d => `ctr ${colorClass(d)}${dimOf(d)}`)
+    .on('mouseenter', tipFor).on('mousemove', tipMove).on('mouseleave', tipHide)
+    .on('click', (e, d) => { e.stopPropagation(); select(d.id); });
+
+  const visA = S.showAreas || (sel && sel.type === 'area') ? areas.filter(a => S.showAreas || a === sel) : [];
+  L.ra.selectAll('path').data(visA.slice().sort((a, b) => b.p.Raids - a.p.Raids), d => d.id).join('path')
+    .attr('class', d => `ra${d.gap ? ' gap' : ''}${d.hurt ? ' hurt' : ''}${sel === d ? ' is-sel' : ''}${dimOf(d)}`)
+    .on('mouseenter', tipFor).on('mousemove', tipMove).on('mouseleave', tipHide)
+    .on('click', (e, d) => { e.stopPropagation(); select(d.id); });
+
+  // selection extras
+  const extras = [];
+  if (sel && sel.type === 'area') {
+    if (sel.nearest) extras.push({kind:'near', from:[sel.lon, sel.lat], to:[sel.nearest.lon, sel.nearest.lat], text:`${sel.p['To Nearest Known Refuge (km)']} km to ${sel.nearest.id}`});
+    if (sel.p['Search Latitude'] != null && sel.p['Search Distance (km)'] >= 0.2) extras.push({kind:'search', from:[sel.lon, sel.lat], to:[sel.p['Search Longitude'], sel.p['Search Latitude']]});
+  }
+  L.sel.selectAll('g.x').data(extras).join(enter => {
+    const g = enter.append('g').attr('class', 'x');
+    g.append('line').attr('class', 'sel-line');
+    g.append('path').attr('class', 'sel-cross');
+    g.append('text').attr('class', 'sel-text halo');
+    return g;
+  });
+  position();
+}
+
+function position() {
+  posCtx();
+  L.fp.selectAll('path').attr('d', d => path(d.circle));
+  L.lnk.selectAll('line').each(function(d) {
+    const a = proj(d.a), b = proj(d.b);
+    this.setAttribute('x1', a[0]); this.setAttribute('y1', a[1]); this.setAttribute('x2', b[0]); this.setAttribute('y2', b[1]);
+  });
+  const er = Math.min(1 + T.k * 0.25, 2.2);
+  L.ep.selectAll('path').attr('d', d => {
+    const [x, y] = proj(d.b);
+    if (d.cat === 'Crop') return circlePath(x, y, 1.6 * er);
+    if (d.cat === 'House') { const s = 2.2 * er; return `M${x - s},${y - s}h${2 * s}v${2 * s}h${-2 * s}Z`; }
+    return circlePath(x, y, 4.2 * er);
+  });
+  L.ctr.selectAll('circle').attr('r', d => (S.sel === d ? 5 : 3.4)).each(function(d) {
+    const [x, y] = proj([d.lon, d.lat]); this.setAttribute('cx', x); this.setAttribute('cy', y);
+  });
+  L.ra.selectAll('path').attr('d', d => { const [x, y] = proj([d.lon, d.lat]); return diamond(x, y, raSize(d)); });
+
+  const showAll = T.k >= 2.2;
+  const vIds = S.sel ? null : villageIds();
+  const want = d => showAll || S.sel === d || (vIds && vIds.has(d.id));
+  let labs = [];
+  L.ctr.selectAll('circle').each(d => { if (want(d)) labs.push({d, cls:'id-label halo', dx:6, dy:-6, pri:(S.sel === d ? 1e6 : 0) + (vIds && vIds.has(d.id) ? 1e5 : 0) + d.p['Linked Raids']}); });
+  L.ra.selectAll('path').each(d => { if (want(d)) labs.push({d, cls:'id-label ra-l halo', dx:raSize(d) + 3, dy:4, pri:(S.sel === d ? 1e6 : 0) + (vIds && vIds.has(d.id) ? 1e5 : 0) + d.p.Raids * 2}); });
+  // greedy declutter: higher-priority labels claim space first
+  labs.sort((a, b) => b.pri - a.pri);
+  const boxes = [];
+  labs = labs.filter(l => {
+    const [px, py] = proj([l.d.lon, l.d.lat]);
+    l.x = px + l.dx; l.y = py + l.dy;
+    const b = {x:l.x - 1, y:l.y - 10, w:l.d.id.length * 7 + 2, h:12};
+    if (l.pri < 1e5 && boxes.some(o => b.x < o.x + o.w && b.x + b.w > o.x && b.y < o.y + o.h && b.y + b.h > o.y)) return false;
+    boxes.push(b); return true;
+  });
+  L.lab.selectAll('text').data(labs, l => l.d.id).join('text')
+    .attr('class', l => l.cls).text(l => l.d.id)
+    .attr('x', l => proj([l.d.lon, l.d.lat])[0] + l.dx).attr('y', l => proj([l.d.lon, l.d.lat])[1] + l.dy);
+
+  L.sel.selectAll('g.x').each(function(d) {
+    const g = d3.select(this);
+    const a = proj(d.from), b = proj(d.to);
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    g.select('line').attr('x1', a[0]).attr('y1', a[1]).attr('x2', b[0]).attr('y2', b[1]).attr('opacity', len > 4 ? 1 : 0);
+    if (d.kind === 'search') {
+      g.select('path').attr('d', `M${b[0] - 6},${b[1] - 6}L${b[0] + 6},${b[1] + 6}M${b[0] - 6},${b[1] + 6}L${b[0] + 6},${b[1] - 6}`);
+      g.select('text').attr('x', b[0] + 9).attr('y', b[1] + 4).text('search patch');
+    } else {
+      g.select('path').attr('d', null);
+      g.select('text').attr('x', (a[0] + b[0]) / 2 + 6).attr('y', (a[1] + b[1]) / 2 - 6).text(len > 70 ? d.text : '');
+    }
+  });
+  drawScale();
+}
+
+function drawScale() {
+  if (!W) return;
+  const cx = W / 2, cy = H / 2;
+  const a = proj.invert([cx - 50, cy]), b = proj.invert([cx + 50, cy]);
+  const kmPx = hv(a, b) / 100;
+  const nice = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10, 20, 25, 50, 100];
+  const len = nice.filter(v => v / kmPx <= 120).pop() || 0.1;
+  const px = len / kmPx;
+  const fmt = v => (v < 1 ? (v * 1000) + ' m' : v + ' km');
+  const half = v => (v / 2 < 1 ? (v / 2 * 1000) + '' : String(v / 2));
+  d3.select('#scale').html(`
+    <rect x="1" y="14" width="${px / 2}" height="5" style="fill:var(--ink)"/>
+    <rect x="${1 + px / 2}" y="14" width="${px / 2}" height="5" style="fill:var(--sheet);stroke:var(--ink);stroke-width:1"/>
+    <rect x="1" y="14" width="${px}" height="5" style="fill:none;stroke:var(--ink);stroke-width:1"/>
+    <text x="1" y="10" style="font:500 10px var(--font-mono);fill:var(--ink)">0</text>
+    <text x="${1 + px / 2}" y="10" text-anchor="middle" style="font:500 10px var(--font-mono);fill:var(--ink)">${half(len)}</text>
+    <text x="${1 + px}" y="10" text-anchor="middle" style="font:500 10px var(--font-mono);fill:var(--ink)">${fmt(len)}</text>`);
+}
+
+/* ---------- tooltip ---------- */
+const tip = document.getElementById('tip');
+function agoTxt(d) { return d === 0 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`; }
+function tipFor(e, d) {
+  let h;
+  if (d.type === 'refuge') {
+    h = `<b>${d.id}</b> · ${esc(d.p.Group)} · ${d.p.Confidence}<br>Last used ${agoTxt(d.p['Days Since Last Use'])}<br>${d.p['Linked Raids']} linked raids, ${d.p.Reports} reports`;
+  } else if (d.type === 'area') {
+    h = `<b>${d.id}</b> · ${d.p.Raids} raids over ${d.p.Nights} nights<br>${esc(d.p['Villages Raided'])}<br>Last raid ${fmtD(d.last)}`;
+  } else {
+    h = `<b>${d.cat} raid</b> from ${d.ref}<br>Night of ${fmtD(d.night)}, entry ${String(d.hour).padStart(2, '0')}:00<br>${d.dist} km from refuge centre`;
+  }
+  tip.innerHTML = h; tip.hidden = false; tipMove(e);
+}
+function tipMove(e) {
+  const r = sheet.getBoundingClientRect();
+  let x = e.clientX - r.left + 14, y = e.clientY - r.top + 14;
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  if (x + tw > r.width - 8) x = e.clientX - r.left - tw - 14;
+  if (y + th > r.height - 8) y = e.clientY - r.top - th - 14;
+  tip.style.left = Math.max(4, x) + 'px'; tip.style.top = Math.max(4, y) + 'px';
+}
+function tipHide() { tip.hidden = true; }
+
+/* ---------- charts ---------- */
+function niceMax(m) { return d3.scaleLinear().domain([0, Math.max(1, m)]).nice(4); }
+function hourChart(arr, h = 120) {
+  const order = d3.range(24).map(i => (i + 12) % 24);
+  const counts = order.map(hh => arr.filter(l => l.hour === hh).length);
+  let best = 0, bi = 0;
+  for (let i = 0; i < 24; i++) { const s = counts[i] + counts[(i + 1) % 24] + counts[(i + 2) % 24]; if (s > best) { best = s; bi = i; } }
+  const pk = new Set([bi, (bi + 1) % 24, (bi + 2) % 24]);
+  const Wc = 340, pl = 26, pr = 6, pt = 8, pb = 20, iw = Wc - pl - pr, ih = h - pt - pb, bw = iw / 24;
+  const y = niceMax(d3.max(counts)).range([pt + ih, pt]);
+  const ticks = y.ticks(3);
+  let s = `<svg viewBox="0 0 ${Wc} ${h}" role="img" aria-label="Raid entry hour histogram">`;
+  s += `<rect class="band" x="${pl + 6 * bw}" y="${pt}" width="${12 * bw}" height="${ih}"/>`;
+  ticks.forEach(t => { s += `<line class="grid" x1="${pl}" x2="${Wc - pr}" y1="${y(t)}" y2="${y(t)}"/><text x="${pl - 5}" y="${y(t) + 3}" text-anchor="end">${t}</text>`; });
+  counts.forEach((c, i) => { if (c) s += `<rect class="bar${pk.has(i) && best ? ' pk' : ''}" x="${pl + i * bw + 1}" y="${y(c)}" width="${bw - 2}" height="${pt + ih - y(c)}"><title>${String(order[i]).padStart(2, '0')}:00 · ${c}</title></rect>`; });
+  [[0, '12:00'], [6, '18:00'], [12, '00:00'], [18, '06:00']].forEach(([i, t]) => { s += `<text x="${pl + i * bw}" y="${h - 6}" text-anchor="${i ? 'middle' : 'start'}">${t}</text>`; });
+  s += `<text x="${Wc - pr}" y="${h - 6}" text-anchor="end">12:00</text>`;
+  s += `<text class="lab" x="${pl + 6 * bw + 3}" y="${pt + 9}" style="fill:var(--faint)">night</text>`;
+  s += '</svg>';
+  const total = d3.sum(counts);
+  return {svg:s, peak:best ? {from:order[bi], to:(order[bi] + 3) % 24, n:best, total} : null};
+}
+function monthChart(arr) {
+  const months = [];
+  for (let d = new Date(Date.UTC(2025, 8, 1)); d <= TODAY; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) months.push(d);
+  const key = d => d.getUTCFullYear() * 12 + d.getUTCMonth();
+  const rows = months.map(m => {
+    const inM = arr.filter(l => key(l.date) === key(m));
+    return {m, Crop:inM.filter(l => l.cat === 'Crop').length, House:inM.filter(l => l.cat === 'House').length, Injury:inM.filter(l => l.cat === 'Injury').length};
+  });
+  const Wc = 340, h = 128, pl = 26, pr = 6, pt = 8, pb = 30, iw = Wc - pl - pr, ih = h - pt - pb, bw = iw / months.length;
+  const y = niceMax(d3.max(rows, r => r.Crop + r.House + r.Injury)).range([pt + ih, pt]);
+  let s = `<svg viewBox="0 0 ${Wc} ${h}" role="img" aria-label="Linked raids per month">`;
+  y.ticks(3).forEach(t => { s += `<line class="grid" x1="${pl}" x2="${Wc - pr}" y1="${y(t)}" y2="${y(t)}"/><text x="${pl - 5}" y="${y(t) + 3}" text-anchor="end">${t}</text>`; });
+  rows.forEach((r, i) => {
+    let base = 0;
+    ['Crop', 'House', 'Injury'].forEach(c => {
+      if (!r[c]) return;
+      const y0 = y(base), y1 = y(base + r[c]);
+      s += `<rect class="b-${c.toLowerCase()}" x="${pl + i * bw + 2}" y="${y1}" width="${bw - 4}" height="${y0 - y1}"><title>${MON[r.m.getUTCMonth()]} ${r.m.getUTCFullYear()} · ${c}: ${r[c]}</title></rect>`;
+      base += r[c];
+    });
+    s += `<text x="${pl + i * bw + bw / 2}" y="${pt + ih + 12}" text-anchor="middle">${MON[r.m.getUTCMonth()][0]}</text>`;
+    if (i === 0 || r.m.getUTCMonth() === 0) s += `<text x="${pl + i * bw + 2}" y="${pt + ih + 25}" style="fill:var(--faint)">${r.m.getUTCFullYear()}</text>`;
+  });
+  return s + '</svg>';
+}
+
+/* ---------- panel ---------- */
+const $ = id => document.getElementById(id);
+function buildChips() {
+  $('groupChips').innerHTML = GROUPS.map(g => {
+    const n = refuges.filter(r => r.g === g.key).length;
+    return `<button type="button" class="chip c-${g.key}" data-g="${g.key}" aria-pressed="true"><span class="sw"></span>${g.name}<span class="n">${n}</span></button>`;
+  }).join('');
+  $('recLegend').innerHTML = REC.map(r => {
+    const n = refuges.filter(x => x.rec === r.key).length;
+    return `<span class="chip static c-${r.key}"><span class="sw"></span>${r.name}<span class="n">${n}</span></span>`;
+  }).join('');
+  const ring = c => `<svg class="ring" viewBox="0 0 15 15"><circle cx="7.5" cy="7.5" r="6" style="stroke-dasharray:${c === 'Probable' ? '4 2.4' : c === 'Possible' ? '1.2 2.2' : 'none'}"/></svg>`;
+  $('confChips').innerHTML = CONF.map(c => {
+    const n = refuges.filter(r => r.p.Confidence === c).length;
+    return `<button type="button" class="chip" data-c="${c}" aria-pressed="true">${ring(c)}${c}<span class="n">${n}</span></button>`;
+  }).join('');
+}
+function setPressed(container, attr, test) {
+  container.querySelectorAll(`[${attr}]`).forEach(b => b.setAttribute('aria-pressed', String(test(b.getAttribute(attr)))));
+}
+
+function updateOverview() {
+  setPressed($('groupChips'), 'data-g', k => S.groups.has(k));
+  setPressed($('confChips'), 'data-c', c => S.conf.has(c));
+  setPressed($('periodSeg'), 'data-v', v => v === S.period);
+  setPressed($('colorSeg'), 'data-v', v => v === S.colorBy);
+  setPressed($('listTabs'), 'data-v', v => v === S.tab);
+  setPressed($('withinSeg'), 'data-v', v => v === S.within);
+  $('weekBtn').setAttribute('aria-pressed', String(S.within === '7'));
+  renderWatch();
+  renderVillage();
+  $('recLegend').hidden = S.colorBy !== 'recency';
+  $('panel').classList.toggle('mode-recency', S.colorBy === 'recency');
+
+  const vis = new Set(refuges.filter(refVisible).map(r => r.id));
+  const lk = links.filter(l => vis.has(l.ref));
+  const lkP = lk.filter(inPeriod);
+  const hc = hourChart(lkP);
+  $('hourChart').innerHTML = hc.svg;
+  const per = S.period === 'all' ? 'all' : `the last ${S.period} days`;
+  $('peakNote').innerHTML = hc.peak
+    ? `Entry hour of ${hc.peak.total} linked raids (${per}), drawn noon to noon. <strong>${Math.round(hc.peak.n / hc.peak.total * 100)}% began between ${String(hc.peak.from).padStart(2, '0')}:00 and ${String(hc.peak.to).padStart(2, '0')}:00</strong>, the busiest three hours.`
+    : 'No linked raids for the refuges shown in this period.';
+  $('monthChart').innerHTML = monthChart(lk);
+  renderList();
+}
+
+function renderList() {
+  const sortSel = $('sortSel');
+  const opts = S.tab === 'refuges'
+    ? [['recent', 'Most recently used'], ['raids', 'Most linked raids'], ['reports', 'Most reports']]
+    : [['raids', 'Most raids'], ['recent', 'Most recent raid'], ['damage', 'Most house damage']];
+  const cur = S.tab === 'refuges' ? S.sortR : S.sortA;
+  sortSel.innerHTML = opts.map(([v, t]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${t}</option>`).join('');
+  let h = '';
+  if (S.tab === 'refuges') {
+    const arr = refuges.filter(refVisible);
+    const f = {recent:(a, b) => a.p['Days Since Last Use'] - b.p['Days Since Last Use'] || b.p['Linked Raids'] - a.p['Linked Raids'],
+               raids:(a, b) => b.p['Linked Raids'] - a.p['Linked Raids'], reports:(a, b) => b.p.Reports - a.p.Reports}[S.sortR];
+    arr.sort(f);
+    h = arr.map(r => {
+      const d = r.p['Days Since Last Use'];
+      return `<button type="button" class="row" data-go="${r.id}">
+        <span class="sw ${colorClass(r)}"></span><span class="id">${r.id}</span>
+        <span class="what"><span>${esc(r.p.Group)} · ${r.p.Confidence}</span><span class="s2">${esc(r.p.Range)} · ${esc(r.p.Beat)}</span></span>
+        <span class="num"><span class="${d <= 7 ? 'hot' : ''}">${d === 0 ? 'today' : d + ' d ago'}</span><span class="s2">${r.p['Linked Raids']} raids</span></span>
+      </button>`;
+    }).join('');
+    if (!arr.length) h = '<p class="list-empty">No refuges match the groups and confidence levels selected above.</p>';
+  } else {
+    const arr = areas.slice();
+    const f = {raids:(a, b) => b.p.Raids - a.p.Raids, recent:(a, b) => a.since - b.since, damage:(a, b) => b.p['House Damage'] - a.p['House Damage'] || b.p.Raids - a.p.Raids}[S.sortA];
+    arr.sort(f);
+    h = arr.map(a => `<button type="button" class="row" data-go="${a.id}">
+        <svg class="dia${a.gap ? ' gap' : ''}" viewBox="-6 -6 12 12"><path d="M0 -5 L5 0 L0 5 L-5 0Z"/></svg><span class="id">${a.id}</span>
+        <span class="what"><span>${esc(a.p['Villages Raided'])}</span><span class="s2">${esc(a.p.Range)} · ${a.p['House Damage']} houses${a.hurt ? ` · ${a.p.Casualties} hurt` : ''}</span></span>
+        <span class="num"><span>${a.p.Raids} raids</span><span class="s2">last ${fmtShort(a.last)}</span></span>
+      </button>`).join('');
+  }
+  $('list').innerHTML = h;
+}
+
+/* ---------- occupied this week ---------- */
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+function parseActs(r) {
+  const acts = String(r.p['Recommended Action'] || '').split(/;\s*/).filter(Boolean);
+  const dusk = acts.find(a => /^Dusk watch/i.test(a));
+  const warnRaw = acts.find(a => /^warn .+ before dark/i.test(a));
+  const warnV = warnRaw ? warnRaw.replace(/^warn\s+/i, '').replace(/\s+before dark.*$/i, '') : '';
+  const rest = acts.filter(a => a !== dusk && a !== warnRaw);
+  return {dusk:dusk ? dusk.replace(/\s*\(raids go several ways\)/i, ' (raids go several ways)') : '', warnV, rest};
+}
+const weekList = refuges.filter(r => r.p['Days Since Last Use'] <= 7)
+  .sort((a, b) => a.p['Days Since Last Use'] - b.p['Days Since Last Use'] || b.p['Linked Raids'] - a.p['Linked Raids']);
+function renderWatch() {
+  $('watchCount').textContent = `${weekList.length} refuges, all groups`;
+  $('watch').innerHTML = weekList.map(r => {
+    const a = parseActs(r);
+    const line2 = [a.dusk, a.warnV ? `Warn ${a.warnV} before dark` : ''].filter(Boolean).join('. ');
+    return `<button type="button" class="wrow" data-go="${r.id}">
+      <span class="id"><span class="sw ${colorClass(r)}"></span>${r.id}</span>
+      <span class="l1"><b>${esc(r.p.Group)}</b> · used ${agoTxt(r.p['Days Since Last Use'])} · ${esc(r.p.Range)}</span>
+      <span class="l2">${esc(line2)}.</span>
+      ${a.rest.length ? `<span class="l3">${a.rest.map(x => esc(cap(x))).join('. ')}.</span>` : ''}
+    </button>`;
+  }).join('');
+}
+function watchText() {
+  const lines = [`Elephant day refuges used in the last 7 days (as of ${fmtD(TODAY)})`, ''];
+  weekList.forEach(r => {
+    const a = parseActs(r);
+    lines.push(`${r.id}: ${r.p.Group}, used ${agoTxt(r.p['Days Since Last Use'])}. ${r.p.Range}, ${r.p.Beat} beat (${r.lat.toFixed(5)}, ${r.lon.toFixed(5)})`);
+    if (a.dusk) lines.push(`${a.dusk}.`);
+    if (a.warnV) lines.push(`Warn ${a.warnV} before dark.`);
+    a.rest.forEach(x => lines.push(`${cap(x)}.`));
+    lines.push('');
+  });
+  return lines.join('\n').trim();
+}
+
+/* ---------- village finder ---------- */
+const REL = [
+  ['raided', 'Raided from refuge'],
+  ['nearest', 'Nearest village to'],
+  ['reach', 'Within reach of'],
+  ['area', 'Raid area']
+];
+function renderVillage() {
+  const box = $('vres');
+  const q = $('vq').value.trim();
+  $('vclear').hidden = !q;
+  if (S.village) {
+    const e = vIndex.get(S.village);
+    const rows = REL.map(([rel, label]) => {
+      const hs = e.hits.filter(h => h.rel === rel);
+      if (!hs.length) return '';
+      return `<dt>${label}</dt><dd>${hs.map(h => `<button type="button" class="linkbtn" data-go="${h.item.id}">${h.item.id}</button>`).join('')}</dd>`;
+    }).join('');
+    box.innerHTML = `<span class="vname">${esc(e.name)}</span><dl>${rows}</dl>
+      <p class="tiny">Other refuges and raid areas are faded on the map. "Within reach" lists in the file stop at six villages per refuge.</p>`;
+    return;
+  }
+  if (q.length >= 2) {
+    const ql = q.toLowerCase();
+    const sugg = [...vIndex.values()].filter(v => v.name.toLowerCase().includes(ql)).slice(0, 8);
+    box.innerHTML = sugg.length
+      ? `<div class="sugg">${sugg.map(v => `<button type="button" class="chip" data-village="${esc(v.name.toLowerCase())}">${esc(v.name)}<span class="n">${v.hits.length}</span></button>`).join('')}</div>`
+      : `<p class="tiny">No village called "${esc(q)}" appears in this file.</p>`;
+    return;
+  }
+  box.innerHTML = `<p class="tiny">${vIndex.size} villages are named in the file. Pick one to see the refuges and raid areas tied to it.</p>`;
+}
+function setVillage(key) {
+  S.village = key && vIndex.has(key) ? key : null;
+  if (S.village) $('vq').value = vIndex.get(S.village).name;
+  updateOverview(); render();
+  if (S.village) {
+    const pts = vIndex.get(S.village).hits.map(h => [h.item.lon, h.item.lat]);
+    zoomToPts(pts, 6);
+  }
+}
+
+/* ---------- raid direction rose ---------- */
+const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+function rose(r) {
+  const counts = new Array(8).fill(0);
+  const k = Math.cos(r.lat * Math.PI / 180);
+  r.links.forEach(l => {
+    const br = (Math.atan2((l.b[0] - r.lon) * k, l.b[1] - r.lat) * 180 / Math.PI + 360) % 360;
+    counts[Math.round(br / 45) % 8]++;
+  });
+  const max = Math.max(1, ...counts), R = 44, c = 58;
+  const pt = (deg, rho) => [c + rho * Math.sin(deg * Math.PI / 180), c - rho * Math.cos(deg * Math.PI / 180)];
+  let s = `<svg class="rose ${colorClass(r)}" viewBox="0 0 116 116" role="img" aria-label="Directions of linked raids from the refuge">`;
+  s += `<circle class="ring" cx="${c}" cy="${c}" r="${R}"/><circle class="ring" cx="${c}" cy="${c}" r="${R / 2}"/>`;
+  s += `<line class="ax" x1="${c}" y1="${c - R}" x2="${c}" y2="${c + R}"/><line class="ax" x1="${c - R}" y1="${c}" x2="${c + R}" y2="${c}"/>`;
+  counts.forEach((n, i) => {
+    if (!n) return;
+    const rho = R * Math.sqrt(n / max);
+    const [x0, y0] = pt(i * 45 - 21, rho), [x1, y1] = pt(i * 45 + 21, rho);
+    s += `<path class="wedge" d="M${c},${c}L${x0},${y0}A${rho},${rho} 0 0 1 ${x1},${y1}Z"><title>${DIRS[i]}: ${n}</title></path>`;
+  });
+  s += `<text x="${c}" y="9" text-anchor="middle">N</text><text x="${c + R + 6}" y="${c + 3}">E</text><text x="${c}" y="${c + R + 12}" text-anchor="middle">S</text><text x="${c - R - 6}" y="${c + 3}" text-anchor="end">W</text>`;
+  const top = counts.indexOf(max);
+  return {svg:s + '</svg>', top:DIRS[top], topN:max};
+}
+
+const fmtM = v => v == null ? 'none within window' : v >= 1000 ? (v / 1000).toFixed(1) + ' km' : Math.round(v) + ' m';
+function monthStrip(s) {
+  const set = new Set(String(s || '').split(/,\s*/));
+  return `<div class="mstrip" role="img" aria-label="Months: ${esc(s)}">${MON.map(m => `<span class="${set.has(m) ? 'on' : ''}" title="${m}">${m[0]}</span>`).join('')}</div>`;
+}
+function coverBar(p) {
+  const parts = [['tree', 'Tree', p['Tree Share %']], ['range', 'Rangeland', p['Rangeland Share %']], ['crop', 'Crop', p['Crop Share %']], ['built', 'Built', p['Built Share %']], ['water', 'Water', p['Water Share %']]];
+  return `<div class="cover" role="img" aria-label="Land cover shares">${parts.filter(x => x[2] > 0).map(x => `<i class="lc-${x[0]}" style="width:${x[2]}%" title="${x[1]} ${x[2]}%"></i>`).join('')}</div>
+    <div class="cover-key">${parts.filter(x => x[2] > 0).map(x => `<span><i class="lc-${x[0]}"></i>${x[1]} ${x[2]}%</span>`).join('')}</div>`;
+}
+function coordsBlock(lat, lon) {
+  const txt = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  return `<div class="coords"><code id="coordTxt">${txt}</code><button type="button" class="copy" data-copy="${txt}">Copy</button></div>`;
+}
+function refList(s) { return esc(s || '—'); }
+
+function refugeDetail(r) {
+  const p = r.p, d = p['Days Since Last Use'];
+  const actions = String(p['Recommended Action'] || '').split(/;\s*/).filter(Boolean);
+  const flags = p.Flags ? p.Flags.split(/;\s*/) : [];
+  const head = p['Raids Head'];
+  const nearAreas = areas.filter(a => a.nearest === r);
+  return `
+  <div class="d-head">
+    <div><button type="button" class="back" data-act="back">← All refuges</button></div>
+    <div class="d-title"><span class="sw ${colorClass(r)}"></span><h2>${r.id}</h2><span class="k">${esc(p.Group)} day refuge</span></div>
+    <div class="pills"><span class="pill strong">${p.Confidence}</span>${d <= 7 ? '<span class="pill warn">Used this week</span>' : ''}${flags.map(f => `<span class="pill">${esc(f)}</span>`).join('')}</div>
+    <p class="d-status">Last used <strong>${agoTxt(d)}</strong> (${fmtD(r.last)}). First used ${fmtD(r.first)}.</p>
+  </div>
+  <section class="d-sec"><h3>Recommended action</h3><ul class="actions">${actions.map(a => `<li>${esc(a)}</li>`).join('')}</ul></section>
+  <section class="d-sec"><h3>Months used</h3>${monthStrip(p['Months Used'])}</section>
+  <section class="d-sec"><h3>Evidence</h3><dl class="kv">
+    <div><dt>Reports</dt><dd>${p.Reports}</dd></div>
+    <div><dt>Days used</dt><dd>${p['Days Used']}</dd></div>
+    <div><dt>Direct sightings</dt><dd>${p['Direct Sightings']} <small>${p['Direct Day Sightings']} by day</small></dd></div>
+    <div><dt>Indirect signs</dt><dd>${p['Indirect Signs']}</dd></div>
+    <div><dt>Herd size (median)</dt><dd>${p['Herd Size (median)'] ?? '<small>not recorded</small>'}</dd></div>
+    <div><dt>Bull-type share</dt><dd>${p['Bull-Type Share %']}%</dd></div>
+    <div><dt>Stability</dt><dd>${p['Stability %']}%</dd></div>
+    <div><dt>Refuge radius</dt><dd>${p['Radius (km)']} km</dd></div>
+  </dl></section>
+  <section class="d-sec"><h3>Raids linked to this refuge</h3><dl class="kv">
+    <div><dt>Linked raids</dt><dd>${p['Linked Raids']}</dd></div>
+    <div><dt>Same-night raids</dt><dd>${p['Same-Night Raids']}</dd></div>
+    <div><dt>House damage</dt><dd>${p['Linked House Damage']}</dd></div>
+    <div><dt>Injuries · deaths</dt><dd>${p['Linked Injuries']} · ${p['Linked Deaths']}</dd></div>
+    <div><dt>Raids head</dt><dd>${esc(head)}</dd></div>
+    <div><dt>Raid distance (median)</dt><dd>${p['Raid Distance (km, median)']} km</dd></div>
+  </dl>
+  ${r.links.length ? (() => { const ro = rose(r); return `<div class="raidviz">${ro.svg}<p>Most raids go <strong>${ro.top}</strong> (${ro.topN} of ${r.links.length}).<span>Wedge length shows how many linked raids lie in each direction from the refuge centre.</span></p></div>`; })() : ''}
+  ${r.links.length ? `<figure class="mini chart">${hourChart(r.links, 100).svg}<figcaption>Entry hour of its ${r.links.length} linked raids, noon to noon</figcaption></figure>` : ''}
+  ${nearAreas.length ? `<div><p class="tiny" style="color:var(--muted);margin:0 0 3px">Raid areas with this as their nearest known refuge</p><div class="near-areas">${nearAreas.map(a => `<span><button type="button" class="linkbtn" data-go="${a.id}">${a.id}</button> ${a.p['To Nearest Known Refuge (km)']} km · ${a.p.Raids} raids</span>`).join('')}</div></div>` : ''}
+  </section>
+  <section class="d-sec"><h3>Cover in the refuge</h3>${coverBar(p)}<dl class="kv">
+    <div><dt>Tree patch</dt><dd>${nf.format(p['Tree Patch (ha)'])}${p['Patch Extends Beyond Window'] ? '+' : ''} ha${p['Patch Extends Beyond Window'] ? ' <small>runs past window</small>' : ''}</dd></div>
+    <div><dt>Cropland within 2 km</dt><dd>${p['Cropland Within 2 km %']}%</dd></div>
+    <div><dt>To cropland</dt><dd>${fmtM(p['To Cropland (m)'])}</dd></div>
+    <div><dt>To built area</dt><dd>${fmtM(p['To Built Area (m)'])}</dd></div>
+    <div><dt>To water</dt><dd>${fmtM(p['To Water (m)'])}</dd></div>
+  </dl></section>
+  <section class="d-sec"><h3>Villages</h3><dl class="kv one">
+    <div><dt>Raided from here</dt><dd>${refList(p['Villages Raided'])}</dd></div>
+    <div><dt>Nearest village</dt><dd>${esc(p['Nearest Village'])} · ${p['To Nearest Village (km)']} km</dd></div>
+    <div><dt>Within reach</dt><dd>${refList(p['Villages Within Reach'])}</dd></div>
+  </dl></section>
+  <section class="d-sec"><h3>Location</h3><dl class="kv">
+    <div><dt>Division</dt><dd>${esc(p.Division)}</dd></div>
+    <div><dt>Range</dt><dd>${esc(p.Range)}</dd></div>
+    <div><dt>Beat</dt><dd>${esc(p.Beat)}</dd></div>
+  </dl>${coordsBlock(r.lat, r.lon)}</section>`;
+}
+
+function areaDetail(a) {
+  const p = a.p;
+  const actions = String(p['Recommended Action'] || '').split(/;\s*/).filter(Boolean);
+  const near = p['To Nearest Known Refuge (km)'];
+  const sd = p['Search Distance (km)'];
+  const patch = p['Search Patch (ha)'];
+  return `
+  <div class="d-head">
+    <div><button type="button" class="back" data-act="back">← All raid areas</button></div>
+    <div class="d-title"><svg class="dia${a.gap ? ' gap' : ''}" viewBox="-6 -6 12 12"><path d="M0 -5 L5 0 L0 5 L-5 0Z"/></svg><h2>${a.id}</h2><span class="k">Raid area</span></div>
+    <div class="pills">${a.gap ? '<span class="pill warn">No refuge on record within reach</span>' : ''}${a.hurt ? `<span class="pill warn">People hurt: ${p.Casualties}</span>` : ''}${a.since <= 7 ? '<span class="pill strong">Raided this week</span>' : ''}</div>
+    <p class="d-status"><strong>${p.Raids} raids over ${p.Nights} nights</strong>, ${fmtD(a.first)} to ${fmtD(a.last)}.</p>
+  </div>
+  <section class="d-sec"><h3>Recommended action</h3><ul class="actions">${actions.map(x => `<li>${esc(x)}</li>`).join('')}</ul></section>
+  <section class="d-sec"><h3>Months raided</h3>${monthStrip(p.Months)}</section>
+  <section class="d-sec"><h3>Impact</h3><dl class="kv">
+    <div><dt>House damage</dt><dd>${p['House Damage']}</dd></div>
+    <div><dt>Casualties</dt><dd>${p.Casualties}</dd></div>
+  </dl><dl class="kv one"><div><dt>Villages raided</dt><dd>${refList(p['Villages Raided'])}</dd></div></dl></section>
+  <section class="d-sec"><h3>Where the elephants lie up</h3><dl class="kv">
+    <div><dt>Nearest known refuge</dt><dd>${near} km${a.nearest ? ` · <button type="button" class="linkbtn" data-go="${a.nearest.id}">${a.nearest.id}</button>` : ''}</dd></div>
+    <div><dt>Tree patch to search</dt><dd>${patch == null ? '<small>none mapped</small>' : nf.format(patch) + (p['Search Patch Extends Beyond Window'] ? '+' : '') + ' ha'}</dd></div>
+    <div><dt>Patch lies</dt><dd>${sd == null ? '—' : sd === 0 ? 'at the raid area' : `${sd} km ${esc(p['Search Direction'])}`}</dd></div>
+  </dl></section>
+  <section class="d-sec"><h3>Location</h3><dl class="kv">
+    <div><dt>Division</dt><dd>${esc(p.Division)}</dd></div>
+    <div><dt>Range</dt><dd>${esc(p.Range)}</dd></div>
+    <div><dt>Beat</dt><dd>${esc(p.Beat)}</dd></div>
+  </dl>${coordsBlock(a.lat, a.lon)}</section>`;
+}
+
+/* ---------- selection ---------- */
+function select(id, opts = {}) {
+  const item = id ? byId.get(id) : null;
+  S.sel = item || null;
+  if (item && item.type === 'refuge' && !refVisible(item)) { S.groups.add(item.g); S.conf.add(item.p.Confidence); }
+  if (item && item.type === 'area') S.tab = 'areas';
+  if (item && item.type === 'refuge') S.tab = 'refuges';
+  try { history.replaceState(null, '', item ? '#' + item.id : location.pathname + location.search); } catch (e) {}
+  $('overview').hidden = !!item;
+  $('detail').hidden = !item;
+  if (item) {
+    $('detail').innerHTML = item.type === 'refuge' ? refugeDetail(item) : areaDetail(item);
+    $('panel').scrollTop = 0;
+  }
+  updateOverview();
+  render();
+  if (item && opts.zoom) zoomTo(item);
+}
+function zoomTo(item) {
+  const pts = [[item.lon, item.lat]];
+  if (item.type === 'refuge') { item.links.forEach(l => pts.push(l.b)); item.circle.coordinates[0].forEach(c => pts.push(c)); }
+  else { if (item.nearest) pts.push([item.nearest.lon, item.nearest.lat]); if (item.p['Search Latitude'] != null) pts.push([item.p['Search Longitude'], item.p['Search Latitude']]); }
+  zoomToPts(pts, 14);
+}
+function zoomToPts(pts, maxK) {
+  const xy = pts.map(p => proj(p)).map(([x, y]) => [(x - T.x) / T.k, (y - T.y) / T.k]);
+  const [x0, x1] = d3.extent(xy, d => d[0]), [y0, y1] = d3.extent(xy, d => d[1]);
+  const k = Math.max(1, Math.min(maxK, 0.72 / Math.max((x1 - x0 + 40) / W, (y1 - y0 + 40) / H)));
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const t = d3.zoomIdentity.translate(W / 2 - k * cx, H / 2 - k * cy).scale(k);
+  svg.transition().duration(reduceMotion ? 0 : 650).call(zoom.transform, t);
+}
+
+/* ---------- events ---------- */
+$('groupChips').addEventListener('click', e => {
+  const b = e.target.closest('[data-g]'); if (!b) return;
+  const k = b.dataset.g; S.groups.has(k) ? S.groups.delete(k) : S.groups.add(k);
+  if (S.sel && S.sel.type === 'refuge' && !refVisible(S.sel)) select(null); else { updateOverview(); render(); }
+});
+$('confChips').addEventListener('click', e => {
+  const b = e.target.closest('[data-c]'); if (!b) return;
+  const c = b.dataset.c; S.conf.has(c) ? S.conf.delete(c) : S.conf.add(c);
+  if (S.sel && S.sel.type === 'refuge' && !refVisible(S.sel)) select(null); else { updateOverview(); render(); }
+});
+$('periodSeg').addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (!b) return; S.period = b.dataset.v; updateOverview(); render(); });
+$('colorSeg').addEventListener('click', e => {
+  const b = e.target.closest('[data-v]'); if (!b) return; S.colorBy = b.dataset.v; updateOverview(); render();
+  if (S.sel) $('detail').innerHTML = S.sel.type === 'refuge' ? refugeDetail(S.sel) : areaDetail(S.sel);
+});
+$('listTabs').addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (!b) return; S.tab = b.dataset.v; updateOverview(); });
+$('sortSel').addEventListener('change', e => { if (S.tab === 'refuges') S.sortR = e.target.value; else S.sortA = e.target.value; renderList(); });
+$('tgAreas').addEventListener('change', e => { S.showAreas = e.target.checked; render(); });
+$('tgLinks').addEventListener('change', e => { S.showLinks = e.target.checked; render(); });
+$('panel').addEventListener('click', e => {
+  const go = e.target.closest('[data-go]');
+  if (go) {
+    select(go.dataset.go, {zoom:true});
+    if (window.matchMedia('(max-width: 880px)').matches) sheet.scrollIntoView({behavior:reduceMotion ? 'auto' : 'smooth', block:'start'});
+    return;
+  }
+  if (e.target.closest('[data-act="back"]')) { select(null); return; }
+  const cp = e.target.closest('[data-copy]');
+  if (cp) {
+    const txt = cp.dataset.copy;
+    const done = () => { cp.textContent = 'Copied'; setTimeout(() => { cp.textContent = 'Copy'; }, 1500); };
+    const fallback = () => { const c = $('coordTxt'); if (c) { const r = document.createRange(); r.selectNodeContents(c); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } cp.textContent = 'Selected'; };
+    try { navigator.clipboard.writeText(txt).then(done, fallback); } catch (err) { fallback(); }
+  }
+});
+$('zin').addEventListener('click', () => svg.transition().duration(reduceMotion ? 0 : 250).call(zoom.scaleBy, 1.6));
+$('zout').addEventListener('click', () => svg.transition().duration(reduceMotion ? 0 : 250).call(zoom.scaleBy, 1 / 1.6));
+$('zreset').addEventListener('click', () => svg.transition().duration(reduceMotion ? 0 : 450).call(zoom.transform, d3.zoomIdentity));
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (S.sel) select(null);
+  else if (S.village) { $('vq').value = ''; setVillage(null); }
+});
+
+/* refinements: division jump, recency filter, village finder, watch list copy, hover highlight */
+$('jumpSeg').addEventListener('click', e => {
+  const b = e.target.closest('[data-v]'); if (!b) return;
+  if (b.dataset.v === 'all') { svg.transition().duration(reduceMotion ? 0 : 500).call(zoom.transform, d3.zoomIdentity); return; }
+  const items = [...refuges, ...areas].filter(d => d.p.Division === b.dataset.v);
+  const pts = items.map(d => [d.lon, d.lat]);
+  items.forEach(d => { if (d.links) d.links.forEach(l => pts.push(l.b)); });
+  zoomToPts(pts, 10);
+});
+function setWithin(v) {
+  S.within = v;
+  if (S.sel && S.sel.type === 'refuge' && !refVisible(S.sel)) select(null); else { updateOverview(); render(); }
+}
+$('withinSeg').addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (b) setWithin(b.dataset.v); });
+$('weekBtn').addEventListener('click', () => setWithin(S.within === '7' ? 'any' : '7'));
+$('vlist').innerHTML = [...vIndex.values()].sort((a, b) => a.name.localeCompare(b.name)).map(v => `<option value="${esc(v.name)}"></option>`).join('');
+$('vq').addEventListener('input', e => {
+  const k = e.target.value.trim().toLowerCase();
+  if (vIndex.has(k)) { if (S.village !== k) setVillage(k); }
+  else if (S.village) setVillage(null);
+  else renderVillage();
+});
+$('vq').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const k = e.target.value.trim().toLowerCase();
+  if (vIndex.has(k)) { setVillage(k); return; }
+  const first = [...vIndex.keys()].find(n => n.includes(k));
+  if (k && first) setVillage(first);
+});
+$('vclear').addEventListener('click', () => { $('vq').value = ''; setVillage(null); $('vq').focus(); });
+$('vres').addEventListener('click', e => {
+  const c = e.target.closest('[data-village]');
+  if (c) { e.stopPropagation(); setVillage(c.dataset.village); }
+});
+$('copyWatch').addEventListener('click', () => {
+  const txt = watchText();
+  const ta = $('watchText');
+  const showText = () => { ta.value = txt; ta.hidden = false; ta.focus(); ta.select(); $('copyNote').textContent = 'Copying is blocked here. The text is selected below; copy it from there.'; };
+  try {
+    navigator.clipboard.writeText(txt).then(() => { $('copyNote').textContent = `Copied ${weekList.length} refuges. Paste into WhatsApp or SMS.`; ta.hidden = true; }, showText);
+  } catch (err) { showText(); }
+});
+function highlight(id) {
+  L.fp.selectAll('path').classed('hl', d => d.id === id);
+  L.ctr.selectAll('circle').classed('hl', d => d.id === id);
+  L.ra.selectAll('path').classed('hl', d => d.id === id);
+}
+$('panel').addEventListener('mouseover', e => { const g = e.target.closest('[data-go]'); highlight(g ? g.dataset.go : null); });
+$('panel').addEventListener('mouseleave', () => highlight(null));
+window.addEventListener('hashchange', () => {
+  const id = location.hash.slice(1);
+  if (id && byId.has(id) && (!S.sel || S.sel.id !== id)) select(id, {zoom:true});
+});
+
+/* ---------- boot ---------- */
+buildChips();
+fit(); applyT();
+new ResizeObserver(() => {
+  const w = sheet.clientWidth, h = sheet.clientHeight;
+  if (!w || !h || (w === W && h === H)) return;
+  fit(); applyT(); position();
+}).observe(sheet);
+const startId = location.hash.slice(1);
+if (startId && byId.has(startId)) select(startId, {zoom:true});
+else { updateOverview(); render(); }
+})();
+</script>
+
+</body></html>
