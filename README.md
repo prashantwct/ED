@@ -511,6 +511,31 @@ with the linked raids, and a land-cover card per refuge shows what is around
 it. Clusters of sightings say where herds were reported, not where every herd
 is: a refuge nobody reports from will not appear.
 
+The view is laid out as a field atlas plate: the map sheet on the left, a
+register panel beside it. The panel leads with **what to act on tonight** --
+the refuges used in the last seven days, newest first, each with the edge to
+watch at dusk and the villages to warn before dark, and the lot copyable as a
+message, because that is how it reaches a range office.
+
+Below that the **map key is the controls, not a legend**. A key that only
+explains wastes the space next to a map, so each block takes its marks off:
+confidence, group, last used within 7/30/60 days, the raid period, and the
+raid areas and refuge-to-raid lines. The map can be coloured by confidence
+(how much the site is believed), group (who uses it) or last used (whether it
+is live) -- three different questions, and the reader picks rather than the
+map deciding. Group takes the Okabe-Ito identity colours; last used takes one
+hue stepped dark-to-pale, because recency is ordinal and identity is not.
+The legend lists only what is actually drawn: offering four confidence levels
+on a map showing one teaches the reader something untrue.
+
+Under the key sit **when raids start**, hour by hour with the night hours
+darker and the peak called out, and **raids by month** stacked by what the
+raid cost. Both follow the key, as do the register, the raid-area table and
+every download -- a file matches the plate it came from rather than quietly
+carrying rows the reader had switched off. The map layers are unchanged:
+the same basemap, the same forest boundary outlines, the same pydeck layers
+underneath.
+
 The brief carries the same refuges: findings, the map of refuges and their
 linked raids, and the register with recommended actions. It uses the land
 cover and settings last chosen in the Day refuges view, or otherwise Esri's
