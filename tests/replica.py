@@ -14,6 +14,7 @@ admin panel has of breaking a parser that assumed its own output.
 """
 
 import json
+from html import escape
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
@@ -21,6 +22,7 @@ EMAIL = "ranger@example.org"
 PASSWORD = "correct horse"
 CSRF = "tok-abc123"
 SESSION_COOKIE = "fa_session=live"
+LOGIN_PATH_INERTIA = "/login"
 PAGE_SIZE = 4
 TOTAL_ROWS = 9  # three pages, the last one short
 
@@ -176,6 +178,65 @@ def _api_row(row):
     }
 
 
+# --- the Inertia surface -------------------------------------------------
+# The live site is a Laravel + Inertia app: the HTML is a shell carrying a
+# data-page payload, and the rows arrive as JSON on a second request. The
+# form-and-table routes above stay for the scraper tools that still read
+# them, and the two are told apart by the headers the client sends rather
+# than by the path, because the real site serves both off /login and
+# /admin/sightings exactly as this does.
+INERTIA_VERSION = "inertia-v1"
+XSRF_TOKEN = "xsrf-tok-123"
+INERTIA_SESSION = "fa_inertia=live"
+
+
+def _data_page(component, props=None, version=INERTIA_VERSION):
+    """The shell Inertia boots from, payload and all."""
+    payload = {"component": component, "props": props or {}, "url": "/",
+               "version": version}
+    attr = escape(json.dumps(payload), quote=True)
+    return ('<!doctype html><html><head><title>Forest Alerts</title></head>'
+            f'<body><div id="app" data-page="{attr}"></div></body></html>')
+
+
+def _inertia_row(row):
+    """A sighting in the shape the Inertia listing sends it.
+
+    Date and time arrive in separate fields and the lookups are nested,
+    which is what ``tools.fetch_sightings.flatten`` has to undo.
+    """
+    day = row["id"] - 99
+    return {
+        "id": row["id"],
+        "date": f"{day:02d}-10-2025",
+        "time": f"19:{row['id'] % 60:02d}:00",
+        "geolocation": {"lat": row["lat"], "lng": row["lng"]},
+        "division": {"id": 1, "name": row["division"]},
+        "range": {"id": 2, "name": row["range"]},
+        "beat": {"id": 3, "name": row["beat"]},
+        "sighting_type": ["directSighting"],
+        "total_count": row["total"],
+        "male_count": row["male"],
+        "crop_damage": row["crop"],
+        "death": row["death"],
+        "created_at": "2025-10-01T00:00:00Z",
+    }
+
+
+def _inertia_page(page, size=PAGE_SIZE):
+    start = (page - 1) * size
+    last = max(1, -(-len(ROWS) // size))
+    return {
+        "component": "Admin/Sightings/Index",
+        "version": INERTIA_VERSION,
+        "props": {"sightings": {
+            "data": [_inertia_row(r) for r in ROWS[start:start + size]],
+            "meta": {"current_page": page, "last_page": last,
+                     "per_page": size, "total": len(ROWS)},
+        }},
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     """A small, deliberately awkward stand-in for the admin site."""
 
@@ -189,6 +250,8 @@ class Handler(BaseHTTPRequestHandler):
     api_needs_token = True # whether /api/sightings checks Authorization
     export_requests = []   # every export query the scraper sent
     export_as = "csv"      # what the Export button hands back
+    inertia_pages = []     # every Inertia listing page requested
+    inertia_stale_once = False  # answer the first listing page with a 409
 
     def log_message(self, *args):  # keep pytest output clean
         pass
@@ -214,9 +277,24 @@ class Handler(BaseHTTPRequestHandler):
     def _authenticated(self):
         return SESSION_COOKIE in (self.headers.get("Cookie") or "")
 
+    def _inertia(self):
+        """Whether this request is the JSON half of an Inertia visit."""
+        return (self.headers.get("X-Inertia") or "").lower() == "true"
+
+    def _boots_inertia(self):
+        """Whether it is the page load the client reads the version off."""
+        return (self.headers.get("X-Requested-With") == "XMLHttpRequest"
+                and not self._inertia())
+
     def do_GET(self):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query, keep_blank_values=True)
+        if parsed.path == LOGIN_PATH_INERTIA and self._boots_inertia():
+            return self._send(_data_page("Auth/Login"), headers=[
+                ("Set-Cookie", f"XSRF-TOKEN={XSRF_TOKEN}; Path=/")])
+        if parsed.path == "/admin/sightings" and (
+                self._inertia() or self._boots_inertia()):
+            return self._inertia_sightings(query)
         if parsed.path == "/build/app.js":
             return self._send(APP_BUNDLE, content_type="application/javascript")
         if parsed.path == "/spa":
@@ -304,9 +382,42 @@ class Handler(BaseHTTPRequestHandler):
             }
         })
 
+    def _inertia_login(self, raw):
+        """Laravel's own login: 422 with errors, or a rotated session."""
+        if self.headers.get("X-XSRF-TOKEN") != XSRF_TOKEN:
+            return self._send_json({"message": "CSRF token mismatch."}, status=419)
+        sent = json.loads(raw or "{}")
+        if sent.get("email") != EMAIL or sent.get("password") != PASSWORD:
+            return self._send_json(
+                {"errors": {"email": "These credentials do not match our records."}},
+                status=422)
+        body = json.dumps({"component": "Admin/Sightings/Index", "props": {}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Set-Cookie", f"{INERTIA_SESSION}; Path=/")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _inertia_sightings(self, query):
+        cookies = self.headers.get("Cookie") or ""
+        if INERTIA_SESSION not in cookies:
+            # Anonymous: the real site serves the login shell, which is how
+            # the client notices a sign-in that did not take.
+            return self._send(_data_page("Auth/Login"))
+        page = int(query.get("page", ["1"])[0])
+        if self._boots_inertia():
+            return self._send(_data_page("Admin/Sightings/Index"))
+        type(self).inertia_pages.append(page)
+        if self.inertia_stale_once and len(self.inertia_pages) == 1:
+            return self._send_json({"message": "version mismatch"}, status=409)
+        return self._send_json(_inertia_page(page))
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length).decode("utf-8")
+        if urlparse(self.path).path == LOGIN_PATH_INERTIA and self._inertia():
+            return self._inertia_login(raw)
         if urlparse(self.path).path == "/api/login":
             sent = json.loads(raw)
             if sent.get("email") != EMAIL or sent.get("password") != PASSWORD:

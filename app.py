@@ -36,7 +36,6 @@ from core.exports import download_menu
 from core.config import LOG_PATH, NIGHT_HOUR_END, NIGHT_HOUR_START
 from core.data_loader import load_and_validate_csv
 from core.exceptions import DataValidationError, SpatialEnrichmentError
-from core.fetch import api_settings, export_setting, window as fetch_window
 from core.hotspots import (
     DEFAULT_EPS_KM,
     DEFAULT_MIN_SAMPLES,
@@ -190,10 +189,6 @@ def _fetch(request: landing.FetchRequest):
             result = fetch_sightings(
                 email=request.email,
                 password=request.password,
-                cookie=request.cookie,
-                api_path=request.api_path,
-                api_login_path=request.api_login_path,
-                export_path=request.export_path,
                 progress=progress,
             )
         except FetchError as exc:
@@ -330,8 +325,7 @@ with masthead:
         landing.hero()
 
 if not uploaded and not fetched:
-    request = landing.fetch_panel(*fetch_window(), *api_settings(),
-                                  export_setting())
+    request = landing.fetch_panel()
     if request is not None:
         refusal = request.is_usable()
         if refusal:

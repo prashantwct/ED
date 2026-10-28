@@ -1,23 +1,23 @@
 """Pulling the register straight off Forest Alerts, from inside the app.
 
 The landing page offers a sign-in as an alternative to uploading a CSV.
-This is the bridge between that form and ``tools.scrape_sightings``: it
-logs in, walks the listing, and hands back the same CSV bytes the
+This is the bridge between that form and ``tools.fetch_sightings``: it
+signs in, reads the listing, and hands back the same CSV bytes the
 uploader would have produced, so everything downstream is unchanged.
 Both paths end in ``core.data_loader``, and there is no second parser.
 
-**The Export button is the best source.** The listing has one, and
-whatever it returns is the register as the department publishes it: one
-request, no pagination, and the columns the people who run the system
-chose. Where its endpoint is known it is used in preference to
-everything else here.
+**The site is a Laravel + Inertia app.** Its login page is a script
+shell with no postable form and its listing renders in the browser, so
+the client signs in the way the page itself does -- POST /login with the
+XSRF cookie and Inertia headers -- and reads the listing as Inertia
+JSON, page by page. Nothing has to be configured for that: there is no
+endpoint to discover and no cookie to paste.
 
-**The site renders in the browser.** Its login page is a script shell
-around an empty mount point, so there is no form to post and no table to
-read; the rows come from an API the page calls after it boots. Which
-endpoint that is cannot be discovered from outside a browser, so it is
-configuration: :func:`api_settings` reads it, and the form carries it.
-Until it is set, a fetch fails with the page report saying exactly that.
+**A fetch is the whole register.** The listing is not filtered by date,
+so there is no window to ask for and none to advertise. What comes back
+is everything the account can see; the dates on the result are the span
+of the rows that arrived, read off them afterwards rather than promised
+in advance.
 
 **Credentials are a request parameter and nothing else.** They are read
 off the form, used for one sign-in, and never written to session state,
@@ -31,7 +31,7 @@ decides what they may pull. Baking a shared login into ``secrets.toml``
 would turn a tool with no access control into a public mirror of the
 register, so there is deliberately no way to configure one.
 
-The import of the scraper is deferred to the call. Nothing here runs
+The import of the client is deferred to the call. Nothing here runs
 until someone actually signs in, and a dashboard that cannot rank beats
 because an outbound-HTTP dependency failed to import is worse than one
 without the fetch button.
@@ -39,11 +39,14 @@ without the fetch button.
 
 from __future__ import annotations
 
+import io
 import logging
-import os
 from dataclasses import dataclass
 from datetime import date
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
+
+if TYPE_CHECKING:  # pandas is imported where it is used, not at load
+    import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -57,46 +60,44 @@ PAGE_DELAY_SECONDS = 0.5
 FALLBACK_START_DATE = "2025-10-01"
 
 
-def export_setting() -> str:
-    """The Export button's endpoint, if it has been found and kept."""
-    return _setting("FORESTALERTS_EXPORT_PATH")
+def observed_window(dates: "pd.Series") -> Tuple[str, str]:
+    """The span the fetched rows actually cover, as ISO dates.
 
-
-def _setting(name: str) -> str:
-    value = os.environ.get(name, "")
-    if value:
-        return value.strip()
-    try:
-        import streamlit as st
-
-        return str(st.secrets.get(name, "")).strip()
-    except Exception:  # no secrets file, or no Streamlit context
-        return ""
-
-
-def api_settings() -> Tuple[str, str]:
-    """The API endpoints to pre-fill the form with, if any are known.
-
-    The site renders in the browser, so its rows arrive over an API
-    rather than in the page. Which endpoint that is has to be read off
-    the Network tab once and then kept: set FORESTALERTS_API_PATH (and
-    FORESTALERTS_API_LOGIN_PATH where signing in needs one), or put them
-    in .streamlit/secrets.toml, and the form is pre-filled from there.
+    Read off what arrived rather than stated in advance: the listing is
+    not filtered by date, so any window named before the call would be a
+    guess the screen then reports as fact.
     """
-    return _setting("FORESTALERTS_API_PATH"), _setting("FORESTALERTS_API_LOGIN_PATH")
+    import pandas as pd
+
+    parsed = pd.to_datetime(dates, dayfirst=True, errors="coerce").dropna()
+    if parsed.empty:
+        return "", ""
+    return parsed.min().date().isoformat(), parsed.max().date().isoformat()
 
 
-def window(end_date: Optional[str] = None) -> Tuple[str, str]:
-    """The window a fetch would use, for saying so on screen.
+def _unreachable(site: str, error: Exception) -> str:
+    """A failed call, said in a sentence rather than dumped.
 
-    Read from the scraper rather than restated, so the sentence on the
-    landing page cannot drift from what the fetch actually asks for.
+    A connection refused or timed out is the one failure a reader can
+    actually do something about, and ``HTTPConnectionPool(host=...):
+    Max retries exceeded with url: /login (Caused by NewConnectionError
+    (...))`` does not tell them what. Anything else keeps its type and
+    message, which is the most that can honestly be said about it.
     """
     try:
-        from tools.scrape_sightings import START_DATE, today
-    except ImportError:
-        return FALLBACK_START_DATE, end_date or date.today().isoformat()
-    return START_DATE, end_date or today()
+        import requests
+
+        network = (requests.exceptions.ConnectionError,
+                   requests.exceptions.Timeout)
+    except ImportError:  # pragma: no cover - the client imported it already
+        network = ()
+    if network and isinstance(error, network):
+        return (
+            f"Could not reach {site}. Check the network where the app is "
+            "running, then try again. The register can also be uploaded as "
+            "a CSV instead."
+        )
+    return f"The fetch failed: {type(error).__name__}: {error}"
 
 
 @dataclass(frozen=True)
@@ -121,17 +122,11 @@ def fetch_sightings(
     email: str = "",
     password: str = "",
     *,
-    cookie: str = "",
-    api_path: str = "",
-    api_login_path: str = "",
-    export_path: str = "",
-    headers: Optional[Dict[str, str]] = None,
-    end_date: Optional[str] = None,
     base_url: Optional[str] = None,
     delay: float = PAGE_DELAY_SECONDS,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> FetchResult:
-    """Sign in, scrape the register, and return it as CSV bytes.
+    """Sign in, read the register, and return it as CSV bytes.
 
     ``base_url`` overrides the site and ``delay`` the pause between page
     requests; both exist so this can be driven against the test replica
@@ -139,8 +134,7 @@ def fetch_sightings(
 
     Raises:
         FetchError: With a message meant for the screen -- a rejected
-            sign-in, a listing that renders in JavaScript, a network
-            failure. Never a traceback.
+            sign-in, a network failure. Never a traceback.
     """
     try:
         from tools.fetch_sightings import (
@@ -162,7 +156,6 @@ def fetch_sightings(
             "The sign-in happens once and nothing is stored."
         )
 
-    window_start, window_end = window(end_date)
     pages = 0
 
     def _on_page(page: int, rows: int) -> None:
@@ -171,8 +164,9 @@ def fetch_sightings(
         if progress is not None:
             progress(page, rows)
 
+    site = base_url or BASE_URL
     try:
-        client = ForestAlertsClient(base_url or BASE_URL, verify=True)
+        client = ForestAlertsClient(site, verify=True)
         client.login(email, password)
         # The site's listing is the whole register; it is not windowed by
         # date here, so a fetch is always a full, gap-free pull.
@@ -184,18 +178,21 @@ def fetch_sightings(
         raise FetchError(str(error)) from error
     except Exception as error:  # noqa: BLE001 -- the network is the world
         logger.exception("Fetch from Forest Alerts failed")
-        raise FetchError(
-            f"The fetch failed: {type(error).__name__}: {error}"
-        ) from error
+        raise FetchError(_unreachable(site, error)) from error
 
     stamp = date.today().isoformat()
+    import pandas as pd
+
+    frame = pd.read_csv(io.StringIO(text), dtype=str) if text.strip() else pd.DataFrame()
+    first, last = observed_window(frame.get("Date", pd.Series(dtype=str)))
+    span = f"{first}-to-{last}" if first else stamp
     return FetchResult(
         data=text.encode("utf-8-sig"),
-        name=f"forestalerts-{stamp}.csv",
+        name=f"forestalerts-{span}.csv",
         rows=len(records),
         pages=pages,
         columns=columns,
-        start_date=window_start,
-        end_date=window_end,
+        start_date=first,
+        end_date=last,
         fetched_at=stamp,
     )
