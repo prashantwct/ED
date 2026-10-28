@@ -513,8 +513,16 @@ areas.forEach(a => {
     <div><dt>Used in last 7 days</dt><dd><button type="button" class="statbtn" id="weekBtn" aria-pressed="false" aria-label="Show only the ${week} refuges used in the last 7 days" title="Show only these refuges on the map">${week}</button></dd></div>
     <div><dt>Raid areas</dt><dd>${areas.length}</dd></div>
     <div><dt>Linked raids</dt><dd>${links.length}<small>${house} house · ${inj} injury</small></dd></div>`;
-  document.getElementById('sub').textContent =
-    `Where bulls and herds lie up by day, and the night raids that leave from them. Bandhavgarh NP, North Shahdol and Anuppur, ${fmtShort(first)} ${first.getUTCFullYear()} to ${fmtD(TODAY)}.`;
+  // The standfirst is written server-side from the divisions this run
+  // actually covers, so the period is appended to it rather than the
+  // whole sentence being rewritten with names from another register.
+  // `first` is undefined when no raid linked to any refuge -- a normal
+  // outcome, and one that used to throw here and leave the page blank.
+  if (first) {
+    const sub = document.getElementById('sub');
+    sub.textContent = sub.textContent.replace(/\.\s*$/, '')
+      + `, ${fmtShort(first)} ${first.getUTCFullYear()} to ${fmtD(TODAY)}.`;
+  }
 })();
 
 /* ---------- state ---------- */
@@ -785,7 +793,14 @@ function hourChart(arr, h = 120) {
 }
 function monthChart(arr) {
   const months = [];
-  for (let d = new Date(Date.UTC(2025, 8, 1)); d <= TODAY; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) months.push(d);
+  // The window comes from the raids themselves. A fixed start silently
+  // dropped every raid before it, and an empty span divided by zero.
+  const monthOf = d => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+  const from = d3.min(arr, l => l.date), to = d3.max(arr, l => l.date);
+  const start = monthOf(from || TODAY);
+  const end = monthOf(to && to > TODAY ? to : TODAY);
+  for (let d = start; d <= end; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) months.push(d);
+  if (!months.length) months.push(monthOf(TODAY));
   const key = d => d.getUTCFullYear() * 12 + d.getUTCMonth();
   const rows = months.map(m => {
     const inM = arr.filter(l => key(l.date) === key(m));

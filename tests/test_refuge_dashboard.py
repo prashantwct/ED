@@ -271,3 +271,57 @@ def test_the_page_is_one_self_contained_file():
     assert "const CTX = " in page          # its own context geography
     assert "const DATA = " in page         # its own register
     assert 'src="/' not in page            # nothing served from the app
+
+
+# ---------------------------------------------------------------------------
+# The plate's own JavaScript
+# ---------------------------------------------------------------------------
+# The sheet was written for one fixed dataset. Driving it from an
+# arbitrary register exposed three places where that assumption was
+# baked into its JavaScript, and these pin them.
+#
+# They read the vendored source rather than running it: the page loads
+# D3 from a CDN, and the repo has no JS toolchain to stub that out. The
+# behaviour behind each was checked separately in a JS harness; what
+# these catch is the assumption coming back on a later edit of the
+# plate, which is the realistic way it would.
+def _plate() -> str:
+    return rd.TEMPLATE_PATH.read_text(encoding="utf-8")
+
+
+def test_the_plate_names_no_division_of_its_own():
+    """Its script used to overwrite the standfirst with the three
+    divisions of the register it was first built from."""
+    plate = _plate()
+    for baked_in in ("Bandhavgarh NP, North Shahdol and Anuppur",
+                     "North Shahdol Division", "Anuppur Division"):
+        assert baked_in not in plate
+
+
+def test_the_standfirst_is_appended_to_rather_than_replaced():
+    plate = _plate()
+    assert "sub.textContent = sub.textContent.replace" in plate
+    assert "if (first) {" in plate
+
+
+def test_the_month_chart_does_not_start_from_a_fixed_date():
+    """A fixed September 2025 start dropped every earlier raid."""
+    plate = _plate()
+    assert "Date.UTC(2025, 8, 1)" not in plate
+    assert "const from = d3.min(arr, l => l.date)" in plate
+
+
+def test_the_month_window_can_never_be_empty():
+    """It divides the chart width by the number of months."""
+    assert "if (!months.length) months.push(monthOf(TODAY));" in _plate()
+
+
+def test_a_run_with_no_linked_raids_still_builds_a_page():
+    """Raid areas with no refuge to link to is an ordinary outcome, and
+    it used to throw on an undefined date before the sheet drew."""
+    areas = _areas(("A01", "Anuppur", "2026-01-25", 23.3, 81.9))
+    page = rd.build({"refuges": pd.DataFrame(), "links": pd.DataFrame(),
+                     "areas": areas})
+    assert len(_kind(page, "raid area")) == 1
+    assert _kind(page, "linked raid") == []
+    assert "Anuppur" in re.search(r'id="sub">([^<]*)<', page).group(1)
