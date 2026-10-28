@@ -658,14 +658,28 @@ alongside it because an admin panel's Export button usually returns `.xlsx`.
 The host has to be able to reach `mpforest.forestalerts.com`. Where it cannot, the fetch
 fails with that reason on screen and the uploader still works.
 
-**Reboot after adding a constant to `core/config.py`.** Streamlit re-executes
-`app.py` on every rerun but leaves already-imported modules in `sys.modules`,
-so a deploy can leave a new entry point running against the previous
-`core.config`. A `from core.config import NEW_NAME` then raises ImportError
-before anything renders. Manage app → Reboot restarts the interpreter and
-clears it. The entry point imports only long-standing names from `core.config`
-and reaches optional subsystems lazily, so the dashboard survives the window
-even when an optional feature does not — there is a test holding that line.
+**Reboot after changing anything `app.py` reaches across a module boundary
+for.** Streamlit re-executes `app.py` on every rerun but leaves already
+imported modules in `sys.modules`, so a deploy can leave a new entry point
+running against the previous `core.*`. Manage app → Reboot restarts the
+interpreter and clears it; nothing in the tree substitutes for that, because
+the two halves really are different versions.
+
+It has bitten twice, and the shape is the same both times. A new constant:
+`from core.config import NEW_NAME` raises `ImportError` before anything
+renders. A changed signature: `landing.fetch_panel()` raises `TypeError:
+missing 2 required positional arguments` against the definition it replaced.
+Both read as a bug in code that is, on disk, correct and consistent — so
+check the error against `git show <previous-commit>:<file>` before chasing
+it. If it names the shape the file used to have, the container is stale and
+a reboot is the whole fix.
+
+Two things keep the blast radius down. The entry point imports only
+long-standing names from `core.config`, and it reaches optional subsystems
+lazily, so a dashboard that cannot do early-warning coverage can still rank
+beats — there is a test holding that line. Neither helps where the entry
+point must call into a module to draw the page at all, as it must for
+`core.landing`; there the window is simply visible, and the reboot ends it.
 
 **Logging.** Writes to `app.log` beside the app and to stdout. Set `ED_LOG_PATH`
 to relocate it on a read-only container.
