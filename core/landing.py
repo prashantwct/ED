@@ -198,35 +198,22 @@ class FetchRequest:
 
     email: str
     password: str
-    cookie: str
-    export_path: str = ""
-    api_path: str = ""
-    api_login_path: str = ""
 
     def is_usable(self) -> Optional[str]:
         """The reason this cannot be submitted, or None.
 
-        Only the absence of any credential is refused here. An email and
-        password with no sign-in endpoint will not work against a site
-        that renders in the browser, but it works against one that does
-        not, and the fetch comes back with a report saying which this is
-        -- better than a form that refuses to try.
+        The client signs in the way the site's own login page does, so
+        an email and a password are the whole of what it needs: there is
+        no endpoint to supply and no cookie to paste. Refusing a half-
+        filled form here saves a round trip to be told the same thing.
         """
-        if self.cookie:
-            return None
         if not self.email or not self.password:
             return ("Enter the email and password for your Forest Alerts "
-                    "account, or paste a session cookie instead.")
+                    "account.")
         return None
 
 
-def fetch_panel(
-    start_date: str,
-    end_date: str,
-    api_path: str = "",
-    api_login_path: str = "",
-    export_path: str = "",
-) -> Optional[FetchRequest]:
+def fetch_panel() -> Optional[FetchRequest]:
     """The sign-in that pulls the register instead of uploading it.
 
     Returns the submitted credentials once, on the rerun that follows the
@@ -258,7 +245,7 @@ def fetch_panel(
 
     if not submitted:
         return None
-    return FetchRequest(email=email.strip(), password=password, cookie="")
+    return FetchRequest(email=email.strip(), password=password)
 
 
 def source_note(label: str, detail: str) -> None:

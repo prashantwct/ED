@@ -108,24 +108,26 @@ reach session state, where they go through the same cached load as an upload.
 `tests/test_app_fetch.py` asserts the password is absent from session state
 after a real round trip rather than merely unrendered.
 
-Because the site renders in the browser, the page also carries an **Export
-endpoint** field, a **Rows endpoint** field and a **Sign-in endpoint** field:
-the addresses found on the Network tab. The export wins when both are given.
-Set `FORESTALERTS_EXPORT_PATH`, `FORESTALERTS_API_PATH` and
-`FORESTALERTS_API_LOGIN_PATH` as environment variables or in
-`.streamlit/secrets.toml` and they are pre-filled, so a division configures
-them once rather than per session.
+The form asks for an email and a password, and nothing else. The site is a
+Laravel + Inertia app, so `tools/fetch_sightings.py` signs in the way the
+login page itself does — `POST /login` with the XSRF cookie and the Inertia
+headers — and reads the listing as Inertia JSON, page by page. There is no
+endpoint to discover on the Network tab and no browser cookie to paste, so
+the fields that used to collect them are gone: a form that takes what nothing
+reads teaches a reader the fetch needs setting up, and it does not.
 
-If the sign-in needs a one-time code, goes through SSO, or is a form built in
-JavaScript, paste a browser session cookie into the cookie field instead of the
-email and password. The app shows the same page report the CLI does when it
-cannot find a form to fill.
+The window is not a parameter of the job. The listing is not filtered by
+date, so every run is a full refresh rather than an increment to be merged;
+a full pull cannot develop a gap, and the register is small enough that this
+is cheaper than being clever. Nothing is promised in advance about the span:
+the dates on the result are read off the rows that arrived, which is why the
+loaded page can say what the pull actually covers rather than what was asked
+for.
 
-The window is not a parameter of the job: `start_date` is pinned to the
-register's first day, 2025-10-01, and `end_date` defaults to today, so every
-run is a full refresh rather than an increment to be merged. A full pull cannot
-develop a gap, and the register is small enough that this is cheaper than being
-clever. Both are overridable with `--start-date` / `--end-date`.
+A connection that is refused or times out says so in a sentence naming the
+site, with the CSV upload as the way round it. Anything else keeps its type
+and message, because guessing "check the network" at an unrelated bug sends
+the reader the wrong way.
 
 Column headers are read rather than assumed — each is normalised and looked up
 in a synonym table to find the dashboard's name for it, so `Sighting Date`,
