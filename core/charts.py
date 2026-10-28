@@ -344,3 +344,79 @@ def division_rate_bars(rates: pd.DataFrame, landscape_rate: float,
     fig.update_xaxes(showgrid=True, gridcolor=GRID, ticksuffix="%", rangemode="tozero")
     fig.update_yaxes(showgrid=False)
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Day refuges
+# ---------------------------------------------------------------------------
+def raid_start_hours(links: pd.DataFrame, night_start: int, night_end: int) -> go.Figure:
+    """When linked raids are entered, hour by hour.
+
+    The question behind it is what time to put people out, so the night
+    hours carry the darker colour and the busiest hour is called out
+    rather than left for the reader to find.
+    """
+    counts = pd.Series(0, index=range(24), dtype=int)
+    if len(links) and "Hour" in links:
+        hours = pd.to_numeric(links["Hour"], errors="coerce").dropna().astype(int)
+        counts = counts.add(hours[hours.between(0, 23)].value_counts(), fill_value=0).astype(int)
+
+    index = np.asarray(counts.index, dtype=int)
+    night = (index >= night_start) | (index < night_end)
+    fig = go.Figure()
+    for is_night, name, color in ((False, "Day", DAY_COLOR), (True, "Night", NIGHT_COLOR)):
+        mask = night == is_night
+        fig.add_bar(
+            x=index[mask], y=counts.to_numpy()[mask], name=name,
+            marker=dict(color=color, line=dict(color=SURFACE, width=1)),
+            hovertemplate="%{x}:00<br>Raids: <b>%{y}</b><extra></extra>",
+        )
+    if int(counts.sum()):
+        peak = int(counts.idxmax())
+        fig.add_vline(
+            x=peak, line=dict(color=INK, width=1, dash="dot"),
+            annotation_text=f"Peak {peak:02d}:00", annotation_position="top",
+            annotation_font=dict(size=11, color=INK),
+        )
+    _base_layout(fig, 210, barmode="overlay", bargap=0.12)
+    fig.update_layout(margin=dict(t=26, b=8, l=8, r=8))
+    fig.update_xaxes(title_text="Hour entered (24h)", dtick=4, range=[-0.6, 23.6],
+                     title_font=dict(color=INK_MUTED))
+    fig.update_yaxes(title_text="Raids", rangemode="tozero")
+    return fig
+
+
+def raids_by_month(links: pd.DataFrame) -> go.Figure:
+    """Linked raids per month, stacked by what the raid cost.
+
+    Same severity ramp as the trend charts, so a reader who has seen
+    those reads this one without relearning the colours.
+    """
+    fig = go.Figure()
+    if len(links) and "Night Of" in links:
+        nights = pd.to_datetime(links["Night Of"], errors="coerce")
+        frame = pd.DataFrame({
+            "Month": nights.dt.to_period("M").dt.to_timestamp(),
+            "Category": links.get("Category", pd.Series("Crop", index=links.index)),
+        }).dropna(subset=["Month"])
+        if len(frame):
+            counts = frame.pivot_table(index="Month", columns="Category",
+                                       aggfunc="size", fill_value=0)
+            months = pd.date_range(counts.index.min(), counts.index.max(), freq="MS")
+            counts = counts.reindex(months, fill_value=0)
+            # Worst on top, so the eye lands on casualties first.
+            for key in reversed(list(SEVERITY_RAMP)):
+                if key not in counts:
+                    continue
+                fig.add_bar(
+                    x=counts.index, y=counts[key].to_numpy(),
+                    name=SEVERITY_LABELS[key], marker=dict(color=SEVERITY_RAMP[key]),
+                    hovertemplate="%{x|%b %Y}<br>" + SEVERITY_LABELS[key]
+                    + ": <b>%{y}</b><extra></extra>",
+                )
+    _base_layout(fig, 210, barmode="stack", bargap=0.2)
+    fig.update_layout(margin=dict(t=8, b=8, l=8, r=8),
+                      legend=dict(orientation="h", y=-0.28, x=0, font=dict(size=10)))
+    fig.update_xaxes(tickformat="%b<br>%Y", showgrid=False)
+    fig.update_yaxes(title_text="Raids", rangemode="tozero")
+    return fig

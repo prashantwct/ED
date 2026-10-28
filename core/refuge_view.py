@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import tempfile
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,66 @@ from core.ui import findings, section
 # The source and settings last used in this view, for the brief to reuse.
 LAST_USED_KEY = "refuge_last_used"
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "ed_landcover"
+
+# ---------------------------------------------------------------------------
+# What the map can be coloured by
+# ---------------------------------------------------------------------------
+# Confidence is how much the site is believed; group is who uses it; last
+# used is whether it is live. They answer different questions and the
+# reader picks, rather than the map deciding for them.
+BY_CONFIDENCE, BY_GROUP, BY_RECENCY = "Confidence", "Group", "Last used"
+COLOUR_MODES = (BY_CONFIDENCE, BY_GROUP, BY_RECENCY)
+
+# Okabe-Ito, as the rest of the app uses for identity rather than order.
+GROUP_COLORS = {
+    "Lone bull": "#0072B2",
+    "Bull party": "#009E73",
+    "Family herd": "#CC79A7",
+    "Mixed / unsexed": "#E69F00",
+    "Unrecorded": "#7B857C",
+}
+# One hue, dark = used most recently. An ordinal question gets an ordinal
+# ramp, not five unrelated colours.
+RECENCY_BANDS = (
+    (7, "Last 7 days", "#00474D"),
+    (30, "8-30 days", "#2B8187"),
+    (60, "31-60 days", "#78B2AD"),
+    (float("inf"), "Over 60 days", "#B2C4BA"),
+)
+WITHIN_CHOICES = {"Any": None, "7 days": 7, "30": 30, "60": 60}
+PERIOD_CHOICES = {"All": None, "90 days": 90, "30 days": 30}
+WATCH_DAYS = 7
+
+
+def recency_band(days_since: object) -> Tuple[str, str]:
+    """Which recency band a refuge falls in, as (label, colour)."""
+    if days_since is None or pd.isna(days_since):
+        return RECENCY_BANDS[-1][1], RECENCY_BANDS[-1][2]
+    for limit, label, color in RECENCY_BANDS:
+        if float(days_since) <= limit:
+            return label, color
+    return RECENCY_BANDS[-1][1], RECENCY_BANDS[-1][2]
+
+
+def refuge_color(row: Dict[str, object], mode: str) -> str:
+    """The colour one refuge takes under the chosen mode."""
+    if mode == BY_GROUP:
+        return GROUP_COLORS.get(str(row.get("Group")), GROUP_COLORS["Unrecorded"])
+    if mode == BY_RECENCY:
+        return recency_band(row.get("Days Since Last Use"))[1]
+    return CONFIDENCE_COLORS.get(str(row.get("Confidence")), RAID_COLOR)
+
+
+def legend_entries(table: pd.DataFrame, mode: str) -> List[Tuple[str, str]]:
+    """Legend pairs for the mode, carrying only what is on the map."""
+    if mode == BY_GROUP:
+        present = set(table["Group"].astype(str)) if len(table) else set()
+        return [(n, c) for n, c in GROUP_COLORS.items() if n in present]
+    if mode == BY_RECENCY:
+        present = {recency_band(d)[0] for d in table["Days Since Last Use"]} if len(table) else set()
+        return [(label, color) for _, label, color in RECENCY_BANDS if label in present]
+    present = set(table["Confidence"].astype(str)) if len(table) else set()
+    return [(n, c) for n, c in CONFIDENCE_COLORS.items() if n in present]
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +197,8 @@ def for_brief(df: pd.DataFrame, villages: Optional[pd.DataFrame]) -> Dict[str, o
 # The map
 # ---------------------------------------------------------------------------
 def _render_map(table: pd.DataFrame, links: pd.DataFrame, basemap: str,
-                areas: Optional[pd.DataFrame] = None) -> None:
+                areas: Optional[pd.DataFrame] = None,
+                colour_mode: str = BY_CONFIDENCE) -> None:
     from core import map_engine as me
 
     points = table.copy()
@@ -201,7 +262,7 @@ def _render_map(table: pd.DataFrame, links: pd.DataFrame, basemap: str,
     for r in table.to_dict("records"):
         tips.append(me._slots(
             title=f"{r['Refuge']} - {r['Confidence']} day refuge",
-            accent=me._hex_to_rgb(CONFIDENCE_COLORS[r["Confidence"]]),
+            accent=me._hex_to_rgb(refuge_color(r, colour_mode)),
             subtitle=me._trail(r.get("Beat"), r.get("Range")),
             rows=[("Days used", f"{r['Days Used']} (last {r['Last Used']:%d %b})"),
                   ("Cover", f"{r['Cover Share %']:.0f}% within 250 m"
@@ -219,8 +280,8 @@ def _render_map(table: pd.DataFrame, links: pd.DataFrame, basemap: str,
     data = pd.concat([points[["Latitude", "Longitude"]].reset_index(drop=True),
                       pd.DataFrame(tips)], axis=1)
     data["_r"] = np.maximum(points["Radius (km)"].to_numpy() * 1000, 300)
-    data["_c"] = [list(me._hex_to_rgb(CONFIDENCE_COLORS[c])) + [150]
-                  for c in points["Confidence"]]
+    data["_c"] = [list(me._hex_to_rgb(refuge_color(r, colour_mode))) + [150]
+                  for r in points.to_dict("records")]
     layers.append(pdk.Layer(
         "ScatterplotLayer", data=data, get_position="[Longitude, Latitude]",
         get_radius="_r", radius_min_pixels=7, get_fill_color="_c",
@@ -228,6 +289,154 @@ def _render_map(table: pd.DataFrame, links: pd.DataFrame, basemap: str,
         pickable=True,
     ))
     me._render_deck(layers, view, basemap)
+
+
+# ---------------------------------------------------------------------------
+# The register panel
+# ---------------------------------------------------------------------------
+def _key_panel(table: pd.DataFrame, areas: pd.DataFrame) -> Dict[str, object]:
+    """The map key, as the controls that drive the map.
+
+    A legend that only explains is a waste of the space beside a map.
+    Each block here says what a mark means and lets the reader take it
+    off, which is the difference between reading the plate and working
+    it.
+    """
+    st.markdown("##### Map key")
+    mode = st.segmented_control(
+        "Colour refuges by", COLOUR_MODES, default=BY_CONFIDENCE,
+        key="refuge_colour_mode",
+    ) or BY_CONFIDENCE
+
+    confidences = [c for c in (rf.CONFIRMED, rf.PROBABLE, rf.POSSIBLE)
+                   if len(table) and (table["Confidence"] == c).any()]
+    keep_conf = st.segmented_control(
+        "Confidence", confidences, selection_mode="multi", default=confidences,
+        key="refuge_conf_pick",
+        help="How much the site is believed: separate days of forest evidence.",
+    ) or confidences
+
+    groups = [g for g in GROUP_COLORS if len(table) and (table["Group"] == g).any()]
+    keep_groups = st.segmented_control(
+        "Group", groups, selection_mode="multi", default=groups,
+        key="refuge_group_pick",
+    ) or groups
+
+    within = st.segmented_control(
+        "Last used within", list(WITHIN_CHOICES), default="Any", key="refuge_within",
+    ) or "Any"
+
+    st.markdown("##### Raids")
+    period = st.segmented_control(
+        "Raid period", list(PERIOD_CHOICES), default="All", key="refuge_period",
+    ) or "All"
+    show_links = st.checkbox("Lines from refuge to raid", value=True, key="refuge_tg_links")
+    show_areas = st.checkbox(
+        "Raid areas with no known refuge", value=True, key="refuge_tg_areas",
+        disabled=areas is None or areas.empty,
+    )
+    return {"mode": mode, "confidence": list(keep_conf), "groups": list(keep_groups),
+            "within": WITHIN_CHOICES[within], "period": PERIOD_CHOICES[period],
+            "links": show_links, "areas": show_areas}
+
+
+def _apply(table: pd.DataFrame, links: pd.DataFrame, areas: pd.DataFrame,
+           pick: Dict[str, object]):
+    """Narrow the three frames to what the key is currently showing."""
+    shown = table
+    if len(shown):
+        shown = shown[shown["Confidence"].isin(pick["confidence"])
+                      & shown["Group"].isin(pick["groups"])]
+        if pick["within"] is not None:
+            days = pd.to_numeric(shown["Days Since Last Use"], errors="coerce")
+            shown = shown[days <= pick["within"]]
+
+    shown_links = links
+    if len(shown_links):
+        shown_links = shown_links[shown_links["Refuge"].isin(shown["Refuge"])]
+        if pick["period"] is not None and "Night Of" in shown_links:
+            nights = pd.to_datetime(shown_links["Night Of"], errors="coerce")
+            if nights.notna().any():
+                cutoff = nights.max() - pd.Timedelta(days=int(pick["period"]))
+                shown_links = shown_links[nights >= cutoff]
+        if not pick["links"]:
+            shown_links = shown_links.iloc[0:0]
+
+    shown_areas = areas if pick["areas"] and areas is not None else pd.DataFrame()
+    return shown, shown_links, shown_areas
+
+
+def _legend(table: pd.DataFrame, pick: Dict[str, object], areas: pd.DataFrame) -> None:
+    items = [f'<span class="ci-legend__item"><span class="ci-legend__dot" '
+             f'style="background:{c};"></span>{n}</span>'
+             for n, c in legend_entries(table, str(pick["mode"]))]
+    if len(table) and pick["links"]:
+        items.append('<span class="ci-legend__item"><span class="ci-legend__dot" '
+                     f'style="background:{RAID_COLOR};"></span>Linked night raid</span>')
+    if len(areas):
+        items.append('<span class="ci-legend__item"><span class="ci-legend__dot" '
+                     f'style="background:{AREA_COLOR};border-radius:2px;"></span>'
+                     'Raid area, no known refuge</span>')
+    if items:
+        st.markdown(f'<div class="ci-legend">{"".join(items)}</div>',
+                    unsafe_allow_html=True)
+
+
+def _watch_block(table: pd.DataFrame, days: int = WATCH_DAYS) -> None:
+    """Refuges used in the last week: what to act on tonight.
+
+    The operational output of the whole view. Newest first, each line
+    carrying the edge to watch at dusk and the villages to warn before
+    dark, and the lot copyable as a message because that is how it
+    reaches a range officer.
+    """
+    st.markdown(f"##### Occupied in the last {days} days")
+    if table.empty:
+        st.caption("No refuges in the current selection.")
+        return
+    since = pd.to_numeric(table["Days Since Last Use"], errors="coerce")
+    watch = table[since <= days].sort_values("Days Since Last Use")
+    if watch.empty:
+        st.caption(
+            f"None used in the last {days} days. The register below covers the "
+            "whole period."
+        )
+        return
+
+    lines = []
+    for r in watch.to_dict("records"):
+        ago = int(r["Days Since Last Use"])
+        when = "today" if ago == 0 else f"{ago} day{'s' if ago > 1 else ''} ago"
+        head = f", raids head {r['Raids Head']}" if r.get("Raids Head") else ""
+        warn = str(r.get("Villages Within Reach") or "").strip()
+        st.markdown(
+            f"**{r['Refuge']}** &middot; {r['Confidence']} &middot; {r.get('Beat', '')}  \n"
+            f"Used {when}{head}. "
+            + (f"Warn {warn}." if warn else "No village within reach.")
+        )
+        lines.append(
+            f"{r['Refuge']} ({r.get('Beat', '')}): used {when}{head}. "
+            + (f"Warn before dark: {warn}." if warn else "No village within reach.")
+        )
+
+    st.text_area(
+        "Copy as message", "\n".join(lines), height=120, key="refuge_watch_text",
+        help="Paste into WhatsApp or SMS for the range office.",
+    )
+
+
+def _panel_charts(links: pd.DataFrame) -> None:
+    from core.charts import raid_start_hours, raids_by_month
+    from core.config import NIGHT_HOUR_END, NIGHT_HOUR_START
+
+    st.markdown("##### When raids start")
+    if links.empty:
+        st.caption("No linked raids in the current selection.")
+        return
+    st.plotly_chart(raid_start_hours(links, NIGHT_HOUR_START, NIGHT_HOUR_END),
+                    width="stretch", key="refuge_hours")
+    st.markdown("##### Raids by month")
+    st.plotly_chart(raids_by_month(links), width="stretch", key="refuge_months")
 
 
 # ---------------------------------------------------------------------------
@@ -275,54 +484,73 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
             st.caption(c)
         return
 
-    st.markdown("**Refuges, the raids linked to them, and raid areas with no known refuge**")
-    _render_map(table, links, basemap, areas)
-    from core.exports import download_menu
+    # The plate: map sheet on the left, register panel beside it. The
+    # panel's key drives the map, so its widgets are created before the
+    # map is drawn; the watch list reads first on the page, so its slot
+    # is reserved now and filled once the selection is known.
+    sheet, panel = st.columns([1.7, 1], gap="medium")
+    with panel:
+        watch_slot = st.container()
+        pick = _key_panel(table, areas)
+    shown, shown_links, shown_areas = _apply(table, links, areas, pick)
 
-    download_menu("Day refuge map", lambda t=table, l=links, a=areas, b=basemap:
-                  map_svg(t, l, areas=a, style_name=b))
-    legend = " ".join(
-        f'<span class="ci-legend__item"><span class="ci-legend__dot" style="background:{c};">'
-        f"</span>{n}</span>" for n, c in CONFIDENCE_COLORS.items())
-    st.markdown(f'<div class="ci-legend">{legend}<span class="ci-legend__item">'
-                f'<span class="ci-legend__dot" style="background:{RAID_COLOR};"></span>'
-                'Linked night raid</span><span class="ci-legend__item">'
-                f'<span class="ci-legend__dot" style="background:{AREA_COLOR};'
-                'border-radius:2px;"></span>Raid area, no known refuge</span></div>',
-                unsafe_allow_html=True)
-    _areas_table(areas)
+    with sheet:
+        st.markdown("**Refuges, the raids linked to them, and raid areas with no "
+                    "known refuge**")
+        _render_map(shown, shown_links, basemap, shown_areas, str(pick["mode"]))
+        _legend(shown, pick, shown_areas)
+        if len(shown) < len(table) or len(shown_areas) < len(areas):
+            st.caption(f"Showing {len(shown)} of {len(table)} refuges and "
+                       f"{len(shown_links):,} of {len(links):,} linked raids. "
+                       "The figures above cover the whole period.")
+        from core.exports import download_menu
+
+        download_menu("Day refuge map", lambda t=shown, l=shown_links, a=shown_areas,
+                      b=basemap: map_svg(t, l, areas=a, style_name=b))
+    with watch_slot:
+        _watch_block(shown)
+    with panel:
+        _panel_charts(shown_links)
+
+    _areas_table(shown_areas if len(shown_areas) else areas)
     if table.empty:
         _method(result)
         return
 
     st.markdown("**Refuge register** -- strongest evidence first")
-    shown = [c for c in [
+    register = shown if len(shown) else table
+    cols = [c for c in [
         "Refuge", "Confidence", "Beat", "Range", "Days Used", "Direct Sightings",
         "Indirect Signs", "Last Used", "Months Used",
         "Group", "Cover Share %", "Tree Patch (ha)", "Linked Raids", "Same-Night Raids",
         "Raids Head",
         "Raid Distance (km, median)", "Villages Raided", "Nearest Village",
         "To Nearest Village (km)", "Flags", "Recommended Action"] if c in table]
-    st.dataframe(table[shown], width="stretch", hide_index=True, column_config={
+    st.dataframe(register[cols], width="stretch", hide_index=True, column_config={
         "Last Used": st.column_config.DateColumn(format="DD MMM YYYY"),
         "Cover Share %": st.column_config.ProgressColumn("Cover", min_value=0, max_value=100,
                                                          format="%.0f%%"),
         "Recommended Action": st.column_config.TextColumn(width="large"),
     })
     d1, d2, d3, d4 = st.columns(4)
-    d1.download_button("Refuges (CSV)", table.to_csv(index=False).encode(), "day_refuges.csv",
-                       mime="text/csv", width="stretch")
+    # The downloads follow the key, so a file matches the plate it came
+    # from rather than quietly carrying rows the reader had switched off.
+    out_links = shown_links if len(shown) else links
+    out_areas = shown_areas if len(shown_areas) else areas
+    d1.download_button("Refuges (CSV)", register.to_csv(index=False).encode(),
+                       "day_refuges.csv", mime="text/csv", width="stretch")
     d2.download_button("Refuges + raids (GeoJSON)",
-                       rf.to_geojson(table, links, areas).encode(),
+                       rf.to_geojson(register, out_links, out_areas).encode(),
                        "day_refuges.geojson", mime="application/geo+json", width="stretch")
-    d3.download_button("Refuges (KML, Google Earth)", rf.to_kml(table, areas).encode(),
+    d3.download_button("Refuges (KML, Google Earth)",
+                       rf.to_kml(register, out_areas).encode(),
                        "day_refuges.kml", mime="application/vnd.google-earth.kml+xml",
                        width="stretch")
-    d4.download_button("Linked raids (CSV)", links.to_csv(index=False).encode(),
+    d4.download_button("Linked raids (CSV)", out_links.to_csv(index=False).encode(),
                        "refuge_linked_raids.csv", mime="text/csv", width="stretch")
     st.caption("GeoJSON opens in QGIS; KML in Google Earth or a phone map app for field teams.")
 
-    _cards(table, links, result["windows"])
+    _cards(register, out_links, result["windows"])
     _method(result)
 
 
