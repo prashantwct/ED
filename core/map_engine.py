@@ -1065,6 +1065,88 @@ def _adaptive_view_state(df: pd.DataFrame) -> pdk.ViewState:
 
 
 # ---------------------------------------------------------------------------
+# Emerging hotspots
+# ---------------------------------------------------------------------------
+@_never_breaks_the_page
+def render_pattern_map(
+    table: pd.DataFrame,
+    cell_km: float,
+    reference_lat: float,
+    step: str,
+    style_name: str = DEFAULT_BASEMAP,
+    show_boundaries: bool = True,
+    boundary_level: Optional[str] = None,
+) -> None:
+    """Hex cells coloured by their emerging hotspot pattern.
+
+    Cells with no pattern are not drawn: hundreds of grey hexes would
+    bury the dozen that carry the message.
+    """
+    from core.spacetime import NO_PATTERN, PATTERN_COLORS, PATTERN_MEANING, hex_polygon
+
+    cells = table[table["Pattern"] != NO_PATTERN].copy()
+    if cells.empty:
+        st.info("No place is a significant hotspot in any step at these settings.")
+        return
+    fmt = "%b %Y" if step == "Month" else "%d %b %Y"
+    cells["_polygon"] = [
+        hex_polygon(row["Centre Latitude"], row["Centre Longitude"], cell_km, reference_lat)
+        for row in cells.to_dict("records")
+    ]
+    rgb = cells["Pattern"].map(lambda p: list(_hex_to_rgb(PATTERN_COLORS[p])))
+    cells["_fill"] = [c + [175] for c in rgb]
+    cells["_line"] = [c + [255] for c in rgb]
+    cells = cells.reset_index(drop=True)
+    tips = pd.DataFrame([
+        _slots(
+            title=f"{row['Place']} - {row['Pattern']}",
+            accent=_hex_to_rgb(PATTERN_COLORS[row["Pattern"]]),
+            subtitle=PATTERN_MEANING[row["Pattern"]],
+            rows=[
+                ("Events", f"{row['Events']:,}"),
+                ("Recent", f"{row['Recent Events']:,} in the last 3 steps"),
+                ("Hot", f"{row['Hot Steps']} of {row['Steps']} {step.lower()}s"),
+                ("Last hot", f"{row['Last Hot']:{fmt}}" if pd.notna(row["Last Hot"]) else None),
+                ("Trend", row["Trend"]),
+            ],
+            footer=_trail(row["Nearest Village"], row["Beats"]),
+        )
+        for row in cells.to_dict("records")
+    ])
+    cells = pd.concat([cells, tips], axis=1)
+
+    view_state = _adaptive_view_state(cells.rename(columns={
+        "Centre Latitude": "Latitude", "Centre Longitude": "Longitude"}))
+    layers = list(boundary_layers(view_state, boundary_level)) if show_boundaries else []
+    layers.append(pdk.Layer(
+        "PolygonLayer",
+        data=cells[["_polygon", "_fill", "_line", *TOOLTIP_FIELDS]],
+        get_polygon="_polygon",
+        get_fill_color="_fill",
+        get_line_color="_line",
+        line_width_min_pixels=1,
+        stroked=True,
+        filled=True,
+        pickable=True,
+    ))
+    layers.append(pdk.Layer(
+        "TextLayer",
+        data=cells[["Centre Longitude", "Centre Latitude", "Place"]],
+        get_position="[Centre Longitude, Centre Latitude]",
+        get_text="Place",
+        get_size=12,
+        get_color=[255, 255, 255, 255],
+        get_alignment_baseline="'center'",
+        font_settings={"sdf": True},
+        outline_width=4,
+        outline_color=[20, 28, 24, 255],
+        font_weight=600,
+    ))
+    _render_deck(layers, view_state, style_name)
+    _basemap_note()
+
+
+# ---------------------------------------------------------------------------
 # Damage surveys
 # ---------------------------------------------------------------------------
 @_never_breaks_the_page

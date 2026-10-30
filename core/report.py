@@ -40,6 +40,7 @@ from core.intelligence import (
     management_brief,
 )
 from core.map_engine import DEFAULT_BASEMAP
+from core.spacetime import PATTERN_COLORS, PATTERN_MEANING, PATTERN_ORDER, headline
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,8 @@ def generate_html_report(
     coverage: Optional[pd.DataFrame] = None,
     coverage_stats: Optional[Dict[str, object]] = None,
     refuges: Optional[Dict[str, object]] = None,
+    emerging: Optional[pd.DataFrame] = None,
+    emerging_step: str = "Month",
 ) -> str:
     """Build a complete, styled conservation intelligence brief.
 
@@ -155,6 +158,9 @@ def generate_html_report(
         refuges: Output of :func:`core.refuges.find_refuges`. Only refuges
             with night conflict linked to them are shown; the section is
             omitted when None.
+        emerging: Output of :func:`core.spacetime.emerging_hotspots`.
+            The section is omitted when None.
+        emerging_step: The cube's time step, named in the section.
 
     Returns:
         A complete HTML document as a string.
@@ -213,6 +219,8 @@ def generate_html_report(
 
     <h2>Movement Hotspots <span class="sub">density clusters in the point data</span></h2>
     {_hotspot_html(hotspots)}
+
+    {_emerging_section(emerging, emerging_step)}
 
     <h2>Villages at Risk</h2>
     {village_map_svg(village_risk, hotspots, basemap_style_name)}
@@ -396,6 +404,45 @@ def _hotspot_html(hotspots: Optional[pd.DataFrame], top_n: int = 10) -> str:
         "<th class='num'>Night</th><th class='num'>Radius</th>"
         "<th class='num'>Centre</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def _emerging_section(emerging: Optional[pd.DataFrame], step: str, top_n: int = 10) -> str:
+    if emerging is None:
+        return ""
+    head = (f"<h2>Emerging Hotspots <span class='sub'>space-time trend by "
+            f"{escape(step.lower())}</span></h2>")
+    named = emerging[emerging["Place"] != ""] if not emerging.empty else emerging
+    if named.empty:
+        return head + (
+            '<p class="empty-note">No place was a significant hotspot in any '
+            f"{escape(step.lower())} of the period, or the period is too short to say.</p>"
+        )
+    line = headline(emerging)
+    fmt = "%b %Y" if step == "Month" else "%d %b %Y"
+    rows = "".join(
+        "<tr>"
+        f"<td><b>{escape(str(r['Place']))}</b></td>"
+        f"<td><span style='color:{PATTERN_COLORS[r['Pattern']]}'>&#9632;</span> "
+        f"{escape(r['Pattern'])}</td>"
+        f"<td>{escape(str(r['Nearest Village']) or '-')}<br/>"
+        f"<span class='sub'>{escape(str(r['Beats']))}</span></td>"
+        f"<td class='num'>{int(r['Events']):,}</td>"
+        f"<td class='num'>{int(r['Recent Events']):,}</td>"
+        f"<td class='num'>{int(r['Hot Steps'])} / {int(r['Steps'])}</td>"
+        f"<td>{escape(r['Trend'])}</td>"
+        f"<td class='num'>{r['Last Hot']:{fmt}}</td>"
+        "</tr>"
+        for r in named.head(top_n).to_dict("records")
+    )
+    legend = "".join(f"<li><b>{escape(p)}</b>: {escape(PATTERN_MEANING[p])}</li>"
+                     for p in PATTERN_ORDER[:-1] if (named["Pattern"] == p).any())
+    return (
+        head + (f"<p>{escape(line)}</p>" if line else "")
+        + "<table><thead><tr><th>ID</th><th>Pattern</th><th>Where</th>"
+        "<th class='num'>Events</th><th class='num'>Last 3 steps</th>"
+        "<th class='num'>Hot steps</th><th>Trend</th><th class='num'>Last hot</th>"
+        f"</tr></thead><tbody>{rows}</tbody></table><ul>{legend}</ul>"
     )
 
 

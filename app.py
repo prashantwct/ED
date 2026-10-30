@@ -31,9 +31,15 @@ from core.analytics import (
     severity_distribution,
     window_comparison,
 )
-from core import boundaries, charts, landing, map_select, report_charts
+from core import boundaries, charts, landing, map_select, report_charts, spacetime
 from core.exports import download_menu
-from core.config import LOG_PATH, NIGHT_HOUR_END, NIGHT_HOUR_START
+from core.config import (
+    DEFAULT_CUBE_CELL_KM,
+    DEFAULT_CUBE_STEP,
+    LOG_PATH,
+    NIGHT_HOUR_END,
+    NIGHT_HOUR_START,
+)
 from core.data_loader import load_and_validate_csv
 from core.exceptions import DataValidationError, SpatialEnrichmentError
 from core.hotspots import (
@@ -58,6 +64,7 @@ from core.map_engine import (
     BASEMAP_STYLES,
     DEFAULT_BASEMAP,
     render_map,
+    render_pattern_map,
     render_village_map,
 )
 from core.map_export import sightings_map_svg, village_map_svg
@@ -68,6 +75,7 @@ from core.ui import (
     TIER_STYLE,
     findings,
     inject_theme,
+    map_legend,
     section,
     tier_summary,
 )
@@ -170,6 +178,15 @@ def _roster(file_bytes: bytes, filename: str):
 def _hotspots(frame: pd.DataFrame, eps_km: float, min_samples: int, as_of):
     """Cached hotspot detection -- the slowest step on a rerun."""
     return detect_hotspots(frame, eps_km=eps_km, min_samples=min_samples, as_of=as_of)
+
+
+@st.cache_data(show_spinner="Building the space-time cube...",
+               hash_funcs={pd.DataFrame: _frame_key})
+def _emerging(frame: pd.DataFrame, cell_km: float, step: str, metric: str, fdr: bool,
+              as_of, centroids: Optional[pd.DataFrame]):
+    """Cached cube and emerging hotspot labels for the current filters."""
+    cube = spacetime.build_cube(frame, cell_km=cell_km, step=step, metric=metric, as_of=as_of)
+    return cube, spacetime.emerging_hotspots(cube, fdr=fdr, villages=centroids)
 
 
 def _fetch(request: landing.FetchRequest):
@@ -542,6 +559,23 @@ village_radius = st.sidebar.slider(
     min_value=1.0, max_value=10.0, value=DEFAULT_VILLAGE_RADIUS_KM, step=0.5,
     help="Incidents within this distance of a village count towards its risk.",
 )
+with st.sidebar.expander("Space-time trend"):
+    cube_step = st.selectbox(
+        "Time step", list(spacetime.STEPS), index=list(spacetime.STEPS).index(DEFAULT_CUBE_STEP),
+        help="Shorter steps react faster but need more reports per place.",
+    )
+    cube_cell_km = st.slider(
+        "Cell size (km)", min_value=1.0, max_value=5.0, value=DEFAULT_CUBE_CELL_KM, step=0.5,
+        help="Distance between neighbouring hexagon centres.",
+    )
+    cube_metric = st.radio(
+        "Count", spacetime.METRICS, horizontal=True,
+        help="All reports adds plain sightings, which mostly track where people report.",
+    )
+    cube_fdr = st.checkbox(
+        "Correct for multiple testing", value=True,
+        help="False discovery rate correction. Off finds more, some of them by chance.",
+    )
 
 st.sidebar.divider()
 st.sidebar.subheader("Map")
@@ -656,6 +690,8 @@ if registry is not None:
     coverage_table, coverage_stats = _ews().village_coverage(
         village_risk, villages, registry
     )
+cube, emerging = _emerging(filtered, cube_cell_km, cube_step, cube_metric, cube_fdr,
+                           period_end, villages)
 beats_table = brief["beats"]
 composition = brief["composition"]
 escalating = brief["escalating"]
@@ -679,7 +715,8 @@ def _figure(title: str, fig, download_name: str, make_svg, note: Optional[str] =
 # 4. Assessment, and the brief beside it
 # ---------------------------------------------------------------------------
 section("assessment", "Assessment", f"{len(filtered):,} reports in the selected period")
-findings(brief["headlines"])
+emerging_line = spacetime.headline(emerging)
+findings(brief["headlines"] + ([emerging_line] if emerging_line else []))
 
 how_col, brief_col = st.columns([3, 1], vertical_alignment="top")
 with how_col:
@@ -714,6 +751,8 @@ with brief_col:
                 coverage=coverage_table,
                 coverage_stats=coverage_stats,
                 refuges=brief_refuges,
+                emerging=emerging,
+                emerging_step=cube_step,
             )
         except Exception as exc:  # noqa: BLE001 - report generation must never 500
             logger.exception("Report generation failed")
@@ -729,9 +768,10 @@ with brief_col:
 # ---------------------------------------------------------------------------
 # 5. One tab per question a manager asks
 # ---------------------------------------------------------------------------
-tab_trend, tab_where, tab_villages, tab_when, tab_data = st.tabs([
+tab_trend, tab_where, tab_emerging, tab_villages, tab_when, tab_data = st.tabs([
     ":material/trending_up: Is it getting worse?",
     ":material/map: Where to act",
+    ":material/timeline: New or growing?",
     ":material/home: Villages at risk",
     ":material/schedule: When",
     ":material/table_chart: Data",
@@ -1050,6 +1090,72 @@ with tab_where:
             boundary_level=boundary_level,
             beat_stats=beats_table,
         )
+
+
+# ---- Emerging hotspots ------------------------------------------------------
+with tab_emerging:
+    st.caption(
+        f"Reports binned into {cube_cell_km:g} km hexagons by {cube_step.lower()}, then each "
+        "place tested for whether it is a hotspot at each step and whether that is "
+        "changing. Settings are under Space-time trend in the sidebar."
+    )
+    counts = spacetime.pattern_counts(emerging)
+    if emerging.empty:
+        for note in spacetime.pattern_caveats(cube, emerging, cube_fdr):
+            st.info(note)
+    else:
+        shown_patterns = [p for p in spacetime.PATTERN_ORDER[:-1] if counts.get(p)]
+        if shown_patterns:
+            for col, pattern in zip(st.columns(len(shown_patterns)), shown_patterns):
+                col.metric(pattern, f"{counts[pattern]:,}", border=True,
+                           help=spacetime.PATTERN_MEANING[pattern])
+        map_legend("Pattern", {p: {"accent": spacetime.PATTERN_COLORS[p], "glyph": "",
+                                   "label": p} for p in shown_patterns})
+
+        named = emerging[emerging["Place"] != ""]
+        table_col, map_col = st.columns([1, 1], gap="medium")
+        with table_col:
+            if named.empty:
+                st.info("No place is a significant hotspot in any step. Try a larger cell, "
+                        "a longer step, or switch the correction off.")
+            else:
+                date_fmt = "MMM YYYY" if cube_step == "Month" else "D MMM YYYY"
+                st.dataframe(
+                    named.drop(columns=["Cell", "Centre Latitude", "Centre Longitude"]),
+                    width="stretch", height=min(520, 38 + 35 * len(named)), hide_index=True,
+                    column_config={
+                        "Recent Events": st.column_config.NumberColumn(
+                            "Recent", help="Events in the last three steps."),
+                        "Hot Steps": st.column_config.NumberColumn(
+                            "Hot steps", help=f"{cube_step}s in which this place was a "
+                                              "significant hotspot."),
+                        "First Hot": st.column_config.DateColumn("First hot", format=date_fmt),
+                        "Last Hot": st.column_config.DateColumn("Last hot", format=date_fmt),
+                    },
+                )
+                st.download_button(
+                    "Download emerging hotspots (CSV)",
+                    named.to_csv(index=False).encode("utf-8"),
+                    "emerging_hotspots.csv", mime="text/csv",
+                )
+        with map_col:
+            render_pattern_map(emerging, cube.cell_km, cube.reference_lat, cube.step,
+                               style_name=basemap, show_boundaries=layer_boundaries,
+                               boundary_level=boundary_level)
+
+        matrix = spacetime.location_time_matrix(cube, emerging)
+        if not matrix.empty:
+            st.markdown(f"**When each place lit up** -- {cube_metric.lower()} per "
+                        f"{cube_step.lower()}, worst places first")
+            _plot(charts.place_time_heatmap(matrix, cube_step))
+            st.caption("Read along a row to see whether a place is new, steady or fading; "
+                       "down a column to see which places were active together.")
+
+        with st.expander("How to read this", expanded=False):
+            for pattern in spacetime.PATTERN_ORDER:
+                st.markdown(f"- **{pattern}**: {spacetime.PATTERN_MEANING[pattern]}")
+            for note in spacetime.pattern_caveats(cube, emerging, cube_fdr):
+                st.markdown(f"- {note}")
 
 
 # ---- Villages --------------------------------------------------------------

@@ -321,6 +321,9 @@ screen:
 * *Where to act* -- the beat tier counts, the layer filters, then a table
   (beats, hotspots, villages, animals) beside the spatial view. One tick on a
   row shows only that place on the map.
+* *New or growing?* -- each place's emerging hotspot pattern (new,
+  intensifying, persistent, consecutive, sporadic, diminishing, historical) as
+  counts, a table, a hexagon map, and a place-by-time heatmap.
 * *Villages at risk* -- the village ranking beside its map, and early-warning
   coverage when a registry is loaded.
 * *When* -- the casualty peak window, how many reports count as night raids,
@@ -367,6 +370,19 @@ passage and not driven.
 **Movement hotspots.** Density clusters in the point data rather than the
 administrative grid, so a herd working a corridor along a beat boundary reads
 as one hotspot instead of moderate pressure in two beats.
+
+**Emerging hotspots.** A space-time cube: reports binned into hexagons
+(2 km apart by default) by month, fortnight or week. Getis-Ord Gi* scores
+every cell and step against the whole cube over the cell, its six neighbours,
+this step and the one before, with a false discovery rate correction across
+all bins. A Mann-Kendall test on each cell's Gi* series gives its trend, and
+the run of hot steps plus that trend gives the label. Hot side only, since a
+cold spot in counts this sparse is just a quiet place. Two guards keep it
+honest: a cell counts as hot only if it had a report itself, so Gi* does not
+paint empty neighbours; and a trailing step less than half covered by the data
+is dropped, not read as everything cooling at once. Fewer than six steps gives
+no labels. Settings sit under *Space-time trend* in the sidebar; the brief
+gets a table and the assessment a one-line headline.
 
 **Villages at risk.** Every conflict incident within a chosen radius of each
 village, so a settlement between two hotspots is credited with both.
@@ -653,6 +669,7 @@ core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief
 core/intelligence.py Beat priorities, escalation, timing, the brief
 core/hotspots.py     DBSCAN clustering and village risk
+core/spacetime.py    Space-time cube and emerging hotspot labels
 core/coverage.py     Early-warning enrolment, de-identified at load
 core/spatial.py      Centroid loading and nearest-village enrichment
 core/boundaries.py   Vendored forest boundary layers
