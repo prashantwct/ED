@@ -141,6 +141,20 @@ CONFLICT_SHARE_FOR_HIGH = 0.25
 EVENTS_FOR_WATCH = 5
 
 
+# --- Emerging hotspots (space-time cube) -------------------------------------
+# Cells twice the hotspot neighbour distance: a herd's night of raiding
+# falls in one or two cells rather than smeared over five.
+DEFAULT_CUBE_CELL_KM = 2.0
+DEFAULT_CUBE_STEP = "Month"
+# Gi* looks back this many steps as well as at the current one.
+DEFAULT_CUBE_TIME_WINDOW = 1
+# Below this a trend test has nothing to work with.
+MIN_CUBE_STEPS = 6
+# Share of steps a cell must be hot in to count as persistent.
+PERSISTENT_SHARE = 0.9
+SIGNIFICANCE_ALPHA = 0.05
+
+
 # --- Spatial ----------------------------------------------------------------
 EARTH_RADIUS_KM = 6371.0
 KM_PER_DEG_LAT = 110.57

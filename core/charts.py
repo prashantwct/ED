@@ -420,3 +420,25 @@ def raids_by_month(links: pd.DataFrame) -> go.Figure:
     fig.update_xaxes(tickformat="%b<br>%Y", showgrid=False)
     fig.update_yaxes(title_text="Raids", rangemode="tozero")
     return fig
+
+
+def place_time_heatmap(matrix: pd.DataFrame, step: str) -> go.Figure:
+    """Places down the side, time steps across: when each place lit up.
+
+    Rows come in the emerging hotspot table's order, worst first, so the
+    eye starts on the place that needs a decision.
+    """
+    z = matrix.to_numpy(dtype=float)
+    fmt = "%b %Y" if step == "Month" else "%d %b %Y"
+    x = [pd.Timestamp(c).strftime(fmt) for c in matrix.columns]
+    fig = go.Figure(go.Heatmap(
+        z=z, x=x, y=list(matrix.index),
+        colorscale=HEAT_SCALE, zmin=0, xgap=1, ygap=2,
+        colorbar=dict(title=dict(text="Events", font=dict(color=INK_MUTED)),
+                      thickness=10, outlinewidth=0, tickfont=dict(color=INK_MUTED)),
+        hovertemplate=f"%{{y}}<br>{step} of %{{x}}<br>Events: <b>%{{z:.0f}}</b><extra></extra>",
+    ))
+    _base_layout(fig, 90 + 26 * max(len(matrix), 1))
+    fig.update_yaxes(autorange="reversed", showgrid=False, type="category")
+    fig.update_xaxes(type="category", tickangle=-45, nticks=24)
+    return fig
