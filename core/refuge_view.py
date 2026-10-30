@@ -25,6 +25,8 @@ from core.ui import findings, section
 
 # The source and settings last used in this view, for the brief to reuse.
 LAST_USED_KEY = "refuge_last_used"
+# The plate is a full-height flex layout; in a frame it needs a number.
+DASHBOARD_HEIGHT = 900
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "ed_landcover"
 
 # ---------------------------------------------------------------------------
@@ -484,6 +486,54 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
             st.caption(c)
         return
 
+    plate, workbench = st.tabs(["Dashboard", "Map and tables"])
+    with plate:
+        _dashboard(result)
+    with workbench:
+        _workbench(result, table, links, areas, basemap)
+    _method(result)
+
+
+def _dashboard(result: Dict[str, object]) -> None:
+    """The atlas plate itself, embedded and filled with this run.
+
+    The vendored sheet is the whole view -- map, register, watch list,
+    charts, lists -- so it goes in a frame of its own rather than being
+    rebuilt out of widgets. The same bytes are offered as a download:
+    it carries its own data, so it opens on a phone in a range office
+    with no app and no network behind it.
+    """
+    from core import refuge_dashboard as rdash
+
+    if not rdash.available():
+        st.info("The dashboard plate is not vendored with this build; the "
+                "Map and tables tab has the same analysis.")
+        return
+    try:
+        page = rdash.build(result)
+    except Exception as exc:  # noqa: BLE001 - a view must not 500 on a plate
+        st.warning(f"Could not build the dashboard: {exc}. The Map and tables "
+                   "tab has the same analysis.")
+        return
+
+    st.iframe(page, height=DASHBOARD_HEIGHT)
+    st.download_button(
+        "Download the dashboard (self-contained HTML)", page.encode("utf-8"),
+        "Elephant_Day_Refuges.html", mime="text/html", key="refuge_dashboard_html")
+    st.caption(
+        "One file, data and all. It needs the network only for its fonts and "
+        "D3; the register inside it is already there."
+    )
+
+
+def _workbench(result: Dict[str, object], table: pd.DataFrame, links: pd.DataFrame,
+               areas: pd.DataFrame, basemap: str) -> None:
+    """The pydeck map over a real basemap, and the registers as tables.
+
+    What the plate does not do: terrain and forest boundary outlines
+    under the marks, sortable tables, and the land-cover card per
+    refuge.
+    """
     # The plate: map sheet on the left, register panel beside it. The
     # panel's key drives the map, so its widgets are created before the
     # map is drawn; the watch list reads first on the page, so its slot
@@ -514,7 +564,6 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
 
     _areas_table(shown_areas if len(shown_areas) else areas)
     if table.empty:
-        _method(result)
         return
 
     st.markdown("**Refuge register** -- strongest evidence first")
@@ -551,7 +600,6 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
     st.caption("GeoJSON opens in QGIS; KML in Google Earth or a phone map app for field teams.")
 
     _cards(register, out_links, result["windows"])
-    _method(result)
 
 
 def _method(result: Dict[str, object]) -> None:
