@@ -1067,6 +1067,11 @@ def _adaptive_view_state(df: pd.DataFrame) -> pdk.ViewState:
 # ---------------------------------------------------------------------------
 # Emerging hotspots
 # ---------------------------------------------------------------------------
+MAP_FLAT, MAP_COLUMNS, MAP_STACKED = "Flat", "Columns", "Stacked by time"
+MAP_MODES = (MAP_FLAT, MAP_COLUMNS, MAP_STACKED)
+_PALE_SLAB = (205, 212, 207)
+
+
 @_never_breaks_the_page
 def render_pattern_map(
     table: pd.DataFrame,
@@ -1076,19 +1081,29 @@ def render_pattern_map(
     style_name: str = DEFAULT_BASEMAP,
     show_boundaries: bool = True,
     boundary_level: Optional[str] = None,
-    extruded: bool = False,
+    mode: str = MAP_FLAT,
     height_by: str = "Events",
+    counts: Optional[pd.DataFrame] = None,
+    hot: Optional[pd.DataFrame] = None,
 ) -> None:
     """Hex cells coloured by their emerging hotspot pattern.
 
     Cells with no pattern are not drawn: hundreds of grey hexes would
     bury the dozen that carry the message.
 
-    ``extruded`` raises each hex by ``height_by`` (``Events`` or
-    ``Recent Events``) and tilts the view, so colour says what kind of
-    hotspot a place is and height how much is happening there. The
-    tallest column is about three cell widths: tall enough to rank by
-    eye at landscape zoom, short enough not to hide the cells behind it.
+    ``mode`` is one of :data:`MAP_MODES`:
+
+    * ``Flat`` -- the pattern map.
+    * ``Columns`` -- each hex raised by ``height_by`` (``Events`` or
+      ``Recent Events``), so colour says what kind of hotspot a place is
+      and height how much is happening there. The tallest column is about
+      three cell widths: tall enough to rank by eye at landscape zoom,
+      short enough not to hide the cells behind it.
+    * ``Stacked by time`` -- the space-time cube on the basemap: a slab
+      per step with events, stacked from the oldest at the ground to the
+      latest on top, coloured where the place was hot that step and grey
+      where not, footprint area following the count. Needs the cube's
+      ``counts`` and ``hot`` frames; without them it draws flat.
     """
     from core.spacetime import NO_PATTERN, PATTERN_COLORS, PATTERN_MEANING, hex_polygon
 
@@ -1096,13 +1111,18 @@ def render_pattern_map(
     if cells.empty:
         st.info("No place is a significant hotspot in any step at these settings.")
         return
+    if mode == MAP_STACKED and (counts is None or hot is None or counts.empty):
+        mode = MAP_FLAT
+    raised = mode != MAP_FLAT
     fmt = "%b %Y" if step == "Month" else "%d %b %Y"
     cells["_polygon"] = [
         hex_polygon(row["Centre Latitude"], row["Centre Longitude"], cell_km, reference_lat)
         for row in cells.to_dict("records")
     ]
     rgb = cells["Pattern"].map(lambda p: list(_hex_to_rgb(PATTERN_COLORS[p])))
-    cells["_fill"] = [c + [(215 if extruded else 175)] for c in rgb]
+    # Stacked, the ground hex only marks where the tower stands.
+    alpha = {MAP_FLAT: 175, MAP_COLUMNS: 215, MAP_STACKED: 70}[mode]
+    cells["_fill"] = [c + [alpha] for c in rgb]
     cells["_line"] = [c + [255] for c in rgb]
     peak = max(float(cells[height_by].max()), 1.0)
     # A floor so a place with no recent events still stands as a sliver.
@@ -1129,8 +1149,8 @@ def render_pattern_map(
 
     view_state = _adaptive_view_state(cells.rename(columns={
         "Centre Latitude": "Latitude", "Centre Longitude": "Longitude"}))
-    if extruded:
-        view_state.pitch = 50
+    if raised:
+        view_state.pitch = 55 if mode == MAP_STACKED else 50
         view_state.bearing = -18
     layers = list(boundary_layers(view_state, boundary_level)) if show_boundaries else []
     layers.append(pdk.Layer(
@@ -1140,21 +1160,53 @@ def render_pattern_map(
         get_fill_color="_fill",
         get_line_color="_line",
         get_elevation="_elev",
-        extruded=extruded,
-        wireframe=extruded,
-        **({"material": {"ambient": 0.55, "diffuse": 0.6, "shininess": 24}}
-           if extruded else {}),
-        line_width_min_pixels=1,
+        extruded=mode == MAP_COLUMNS,
+        wireframe=mode == MAP_COLUMNS,
+        **({"material": _MATERIAL} if mode == MAP_COLUMNS else {}),
+        line_width_min_pixels=2 if mode == MAP_STACKED else 1,
         stroked=True,
         filled=True,
         pickable=True,
     ))
+
+    label_height = cells["_elev"] + 60
+    if mode == MAP_STACKED:
+        slabs, tower = _time_slabs(cells, counts, hot, cell_km, reference_lat, step)
+        layers.append(pdk.Layer(
+            "PolygonLayer",
+            data=slabs,
+            get_polygon="_polygon",
+            get_fill_color="_fill",
+            get_line_color="_line",
+            get_elevation="_elev",
+            extruded=True,
+            wireframe=False,
+            material=_MATERIAL,
+            pickable=True,
+        ))
+        # A stalk from the ground hex to the top of the tower, so slabs
+        # that start late hang from their place rather than float.
+        stalks = cells[["Centre Longitude", "Centre Latitude", "_line"]].copy()
+        stalks["_from"] = [[lon, lat, 0.0] for lon, lat in
+                           zip(stalks["Centre Longitude"], stalks["Centre Latitude"])]
+        stalks["_to"] = [[lon, lat, tower] for lon, lat in
+                         zip(stalks["Centre Longitude"], stalks["Centre Latitude"])]
+        layers.append(pdk.Layer(
+            "LineLayer",
+            data=stalks[["_from", "_to", "_line"]],
+            get_source_position="_from",
+            get_target_position="_to",
+            get_color="_line",
+            get_width=1.5,
+            width_units="'pixels'",
+        ))
+        label_height = pd.Series(tower + 80, index=cells.index)
+    cells["_label_z"] = label_height if raised else 0.0
     layers.append(pdk.Layer(
         "TextLayer",
-        data=cells[["Centre Longitude", "Centre Latitude", "_elev", "Place"]],
+        data=cells[["Centre Longitude", "Centre Latitude", "_label_z", "Place"]],
         # Labels ride on top of the column in 3D rather than inside it.
-        get_position="[Centre Longitude, Centre Latitude, _elev + 60]" if extruded
-        else "[Centre Longitude, Centre Latitude]",
+        get_position="[Centre Longitude, Centre Latitude, _label_z]",
         get_text="Place",
         get_size=12,
         get_color=[255, 255, 255, 255],
@@ -1166,6 +1218,74 @@ def render_pattern_map(
     ))
     _render_deck(layers, view_state, style_name)
     _basemap_note()
+
+
+_MATERIAL = {"ambient": 0.55, "diffuse": 0.6, "shininess": 24}
+
+
+def _time_slabs(
+    cells: pd.DataFrame,
+    counts: pd.DataFrame,
+    hot: pd.DataFrame,
+    cell_km: float,
+    reference_lat: float,
+    step: str,
+) -> Tuple[pd.DataFrame, float]:
+    """One extruded hex per place and step with events, stacked through time.
+
+    Each slab's polygon carries its base height as a third coordinate,
+    which deck.gl extrudes from, so the oldest step sits on the ground
+    and the latest on top. The whole tower is three cell widths tall
+    whatever the number of steps, matching the Columns mode, so
+    switching modes does not rescale the scene.
+
+    Returns the slab rows and the tower's height in metres.
+    """
+    from core.spacetime import PATTERN_COLORS, hex_polygon
+
+    from core.charts import _PRISM_HEIGHT, _PRISM_MAX, _PRISM_MIN
+
+    steps = pd.DatetimeIndex(counts.columns)
+    fmt = "%b %Y" if step == "Month" else "%d %b %Y"
+    tower = 3 * cell_km * 1000
+    slab = tower / max(len(steps), 1)
+    named = cells[cells["Cell"].isin(counts.index)]
+    peak = max(float(counts.loc[named["Cell"]].to_numpy().max()), 1.0) if len(named) else 1.0
+
+    rows = []
+    for row in named.to_dict("records"):
+        accent = _hex_to_rgb(PATTERN_COLORS[row["Pattern"]])
+        for k, (when, n) in enumerate(counts.loc[row["Cell"]].items()):
+            is_hot = bool(hot.at[row["Cell"], when])
+            if n <= 0 and not is_hot:
+                continue
+            # Area, not radius, follows the count, as in the 3D cube.
+            share = float(np.clip(_PRISM_MAX * np.sqrt(n / peak), _PRISM_MIN, _PRISM_MAX))
+            base = k * slab
+            polygon = [[lon, lat, base] for lon, lat in hex_polygon(
+                row["Centre Latitude"], row["Centre Longitude"], cell_km * share, reference_lat)]
+            colour = accent if is_hot else _PALE_SLAB
+            rows.append({
+                "_polygon": polygon,
+                "_elev": slab * _PRISM_HEIGHT,
+                "_fill": list(colour) + [235 if is_hot else 210],
+                "_line": list(colour) + [255],
+                **_slots(
+                    title=f"{row['Place']} - {when:{fmt}}",
+                    accent=colour,
+                    subtitle=("Significant hotspot this step" if is_hot
+                              else "Not a hotspot this step"),
+                    rows=[
+                        ("Events", f"{int(n):,}" + (" (hot from the step before)"
+                                                    if n <= 0 else "")),
+                        ("Pattern", row["Pattern"]),
+                        ("Village", _clean(row["Nearest Village"], "") or None),
+                    ],
+                    footer=_clean(row["Beats"], ""),
+                ),
+            })
+    columns = ["_polygon", "_elev", "_fill", "_line", *TOOLTIP_FIELDS]
+    return pd.DataFrame(rows, columns=columns), tower
 
 
 # ---------------------------------------------------------------------------
