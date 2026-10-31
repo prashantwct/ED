@@ -17,7 +17,7 @@ Colour rules, checked with the dataviz palette validator:
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -467,6 +467,14 @@ _PRISM_MIN = 0.28
 _PRISM_HEIGHT = 0.8
 # Scenes narrower than this get beat outlines, wider ones ranges.
 _BEAT_FLOOR_KM = 25.0
+# A focused scene reaches this many cells either side of the place:
+# close enough for prisms to read as solids, wide enough to show what
+# the place sits among.
+_FOCUS_CELLS = 4
+# Floor names past this many crowd the ground; the largest polygons win.
+_MAX_FLOOR_LABELS = 15
+# A combined column label lists this many IDs, then a count of the rest.
+_MAX_LABEL_IDS = 4
 
 # The 20 triangles of a hexagonal prism over 12 vertices: bottom ring
 # 0-5, top ring 6-11, both counter-clockwise from above. Fans close the
@@ -518,6 +526,47 @@ def _clip_rings(rings, km, x0, x1, y0, y1):
     return xs, ys, names
 
 
+def _floor_labels(rings, km, inside):
+    """One name per polygon whose centre lies in the scene, largest first.
+
+    The centre is the mean of the ring's vertices: crude for a concave
+    beat, but it lands inside the polygon for the compact shapes forest
+    beats and ranges mostly are, and a label only has to say which
+    polygon is which.
+    """
+    best: Dict[str, Tuple[int, float, float]] = {}
+    for name, ring in rings:
+        if not name:
+            continue
+        x, y = km(ring[:, 1].mean(), ring[:, 0].mean())
+        if not inside(x, y) or len(ring) <= best.get(name, (0, 0, 0))[0]:
+            continue
+        best[name] = (len(ring), float(x), float(y))
+    ranked = sorted(best.items(), key=lambda item: -item[1][0])[:_MAX_FLOOR_LABELS]
+    return ([v[1] for _, v in ranked], [v[2] for _, v in ranked],
+            [name for name, _ in ranked])
+
+
+def _adjacent_groups(x: np.ndarray, y: np.ndarray, reach: float) -> List[List[int]]:
+    """Indices grouped by chains of neighbours within ``reach``, in input order."""
+    parent = list(range(len(x)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(x)):
+        for j in range(i):
+            if np.hypot(x[i] - x[j], y[i] - y[j]) <= reach:
+                parent[root(i)] = root(j)
+    groups: Dict[int, List[int]] = {}
+    for i in range(len(x)):
+        groups.setdefault(root(i), []).append(i)
+    return sorted(groups.values(), key=lambda members: members[0])
+
+
 def _runs(mask: np.ndarray):
     """Start and end indices of each run of True."""
     padded = np.concatenate([[False], mask, [False]]).astype(int)
@@ -535,6 +584,7 @@ def space_time_cube(
     limit: int = 30,
     context: bool = True,
     floor_boundaries: bool = True,
+    focus: Optional[str] = None,
 ) -> go.Figure:
     """The cube itself: the ground on two axes, time rising on the third.
 
@@ -557,13 +607,21 @@ def space_time_cube(
     hexagon outlines and the villages the places are nearest to, since a
     3D scene has no basemap to orient by. Horizontal axes are kilometres
     from the centre of the data at true ratio; time is stretched to fit.
+
+    ``focus`` names one place (``E3``) to zoom onto: the scene shrinks to
+    :data:`_FOCUS_CELLS` cells round it, every patterned place inside is
+    drawn, and each column gets its own label. Unfocused, the worst
+    ``limit`` places are drawn and adjacent columns share one label,
+    since at landscape scale their IDs would print over each other.
     """
     from core.spacetime import NO_PATTERN, PATTERN_COLORS, PATTERN_ORDER, hex_polygon
 
     fig = go.Figure()
-    named = table[table["Pattern"] != NO_PATTERN].head(limit)
-    if cube.counts.empty or named.empty:
+    patterned = table[table["Pattern"] != NO_PATTERN]
+    if cube.counts.empty or patterned.empty:
         return _base_layout(fig, 200)
+    if focus not in set(patterned["Place"]):
+        focus = None
 
     steps = cube.steps
     top = len(steps) - 1
@@ -576,13 +634,24 @@ def space_time_cube(
         return (np.asarray(lon) - lon0) * lon_km, (np.asarray(lat) - lat0) * KM_PER_DEG_LAT
 
     floor = -0.6
-    tx, ty = km(named["Centre Latitude"], named["Centre Longitude"])
-    # The scene is fitted to the named places, two cells round, at true
-    # ground ratio. Fitting it to every event instead shrinks the columns
-    # that matter to a sliver in the middle of the landscape.
-    pad = cube.cell_km * 2
-    x0, x1 = float(tx.min()) - pad, float(tx.max()) + pad
-    y0, y1 = float(ty.min()) - pad, float(ty.max()) + pad
+    if focus:
+        centre = patterned[patterned["Place"] == focus].iloc[0]
+        fx, fy = km(centre["Centre Latitude"], centre["Centre Longitude"])
+        reach = cube.cell_km * _FOCUS_CELLS
+        x0, x1 = float(fx) - reach, float(fx) + reach
+        y0, y1 = float(fy) - reach, float(fy) + reach
+        px, py = km(patterned["Centre Latitude"], patterned["Centre Longitude"])
+        named = patterned[(px >= x0) & (px <= x1) & (py >= y0) & (py <= y1)]
+        tx, ty = km(named["Centre Latitude"], named["Centre Longitude"])
+    else:
+        named = patterned.head(limit)
+        tx, ty = km(named["Centre Latitude"], named["Centre Longitude"])
+        # The scene is fitted to the named places, two cells round, at true
+        # ground ratio. Fitting it to every event instead shrinks the
+        # columns that matter to a sliver in the middle of the landscape.
+        pad = cube.cell_km * 2
+        x0, x1 = float(tx.min()) - pad, float(tx.max()) + pad
+        y0, y1 = float(ty.min()) - pad, float(ty.max()) + pad
 
     def inside(x, y):
         return (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
@@ -601,16 +670,25 @@ def space_time_cube(
                      else boundaries.RANGE)
             west, south = lon0 + x0 / lon_km, lat0 + y0 / KM_PER_DEG_LAT
             east, north = lon0 + x1 / lon_km, lat0 + y1 / KM_PER_DEG_LAT
-            bx, by, bnames = _clip_rings(boundaries.outlines(level, west, south, east, north),
-                                         km, x0, x1, y0, y1)
+            rings = boundaries.outlines(level, west, south, east, north)
+            bx, by, bnames = _clip_rings(rings, km, x0, x1, y0, y1)
             if bx:
                 label = boundaries.LEVEL_LABELS[level]
                 fig.add_scatter3d(
                     x=bx, y=by, z=[floor + 0.01] * len(bx), mode="lines",
-                    name=f"{label} boundaries",
+                    name=f"{label} boundaries", legendgroup="boundaries",
                     line=dict(color=BOUNDARY_INK, width=2),
                     text=bnames, hovertemplate=f"{label}: %{{text}}<extra></extra>",
                 )
+                # Names on the ground, so the floor says which beat is
+                # which without a hover.
+                nx, ny, names = _floor_labels(rings, km, inside)
+                if names:
+                    fig.add_scatter3d(
+                        x=nx, y=ny, z=[floor + 0.01] * len(names), mode="text",
+                        text=names, legendgroup="boundaries", showlegend=False,
+                        textfont=dict(color=BOUNDARY_INK, size=9), hoverinfo="skip",
+                    )
 
     # Context: every other cell with events, faint, so the named columns
     # are seen against the landscape's activity and not in a void.
@@ -703,24 +781,22 @@ def space_time_cube(
         fig.add_scatter3d(x=hx, y=hy, z=hz, mode="lines", legendgroup=pattern,
                           showlegend=False, line=dict(color=color, width=4), hoverinfo="skip")
 
-    # Place IDs on top of each column, where the eye lands first. Columns
-    # in neighbouring cells would print their IDs over each other, so
-    # each label steps up past any already placed within 1.5 cells.
-    base = top + 0.7
-    label_z: List[float] = []
-    for i in range(len(named)):
-        level = 0
-        while any(abs(label_z[j] - (base + level * 1.1)) < 0.5
-                  and np.hypot(tx[i] - tx[j], ty[i] - ty[j]) < 1.5 * cube.cell_km
-                  for j in range(i)):
-            level += 1
-        label_z.append(base + level * 1.1)
-    # Up to three labels per stack; past that a column of IDs reads as
-    # noise and the hover names each bin anyway.
-    keep_label = [round((z - base) / 1.1) < 3 for z in label_z]
+    # Place IDs above the columns, where the eye lands first. At landscape
+    # scale neighbouring columns would print their IDs over each other,
+    # so a chain of adjacent places shares one label over its middle,
+    # worst first. Focused, columns stand far enough apart to label each.
+    label_top = top + 0.9
+    reach = 0.0 if focus else 1.5 * cube.cell_km
+    places = named["Place"].tolist()
+    lx, ly, ltext = [], [], []
+    for members in _adjacent_groups(tx, ty, reach):
+        ids = [places[m] for m in members]
+        more = len(ids) - _MAX_LABEL_IDS
+        ltext.append(", ".join(ids[:_MAX_LABEL_IDS]) + (f" +{more}" if more > 0 else ""))
+        lx.append(float(tx[members].mean()))
+        ly.append(float(ty[members].mean()))
     fig.add_scatter3d(
-        x=tx, y=ty, z=label_z, mode="text",
-        text=[p if k else "" for p, k in zip(named["Place"], keep_label)],
+        x=lx, y=ly, z=[label_top] * len(lx), mode="text", text=ltext,
         textfont=dict(color=INK, size=11), showlegend=False, hoverinfo="skip",
     )
 
@@ -774,16 +850,15 @@ def space_time_cube(
         hoverlabel=dict(bgcolor="#12211a", font_color="#eaf2ec", bordercolor="#12211a"),
         legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0,
                     font=dict(color=INK_MUTED), itemsizing="constant"),
-        # A new camera preset resets the view; anything else keeps the
-        # angle the user has rotated to across reruns.
-        uirevision=camera,
+        # A new camera preset or focus resets the view; anything else
+        # keeps the angle the user has rotated to across reruns.
+        uirevision=f"{camera}|{focus or ''}",
         scene=dict(
             xaxis=dict(axis, title="km east", range=[x0, x1]),
             yaxis=dict(axis, title="km north", range=[y0, y1]),
             zaxis=dict(axis, title="", tickvals=ticks,
                        ticktext=[f"{steps[t]:{fmt}}" for t in ticks],
-                       range=[floor - 0.2,
-                              max(z for z, k in zip(label_z, keep_label) if k) + 0.4]),
+                       range=[floor - 0.2, label_top + 0.5]),
             aspectmode="manual",
             aspectratio=dict(x=span_x / widest, y=span_y / widest, z=0.9),
             camera=CUBE_CAMERAS.get(camera, CUBE_CAMERAS["Oblique"]),
