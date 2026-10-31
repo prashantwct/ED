@@ -78,6 +78,11 @@ LISTING_FILTERS: Dict[str, str] = {
     "search": "",
 }
 
+# Rows asked for per listing page. Laravel's paginators commonly read
+# per_page from the query; a site that does not simply ignores it, and
+# one that rejects it is asked again without.
+LISTING_PAGE_SIZE = 500
+
 # Where the Export button's route is tried when the page's own route
 # table does not name it. A wrong guess costs one 404.
 EXPORT_PATHS = (
@@ -98,6 +103,27 @@ _SIGHTING_COLUMNS = frozenset({"Date", "Latitude", "Longitude"})
 
 # The route table Ziggy's @routes directive writes into the page.
 _ZIGGY = re.compile(r"\bZiggy\s*=\s*\{")
+
+# Scripts the page loads, and the chunks Vite preloads for it.
+_SCRIPT_SRC = re.compile(r"""<script\b[^>]*\bsrc=["']([^"']+\.m?js[^"']*)["']""", re.I)
+_PRELOAD = re.compile(
+    r"""<link\b[^>]*\brel=["']modulepreload["'][^>]*\bhref=["']([^"']+)["']"""
+    r"""|<link\b[^>]*\bhref=["']([^"']+\.m?js)["'][^>]*\brel=["']modulepreload["']""",
+    re.I,
+)
+# Words that mark a path or route name as a download. An Export button
+# need not call a route named "export": "download", "csv" or "xls" serve.
+_DOWNLOAD_WORDS = ("export", "download", "csv", "excel", "xls")
+# In a bundle: a quoted admin or API path, even where a query string or a
+# template placeholder follows it.
+_SCRIPT_PATH = re.compile(r"""['"`](/?(?:admin|api)/[\w/.\-]{1,120})""", re.I)
+# A Ziggy route table once minified: "name":{uri:"..." or "uri":"...".
+_SCRIPT_ROUTE = re.compile(
+    r'"([\w.\-]+)"\s*:\s*\{\s*"?uri"?\s*:\s*"([^"]+)"', re.I)
+# How far after a page's name in the bundle its lazy import is looked for.
+_CHUNK_REACH = 400
+# Scripts read at most, so a site with a hundred chunks is not crawled.
+_MAX_SCRIPTS = 12
 
 # data-page="{...}" is where Inertia hides the page payload (and its version)
 # in the initial HTML document.
@@ -193,7 +219,7 @@ def _export_strings(node: Any, found: List[str]) -> None:
     elif isinstance(node, list):
         for value in node:
             _export_strings(value, found)
-    elif isinstance(node, str) and "export" in node.lower() and (
+    elif isinstance(node, str) and _is_download(node) and (
             node.startswith("/") or node.startswith("http")) and " " not in node:
         found.append(node)
 
@@ -208,6 +234,53 @@ def _ziggy_from_html(page_html: str) -> Dict[str, Any]:
     except ValueError:
         return {}
     return table if isinstance(table, dict) else {}
+
+
+def script_urls(page_html: str) -> List[str]:
+    """The scripts a page loads and the chunks it preloads, in page order."""
+    found: List[str] = []
+    for match in _SCRIPT_SRC.finditer(page_html or ""):
+        found.append(match.group(1))
+    for match in _PRELOAD.finditer(page_html or ""):
+        found.append(match.group(1) or match.group(2))
+    return list(dict.fromkeys(found))
+
+
+def page_chunks(bundle: str, component: str) -> List[str]:
+    """The lazy chunk Vite's page map loads for an Inertia component.
+
+    ``resolvePageComponent`` builds a map from each page's source path
+    (``./Pages/Admin/Sightings/Index.vue``) to an ``import()`` of its
+    built chunk, and that chunk is where the page's buttons -- Export
+    among them -- name their routes.
+    """
+    chunks: List[str] = []
+    if not component:
+        return chunks
+    for match in re.finditer(re.escape(component) + r"\.(?:vue|jsx|tsx|js|ts)", bundle):
+        window = bundle[match.end():match.end() + _CHUNK_REACH]
+        imported = re.search(r"""import\(\s*["']([^"']+\.m?js)["']""", window)
+        if imported:
+            chunks.append(imported.group(1))
+    return list(dict.fromkeys(chunks))
+
+
+def _is_download(text: str) -> bool:
+    lowered = text.lower()
+    return any(word in lowered for word in _DOWNLOAD_WORDS)
+
+
+def script_export_leads(script: str) -> List[str]:
+    """Paths in a script that read as a download: quoted, or in a route table."""
+    leads = [m.group(1) for m in _SCRIPT_PATH.finditer(script) if _is_download(m.group(1))]
+    leads += [m.group(2) for m in _SCRIPT_ROUTE.finditer(script)
+              if _is_download(m.group(1)) or _is_download(m.group(2))]
+    cleaned = []
+    for lead in leads:
+        path = "/" + lead.lstrip("/").rstrip("/.")
+        if "{" not in path and path not in cleaned:
+            cleaned.append(path)
+    return sorted(cleaned, key=lambda path: "sight" not in path.lower())
 
 
 def export_candidates(
@@ -235,7 +308,7 @@ def export_candidates(
         ranked.append((0, explicit, "GET"))
     for name, (uri, methods) in routes.items():
         words = f"{name} {uri}".lower()
-        if "export" not in words or "{" in uri:
+        if not _is_download(words) or "{" in uri:
             continue
         method = "GET" if "GET" in methods or not methods else methods[0]
         ranked.append((1 if "sight" in words else 3, "/" + uri.lstrip("/"), method))
@@ -379,49 +452,100 @@ class ForestAlertsClient:
         Raises:
             ExportUnavailable: No candidate handed back a file.
         """
-        from tools.scrape_sightings import map_record
-
         if self._payload is None:
             self._page_version(SIGHTINGS_PATH)
         params = {**LISTING_FILTERS, "start_date": start_date, "end_date": end_date}
         tried: List[str] = []
+        done = set()
         for path, method in export_candidates(self._payload, self._page_html, export_path):
-            url = self._url(path if path.startswith("http") else "/" + path.lstrip("/"))
-            headers = {"Accept": _EXPORT_ACCEPT}
-            if method == "POST":
-                resp = self.session.post(url, data=params, timeout=self.timeout,
-                                         headers={**headers, **self._xsrf_header()})
-            else:
-                resp = self.session.get(url, params=params, headers=headers,
-                                        timeout=self.timeout)
-            if resp.status_code != 200:
-                tried.append(f"{method} {path}: HTTP {resp.status_code}")
-                continue
-            filename = suggested_filename(resp.headers.get("Content-Disposition", ""))
-            try:
-                fmt = detect_format(resp.content, resp.headers.get("Content-Type", ""),
-                                    filename)
-                if fmt == "html":
-                    tried.append(f"{method} {path}: a page, not a file")
-                    continue
-                text = to_csv_text(resp.content, fmt)
-            except ExportFormatError as error:
-                tried.append(f"{method} {path}: {error}")
-                continue
-            rows = [map_record(row) for row in records_from_csv_text(text)]
-            # A generic export route may hand back some other register;
-            # sightings are the file whose rows carry a date and a place.
-            if rows and not _SIGHTING_COLUMNS.issubset(rows[0]):
-                tried.append(f"{method} {path}: a file without sighting columns")
-                continue
-            logger.info("Export from %s: %s, %d bytes", path, fmt, len(resp.content))
-            return rows, resp.url
+            done.add(path)
+            got = self._try_export(path, method, params, tried)
+            if got:
+                return got
+        # The page names nothing that works; its JavaScript names what its
+        # Export button calls. Read only now, being a dozen requests.
+        for path in self._script_export_leads(tried):
+            if path not in done:
+                done.add(path)
+                got = self._try_export(path, "GET", params, tried)
+                if got:
+                    return got
         raise ExportUnavailable(
             "The site's export could not be found, so the listing was read page "
             "by page instead. Tried: " + "; ".join(tried) + ". Set "
             "FORESTALERTS_EXPORT_PATH to the address the Export button requests "
             "(browser developer tools, Network tab) to use it directly."
         )
+
+    def _try_export(
+        self, path: str, method: str, params: Dict[str, str], tried: List[str]
+    ) -> Optional[Tuple[List[Dict[str, str]], str]]:
+        """One candidate route: its rows and URL if it served the export."""
+        from tools.scrape_sightings import map_record
+
+        url = self._url(path if path.startswith("http") else "/" + path.lstrip("/"))
+        headers = {"Accept": _EXPORT_ACCEPT}
+        if method == "POST":
+            resp = self.session.post(url, data=params, timeout=self.timeout,
+                                     headers={**headers, **self._xsrf_header()})
+        else:
+            resp = self.session.get(url, params=params, headers=headers,
+                                    timeout=self.timeout)
+        if resp.status_code != 200:
+            tried.append(f"{method} {path}: HTTP {resp.status_code}")
+            return None
+        filename = suggested_filename(resp.headers.get("Content-Disposition", ""))
+        try:
+            fmt = detect_format(resp.content, resp.headers.get("Content-Type", ""),
+                                filename)
+            if fmt == "html":
+                tried.append(f"{method} {path}: a page, not a file")
+                return None
+            text = to_csv_text(resp.content, fmt)
+        except ExportFormatError as error:
+            tried.append(f"{method} {path}: {error}")
+            return None
+        rows = [map_record(row) for row in records_from_csv_text(text)]
+        # A generic export route may hand back some other register;
+        # sightings are the file whose rows carry a date and a place.
+        if rows and not _SIGHTING_COLUMNS.issubset(rows[0]):
+            tried.append(f"{method} {path}: a file without sighting columns")
+            return None
+        logger.info("Export from %s: %s, %d bytes", path, fmt, len(resp.content))
+        return rows, resp.url
+
+    def _script_export_leads(self, tried: List[str]) -> List[str]:
+        """Export paths named in the sightings page's JavaScript.
+
+        The page's own scripts first, then, read out of the main bundle,
+        the chunk Vite built for this page's component, which is the
+        code behind its Export button.
+        """
+        queue = script_urls(self._page_html)
+        component = str((self._payload or {}).get("component") or "")
+        seen: List[str] = []
+        leads: List[str] = []
+        while queue and len(seen) < _MAX_SCRIPTS:
+            src = queue.pop(0)
+            url = self._url(src if src.startswith("http") else "/" + src.lstrip("/"))
+            if url in seen:
+                continue
+            seen.append(url)
+            try:
+                resp = self.session.get(url, timeout=self.timeout)
+            except requests.RequestException as error:
+                tried.append(f"script {src}: {type(error).__name__}")
+                continue
+            if resp.status_code != 200:
+                continue
+            leads += [lead for lead in script_export_leads(resp.text) if lead not in leads]
+            base = url.rsplit("/", 1)[0] + "/"
+            for chunk in page_chunks(resp.text, component):
+                queue.insert(0, chunk if chunk.startswith(("http", "/"))
+                             else base + chunk.lstrip("./"))
+        if not leads:
+            tried.append(f"no export named in {len(seen)} script(s) of the page")
+        return leads
 
     def fetch_sightings(
         self,
@@ -447,8 +571,17 @@ class ForestAlertsClient:
         rows: List[Dict[str, Any]] = []
         page = 1
         last_page = 1
+        size = {"per_page": str(LISTING_PAGE_SIZE)}
         while page <= last_page:
-            data = self._get_page(page, window)
+            try:
+                data = self._get_page(page, {**window, **size})
+                data["props"]["sightings"]
+            except (requests.HTTPError, FetchError, KeyError, TypeError):
+                if not size or page != 1:
+                    raise
+                # The site would not take a page size: its own it is.
+                size = {}
+                data = self._get_page(page, window)
             block = data["props"]["sightings"]
             rows.extend(block.get("data", []))
             meta = block.get("meta", {})
@@ -467,12 +600,23 @@ class ForestAlertsClient:
         return rows
 
     def _get_page(self, page: int, window: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        """One listing page as Inertia JSON, refreshing version on 409."""
+        """One listing page as Inertia JSON, refreshing version on 409.
+
+        Asked as a partial reload of the sightings prop alone, so the
+        page's other props -- filter lists, the user, the route table --
+        are not sent again with every page. A server that does not do
+        partial reloads sends the whole page, which reads the same.
+        """
+        headers = self._inertia_headers()
+        component = (self._payload or {}).get("component")
+        if component:
+            headers.update({"X-Inertia-Partial-Component": str(component),
+                            "X-Inertia-Partial-Data": "sightings"})
         for attempt in (1, 2):
             resp = self.session.get(
                 self._url(SIGHTINGS_PATH),
                 params={**(window or {}), "page": page},
-                headers=self._inertia_headers(),
+                headers=headers,
                 timeout=self.timeout,
             )
             if resp.status_code == 409 and attempt == 1:

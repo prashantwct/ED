@@ -121,7 +121,11 @@ Reading the listing instead is one request per page with a pause between
 each, which took minutes; the export takes seconds. The Export button's
 route is read off the route table Laravel ships to the page (Ziggy, in the
 Inertia props or written by `@routes`), preferring one whose name says both
-export and sightings, and failing that a few likely paths are tried. The
+a download word (export, download, csv, excel, xls) and sightings; failing
+that a few likely paths are tried; failing those, the page's JavaScript is
+read — the scripts it loads and, out of Vite's page map in the main bundle,
+the chunk built for the sightings page, which is the code behind its Export
+button — for paths that read as a download. The
 file is read whatever it turns out to be — CSV or a spreadsheet, as below —
 renamed to the dashboard's columns through the scraper's synonym table, and
 only accepted if its rows carry a date and coordinates, so a generic export
@@ -130,7 +134,10 @@ pins the route once it is known.
 
 **Where no export can be found, the listing is read page by page over the
 same window**, and the status panel says so with the routes that were tried,
-so a wrong guess makes a fetch slower rather than empty. Either way the
+so a wrong guess makes a fetch slower rather than empty. Those pages are asked
+for 500 rows each (`per_page`, which Laravel paginators commonly read; a site
+that rejects it is asked again without) and as Inertia partial reloads of the
+sightings prop alone, so the page's other props are not resent every page. Either way the
 dates on the result are read off the rows that arrived, which is why the
 loaded page can say what the pull actually covers rather than what was asked
 for.

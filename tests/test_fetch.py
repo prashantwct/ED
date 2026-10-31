@@ -31,7 +31,13 @@ from core.fetch import (
 )
 from core.landing import FetchRequest
 from replica import EMAIL, PASSWORD, TOTAL_ROWS, Handler
-from tools.fetch_sightings import EXPORT_PATHS, export_candidates
+from tools.fetch_sightings import (
+    EXPORT_PATHS,
+    LISTING_PAGE_SIZE,
+    export_candidates,
+    page_chunks,
+    script_export_leads,
+)
 
 
 def _no_export():
@@ -141,7 +147,56 @@ def test_export_candidates_lead_with_the_sightings_route():
     assert export_candidates(payload, explicit="/pinned")[0] == ("/pinned", "GET")
 
 
+def test_the_export_route_is_read_out_of_the_pages_javascript(site):
+    """Where the page ships no route table, the Export button's address is
+    in the chunk Vite built for the sightings page."""
+    Handler.vite = True
+    Handler.export_route = "/admin/registers/sightings-xls"
+    result = _fetch(site)
+    assert result.source == SOURCE_EXPORT and result.rows == TOTAL_ROWS
+    assert len(Handler.export_requests) == 1
+
+
+def test_the_page_chunk_is_picked_out_of_the_bundle_by_component():
+    bundle = ('{"./Pages/Admin/Users/Index.vue":()=>import("./Index-u1.js"),'
+              '"./Pages/Admin/Sightings/Index.vue":()=>Ze(()=>import("./Index-s9.js"),[])}')
+    assert page_chunks(bundle, "Admin/Sightings/Index") == ["./Index-s9.js"]
+    assert page_chunks(bundle, "") == []
+
+
+def test_export_leads_in_a_script_put_sightings_first():
+    script = ('a="/admin/users/export";location.href=`/admin/sightings/export-xls?d=${d}`;'
+              'Z={"admin.x.export":{uri:"admin/registers/dl",methods:["GET"]},'
+              '"admin.y.export":{"uri":"admin/{id}/export"}}')
+    leads = script_export_leads(script)
+    assert leads[0] == "/admin/sightings/export-xls"
+    assert "/admin/users/export" in leads and "/admin/registers/dl" in leads
+    assert not any("{" in lead for lead in leads)
+
+
 # --- no export: the listing, page by page ----------------------------------
+
+
+def test_the_listing_asks_for_big_pages_and_takes_them_when_offered(site):
+    _no_export()
+    Handler.per_page = "honour"
+    result = _fetch(site)
+    assert result.rows == TOTAL_ROWS and result.pages == 1
+    assert Handler.inertia_queries[0]["per_page"] == [str(LISTING_PAGE_SIZE)]
+
+
+def test_a_listing_that_rejects_a_page_size_is_asked_again_without(site):
+    _no_export()
+    Handler.per_page = "reject"
+    result = _fetch(site)
+    assert result.rows == TOTAL_ROWS and result.pages == 3
+    assert "per_page" not in Handler.inertia_queries[-1]
+
+
+def test_listing_pages_are_partial_reloads_of_the_sightings(site):
+    _no_export()
+    _fetch(site)
+    assert Handler.inertia_partials == ["sightings"] * 3
 
 
 def test_with_no_export_the_listing_is_read_over_the_same_window(site):
@@ -176,6 +231,22 @@ def test_each_step_is_said_in_words(site):
 
 
 # --- refusals ---------------------------------------------------------------
+
+
+def test_an_out_of_date_client_is_called_an_update_not_a_missing_package(monkeypatch):
+    """The hosted app said 'requests is not installed' when the real fault
+    was an old tools.fetch_sightings still in memory after a deploy."""
+    import sys
+    import types
+
+    stale = types.ModuleType("tools.fetch_sightings")
+    stale.BASE_URL = "https://example.org"
+    monkeypatch.setitem(sys.modules, "tools.fetch_sightings", stale)
+    with pytest.raises(FetchError) as caught:
+        fetch_sightings(email=EMAIL, password=PASSWORD)
+    message = str(caught.value)
+    assert "out of date" in message and "Reboot" in message
+    assert "requests" not in message
 
 
 def test_an_end_before_the_start_is_refused_before_any_request(site):
