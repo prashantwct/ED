@@ -20,16 +20,19 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Set on each core module when this process first sees it loaded.
+# Set on each of the app's modules when this process first sees it loaded.
 _LOADED_AT = "_ed_loaded_at"
+# The app's own packages: core/ for the page, tools/ for the Forest
+# Alerts client the fetch imports from.
+_OUR_PACKAGES = ("core", "tools")
 
 
 def _is_core(name: str) -> bool:
-    return name == "core" or name.startswith("core.")
+    return name.split(".", 1)[0] in _OUR_PACKAGES
 
 
 def _forget_stale_core_modules() -> bool:
-    """Drop every core module if any has changed on disk since it was loaded.
+    """Drop all the app's modules if any has changed on disk since it was loaded.
 
     Streamlit re-reads this file on every run but keeps imported modules
     in memory. After a deploy that pairs a new call here with a new
@@ -37,7 +40,8 @@ def _forget_stale_core_modules() -> bool:
     TypeError until the app is rebooted. Forgetting the modules makes the
     imports below load the current code, as Streamlit's own watcher does
     in local development. All of them go, not just the changed one,
-    because the others hold names imported from it.
+    because the others hold names imported from it -- core.fetch from
+    tools.fetch_sightings, which is why tools/ is watched too.
     """
     stale = False
     for name, module in list(sys.modules.items()):

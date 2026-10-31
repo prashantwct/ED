@@ -171,11 +171,19 @@ def fetch_sightings(
             rows_to_csv_text,
         )
         from tools.scrape_sightings import order_columns
-    except ImportError as error:  # requests missing from the deployment
+    except ImportError as error:
+        if getattr(error, "name", None) == "requests":
+            raise FetchError(
+                "The fetch feature needs the 'requests' package, which is not "
+                f"installed here ({error}). Upload the CSV export instead, or "
+                "add requests to requirements.txt and reboot the app."
+            ) from error
+        # Anything else is the app's own code out of step with itself,
+        # which a deploy without a reboot leaves behind.
         raise FetchError(
-            "The fetch feature needs the 'requests' package, which is not "
-            f"installed here ({error}). Upload the CSV export instead, or "
-            "add requests to requirements.txt and reboot the app."
+            "Part of the app is out of date after an update, so the fetch "
+            f"could not start ({error}). Reboot the app (Manage app, then "
+            "Reboot app) and fetch again, or upload the CSV export meanwhile."
         ) from error
 
     if not (email and password):

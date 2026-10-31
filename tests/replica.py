@@ -198,13 +198,30 @@ XSRF_TOKEN = "xsrf-tok-123"
 INERTIA_SESSION = "fa_inertia=live"
 
 
-def _data_page(component, props=None, version=INERTIA_VERSION):
+def _data_page(component, props=None, version=INERTIA_VERSION, head=""):
     """The shell Inertia boots from, payload and all."""
     payload = {"component": component, "props": props or {}, "url": "/",
                "version": version}
     attr = escape(json.dumps(payload), quote=True)
-    return ('<!doctype html><html><head><title>Forest Alerts</title></head>'
+    return (f'<!doctype html><html><head><title>Forest Alerts</title>{head}</head>'
             f'<body><div id="app" data-page="{attr}"></div></body></html>')
+
+
+# A Vite build as Laravel's resolvePageComponent leaves it: the main
+# bundle maps each page to a lazy chunk, and the sightings page's chunk
+# is the one whose Export button names the route.
+VITE_HEAD = '<script type="module" src="/build/assets/app-7f3c.js"></script>'
+VITE_BUNDLE = (
+    'const Ze=(f,d)=>f();const pages={'
+    '"./Pages/Admin/Users/Index.vue":()=>Ze(()=>import("./Index-u1.js"),[]),'
+    '"./Pages/Admin/Sightings/Index.vue":()=>Ze(()=>import("./Index-s9.js"),[])};'
+)
+
+
+def sightings_chunk(route):
+    return ('export default{methods:{exportCsv(){window.location.href='
+            f'`{route}?start_date=${{this.f.start}}&end_date=${{this.f.end}}`}}}}}};'
+            'const other="/admin/users/export";')
 
 
 def _inertia_row(row):
@@ -260,6 +277,9 @@ class Handler(BaseHTTPRequestHandler):
     export_as = "csv"      # what the Export button hands back
     export_route = "/admin/sightings/export"  # where the Export button points
     ziggy_routes = None    # the route table the listing page ships, if any
+    vite = False           # whether the listing page loads a Vite build
+    per_page = "ignore"    # what the listing does with ?per_page: ignore|honour|reject
+    inertia_partials = []  # the partial-reload props each listing page asked for
     inertia_pages = []     # every Inertia listing page requested
     inertia_queries = []   # the query each of those pages was asked with
     inertia_stale_once = False  # answer the first listing page with a 409
@@ -306,6 +326,11 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/admin/sightings" and (
                 self._inertia() or self._boots_inertia()):
             return self._inertia_sightings(query)
+        if parsed.path == "/build/assets/app-7f3c.js" and self.vite:
+            return self._send(VITE_BUNDLE, content_type="application/javascript")
+        if parsed.path == "/build/assets/Index-s9.js" and self.vite:
+            return self._send(sightings_chunk(self.export_route),
+                              content_type="application/javascript")
         if parsed.path == "/build/app.js":
             return self._send(APP_BUNDLE, content_type="application/javascript")
         if parsed.path == "/spa":
@@ -421,11 +446,18 @@ class Handler(BaseHTTPRequestHandler):
         page = int(query.get("page", ["1"])[0])
         if self._boots_inertia():
             props = {"ziggy": {"routes": self.ziggy_routes}} if self.ziggy_routes else None
-            return self._send(_data_page("Admin/Sightings/Index", props))
+            return self._send(_data_page("Admin/Sightings/Index", props,
+                                         head=VITE_HEAD if self.vite else ""))
         type(self).inertia_pages.append(page)
         type(self).inertia_queries.append(query)
+        type(self).inertia_partials.append(self.headers.get("X-Inertia-Partial-Data"))
         if self.inertia_stale_once and len(self.inertia_pages) == 1:
             return self._send_json({"message": "version mismatch"}, status=409)
+        if "per_page" in query and self.per_page == "reject":
+            return self._send_json({"message": "The per page field is invalid."},
+                                   status=422)
+        if "per_page" in query and self.per_page == "honour":
+            return self._send_json(_inertia_page(page, int(query["per_page"][0])))
         return self._send_json(_inertia_page(page))
 
     def do_POST(self):

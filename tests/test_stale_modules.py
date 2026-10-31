@@ -59,3 +59,31 @@ def test_a_changed_core_module_is_reloaded_on_the_next_run():
         for name in list(_core_modules()):
             del sys.modules[name]
         sys.modules.update(saved)
+
+
+def test_a_changed_tools_module_is_dropped_too():
+    """core.fetch imports from tools.fetch_sightings; a deploy that changed
+    both left the old client in memory and the new bridge asking it for
+    names it did not have."""
+    import tools.fetch_sightings  # noqa: F401 - loaded, as after a first fetch
+
+    saved = _core_modules()
+    saved_tools = {n: m for n, m in sys.modules.items() if n.split(".")[0] == "tools"}
+    try:
+        AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+        stale = sys.modules["tools.fetch_sightings"]
+        path = stale.__file__
+        before = os.stat(path)
+        os.utime(path, (before.st_atime, time.time() + 5))
+        try:
+            fresh = AppTest.from_file(APP, default_timeout=TIMEOUT).run()
+        finally:
+            os.utime(path, (before.st_atime, before.st_mtime))
+        assert not fresh.exception
+        assert sys.modules.get("tools.fetch_sightings") is not stale
+    finally:
+        for name in [n for n in sys.modules
+                     if n.split(".")[0] in ("core", "tools")]:
+            del sys.modules[name]
+        sys.modules.update(saved)
+        sys.modules.update(saved_tools)

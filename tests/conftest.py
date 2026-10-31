@@ -24,6 +24,9 @@ def site():
     Handler.export_route = "/admin/sightings/export"
     Handler.ziggy_routes = None
     Handler.inertia_queries = []
+    Handler.vite = False
+    Handler.per_page = "ignore"
+    Handler.inertia_partials = []
     Handler.inertia_pages = []
     Handler.inertia_stale_once = False
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
