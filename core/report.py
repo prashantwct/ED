@@ -246,9 +246,9 @@ def generate_html_report(
     <h2>Movement Hotspots <span class="sub">where reports cluster on the ground</span></h2>
     {_hotspot_html(hotspots)}
 
-    <h2>Escalating Beats <span class="sub">last {recent_days} days against the {recent_days} before</span></h2>
+    <h2>Escalating Beats <span class="sub">{escape(insights.trend_basis_phrase(brief, recent_days))}</span></h2>
     {_escalation_chart(brief["escalating"])}
-    {_escalation_html(brief["escalating"], recent_days)}
+    {_escalation_html(brief["escalating"], recent_days, brief["coverage"].get("trend_basis", ""))}
 
     <div class="part">When</div>
     {_trend_section(df, kpis, recent_days, as_of)}
@@ -376,12 +376,14 @@ def _priority_beats_html(beats: pd.DataFrame, top_n: int = 12) -> str:
     )
 
 
-def _escalation_html(escalating: pd.DataFrame, recent_days: int, top_n: int = 12) -> str:
+def _escalation_html(escalating: pd.DataFrame, recent_days: int, basis: str = "",
+                     top_n: int = 12) -> str:
     if escalating.empty:
-        return (
-            '<p class="empty-note">No beat shows a materially higher conflict count '
-            "than in the preceding window.</p>"
-        )
+        return '<p class="empty-note">No beat rose clearly faster than its baseline.</p>'
+    from core.intelligence import TREND_BASIS_YEAR
+
+    before = (f"Same {recent_days} days a year earlier" if basis == TREND_BASIS_YEAR
+              else f"{recent_days} before")
     ordered = escalating.assign(
         _rise=escalating["Recent Conflicts"] - escalating["Prior Conflicts"]
     ).sort_values("_rise", ascending=False)
@@ -399,7 +401,7 @@ def _escalation_html(escalating: pd.DataFrame, recent_days: int, top_n: int = 12
     note = f"<p class='more'>{insights.plural(more, 'more escalating beat')}.</p>" if more else ""
     return (
         "<table><thead><tr><th>Beat</th>"
-        f"<th class='num'>Last {recent_days} days</th><th class='num'>{recent_days} before</th>"
+        f"<th class='num'>Last {recent_days} days</th><th class='num'>{escape(before)}</th>"
         "<th>What is driving it</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>{note}"
     )

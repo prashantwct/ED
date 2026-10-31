@@ -76,8 +76,10 @@ def normalise(name: object) -> str:
     does not, so "Kallwah Core" and "Kallwah" are one place.
     """
     text = str(name or "").strip().lower()
-    text = _ZONE_SUFFIX.sub("", text)
-    return re.sub(r"\s+", " ", text)
+    # As the loader tidies beat names: "Goraiya 'A'" is "Goraiya A".
+    text = re.sub("[\"'`\u2018\u2019\u201c\u201d]", "", text)
+    text = _ZONE_SUFFIX.sub("", re.sub(r"\s+", " ", text).strip())
+    return text
 
 
 def available() -> bool:
