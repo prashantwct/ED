@@ -184,15 +184,15 @@ _THEME_CSS = """
   background: var(--ci-brand-soft); color: var(--ci-brand);
 }
 .ci-section__title { font-size: 1.12rem; font-weight: 650; line-height: 1.25; }
-.ci-section__sub   { font-size: 0.8rem; color: var(--ci-text-muted); margin-top: 1px; }
+.ci-section__sub   { font-size: 0.86rem; color: var(--ci-text-muted); margin-top: 1px; }
 
 .ci-badge {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 2px 9px; border-radius: 999px;
-  font-size: 0.72rem; font-weight: 700;
+  font-size: 0.78rem; font-weight: 700;
   letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap;
 }
-.ci-badge__glyph { font-size: 0.72rem; line-height: 1; }
+.ci-badge__glyph { font-size: 0.78rem; line-height: 1; }
 
 .ci-tierbar { display: flex; gap: var(--ci-space-3); flex-wrap: wrap; margin: var(--ci-space-3) 0; }
 .ci-tiercard {
@@ -224,9 +224,9 @@ _THEME_CSS = """
 .mt { background:#12211a; color:#eaf2ec; border-radius:9px; overflow:hidden;
       box-shadow:0 6px 18px rgba(0,0,0,.35); min-width:190px; max-width:290px;
       font-family:"Segoe UI",Arial,sans-serif; }
-.mt-h { padding:7px 11px 6px 11px; font-weight:650; font-size:12.5px; line-height:1.25; }
-.mt-s { font-weight:400; opacity:.78; font-size:11px; margin-top:1px; }
-.mt-b { padding:7px 11px 8px 11px; font-size:11.5px; line-height:1.55; }
+.mt-h { padding:7px 11px 6px 11px; font-weight:650; font-size:13.5px; line-height:1.25; }
+.mt-s { font-weight:400; opacity:.85; font-size:12px; margin-top:1px; }
+.mt-b { padding:7px 11px 8px 11px; font-size:12.5px; line-height:1.55; }
 .mt-r { display:flex; justify-content:space-between; gap:14px; align-items:baseline; }
 .mt-l { opacity:.68; white-space:nowrap; }
 .mt-v { font-weight:650; font-variant-numeric:tabular-nums; text-align:right; }
@@ -252,13 +252,13 @@ _THEME_CSS = """
   gap: var(--ci-space-3); margin-bottom: var(--ci-space-2);
 }
 .ci-card__title { font-size: 0.98rem; font-weight: 650; color: var(--ci-text); }
-.ci-card__where { font-size: 0.76rem; color: var(--ci-text-muted); margin-top: 1px; }
+.ci-card__where { font-size: 0.82rem; color: var(--ci-text-muted); margin-top: 1px; }
 .ci-card__grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
   gap: var(--ci-space-2) var(--ci-space-3); margin-top: var(--ci-space-3);
 }
 .ci-stat__label {
-  font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em;
+  font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.04em;
   color: var(--ci-text-muted);
 }
 .ci-stat__value {
@@ -281,12 +281,32 @@ _THEME_CSS = """
 .ci-legend { display: flex; flex-wrap: wrap; gap: var(--ci-space-4); margin-top: var(--ci-space-2); }
 .ci-legend__item {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: 0.78rem; color: var(--ci-text-muted);
+  font-size: 0.85rem; color: var(--ci-text-muted);
 }
 .ci-legend__symbol { display: inline-flex; margin-right: 0.35rem; vertical-align: -4px; }
 .ci-legend__dot {
   width: 11px; height: 11px; border-radius: 50%;
   border: 1px solid rgba(0,0,0,.35); flex: 0 0 auto;
+}
+/* Keyboard focus must be visible on Streamlit's own widgets too. */
+button:focus-visible, [role="tab"]:focus-visible, input:focus-visible,
+[data-baseweb="select"]:focus-within, a:focus-visible {
+  outline: 3px solid var(--ci-brand); outline-offset: 2px;
+}
+
+/* Comfortable touch targets for field staff using tablets and phones. */
+.stButton > button, .stDownloadButton > button { min-height: 44px; }
+[role="tab"] { min-height: 44px; }
+[data-testid="stSidebar"] .stButton > button { width: 100%; }
+
+@media (max-width: 640px) {
+  .block-container { padding-left: 0.9rem; padding-right: 0.9rem; padding-top: 2rem; }
+  .ci-tiercard { flex-basis: calc(50% - var(--ci-space-3)); min-width: 0; }
+  .ci-stat__value { font-size: 1rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
 }
 </style>
 """
