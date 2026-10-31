@@ -154,6 +154,23 @@ def in_view(
     return kept
 
 
+def outlines(
+    level: str, west: float, south: float, east: float, north: float
+) -> List[Tuple[str, np.ndarray]]:
+    """Every ring of every polygon at ``level`` overlapping the box.
+
+    For drawings that are not map layers -- the space-time cube's floor
+    -- and so want plain coordinates rather than GeoJSON. Each ring is
+    an ``(n, 2)`` array of lon/lat, paired with its polygon's name.
+    """
+    out: List[Tuple[str, np.ndarray]] = []
+    for feature in in_view(load(level)["features"], west, south, east, north):
+        name = str(feature["properties"].get("name") or "")
+        for polygon in _rings(feature["geometry"]):
+            out.extend((name, ring) for ring in polygon)
+    return out
+
+
 def annotate(
     features: Sequence[dict], stats: Optional[Dict[str, Dict[str, object]]] = None
 ) -> List[dict]:

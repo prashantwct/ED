@@ -323,8 +323,9 @@ screen:
   row shows only that place on the map.
 * *New or growing?* -- each place's emerging hotspot pattern (new,
   intensifying, persistent, consecutive, sporadic, diminishing, historical) as
-  counts, a table, a hexagon map (flat, or 3D with each hexagon raised by its
-  events), a place-by-time heatmap, and the space-time cube itself in 3D.
+  counts, a table, a hexagon map (flat, raised into columns by events, or
+  stacked by time into the cube on the basemap), a place-by-time heatmap, and
+  the space-time cube itself in 3D.
 * *Villages at risk* -- the village ranking beside its map, and early-warning
   coverage when a registry is loaded.
 * *When* -- the casualty peak window, how many reports count as night raids,
@@ -386,14 +387,24 @@ no labels. Settings sit under *Space-time trend* in the sidebar; the brief
 gets a table and the assessment a one-line headline.
 
 The 3D cube puts the ground on two axes (kilometres, at true ratio) and time on
-the third. Each place is a column of squares, one per step with events, sized
-by count: coloured in the steps it was a significant hotspot, grey otherwise,
-so a New place is grey with a coloured top and a Diminishing one the reverse.
-The scene is fitted to the named places, with other activity as faint dots and
-only the villages the places are nearest to on the floor, since a 3D scene has
-no basemap. Camera presets (oblique, from above, and two side views that turn
-the cube into a time chart) keep it from being a puzzle to rotate, and a step
-slider lays a translucent plane through one moment in time.
+the third. Each place is a column of hexagonal prisms -- the map's hexagon, one
+per step with events, footprint area following the count -- coloured in the
+steps it was a significant hotspot and grey otherwise, so a New place is grey
+with a coloured top and a Diminishing one the reverse. Prisms rather than
+markers because a marker is a fixed-size sprite that neither foreshortens nor
+takes light; lighting is kept mostly ambient so the pattern colours stay true.
+The floor is ground: a plane carrying the forest boundaries (beats when the
+scene is under 25 km across, ranges otherwise), the hexagon outlines and the
+villages the places are nearest to. The scene is fitted to the named places,
+with other activity as faint dots. Camera presets (oblique, from above, and two
+side views that turn the cube into a time chart) keep it from being a puzzle to
+rotate, the time axis always labels the latest step, and a step slider lays a
+translucent plane through one moment in time.
+
+The map's *Stacked by time* mode builds the same cube on the basemap: a slab
+per step, extruded from its step's height, so each place is a tower with the
+oldest step at the ground and the latest on top, hung from a stalk so places
+that only became active lately do not float free.
 
 **Villages at risk.** Every conflict incident within a chosen radius of each
 village, so a settlement between two hotspots is credited with both.

@@ -63,6 +63,7 @@ from core.intelligence import (
 from core.map_engine import (
     BASEMAP_STYLES,
     DEFAULT_BASEMAP,
+    MAP_MODES,
     render_map,
     render_pattern_map,
     render_village_map,
@@ -1113,6 +1114,7 @@ with tab_emerging:
                                    "label": p} for p in shown_patterns})
 
         named = emerging[emerging["Place"] != ""]
+        cube_hot = spacetime.hot_bins(cube, fdr=cube_fdr)
         table_col, map_col = st.columns([1, 1], gap="medium")
         with table_col:
             if named.empty:
@@ -1139,24 +1141,31 @@ with tab_emerging:
                     "emerging_hotspots.csv", mime="text/csv",
                 )
         with map_col:
-            tilt_col, height_col = st.columns([1, 2], vertical_alignment="center")
-            map_3d = tilt_col.toggle("3D", key="emerging_3d",
-                                     help="Raise each hexagon by its events and tilt the map.")
+            mode_col, height_col = st.columns([3, 2], vertical_alignment="bottom")
+            map_mode = mode_col.segmented_control(
+                "Map", MAP_MODES, default=MAP_MODES[0], key="emerging_map_mode",
+                help="Columns raise each place by its events; Stacked builds the cube on the map.",
+            ) or MAP_MODES[0]
             height_by = "Events"
-            if map_3d:
+            if map_mode == MAP_MODES[1]:
                 height_by = height_col.segmented_control(
                     "Height", ["Events", "Recent Events"], default="Events",
-                    key="emerging_height", label_visibility="collapsed",
+                    key="emerging_height",
                     format_func=lambda h: "All events" if h == "Events"
                     else "Last 3 steps",
                 ) or "Events"
             render_pattern_map(emerging, cube.cell_km, cube.reference_lat, cube.step,
                                style_name=basemap, show_boundaries=layer_boundaries,
-                               boundary_level=boundary_level, extruded=map_3d,
-                               height_by=height_by)
-            if map_3d:
+                               boundary_level=boundary_level, mode=map_mode,
+                               height_by=height_by, counts=cube.counts,
+                               hot=cube_hot)
+            if map_mode == MAP_MODES[1]:
                 st.caption("Colour is the pattern, height the events. Ctrl-drag (or two "
                            "fingers) to rotate.")
+            elif map_mode == MAP_MODES[2]:
+                st.caption("Each tower is a place's history, oldest step at the ground and "
+                           "latest on top: coloured slabs were hotspot steps, grey ones not. "
+                           "Ctrl-drag to rotate.")
 
         matrix = spacetime.location_time_matrix(cube, emerging)
         if not matrix.empty:
@@ -1183,15 +1192,17 @@ with tab_emerging:
             highlight = (None if picked_slice == "None"
                          else cube.steps[slice_labels.index(picked_slice) - 1])
             _plot(charts.space_time_cube(
-                cube, emerging, spacetime.hot_bins(cube, fdr=cube_fdr), villages,
+                cube, emerging, cube_hot, villages,
                 camera=camera, highlight_step=highlight, context=show_context,
+                floor_boundaries=layer_boundaries,
             ))
             st.caption(
-                "Each column is a place; each square, a step with events, sized by count. "
-                "Coloured squares are steps the place was a significant hotspot, grey "
-                "ones steps it was not, so a New place is grey with a coloured top and a "
-                "Diminishing one the reverse. Drag to rotate, scroll to zoom, click a "
-                "legend entry to hide it."
+                "Each column is a place; each hexagon, a step with events, its area "
+                "following the count. Coloured hexagons are steps the place was a "
+                "significant hotspot, grey ones steps it was not, so a New place is grey "
+                "with a coloured top and a Diminishing one the reverse. The floor carries "
+                "the forest boundaries. Drag to rotate, scroll to zoom, click a legend "
+                "entry to hide it."
             )
 
         with st.expander("How to read this", expanded=False):

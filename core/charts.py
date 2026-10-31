@@ -446,12 +446,83 @@ def place_time_heatmap(matrix: pd.DataFrame, step: str) -> go.Figure:
 
 
 CUBE_CAMERAS: Dict[str, dict] = {
-    "Oblique": dict(eye=dict(x=1.55, y=-1.55, z=0.95), up=dict(x=0, y=0, z=1)),
-    "From above": dict(eye=dict(x=0, y=-0.01, z=2.6), up=dict(x=0, y=1, z=0)),
-    "Time vs east-west": dict(eye=dict(x=0, y=-2.6, z=0.05), up=dict(x=0, y=0, z=1)),
-    "Time vs north-south": dict(eye=dict(x=2.6, y=0, z=0.05), up=dict(x=0, y=0, z=1)),
+    "Oblique": dict(eye=dict(x=1.4, y=-1.4, z=0.85), up=dict(x=0, y=0, z=1)),
+    "From above": dict(eye=dict(x=0, y=-0.01, z=2.2), up=dict(x=0, y=1, z=0)),
+    # Side views sit closer: seen edge-on the cube is a thin slab, and at
+    # the oblique distance it fills a third of the frame.
+    "Time vs east-west": dict(eye=dict(x=0, y=-1.9, z=0.05), up=dict(x=0, y=0, z=1)),
+    "Time vs north-south": dict(eye=dict(x=1.9, y=0, z=0.05), up=dict(x=0, y=0, z=1)),
 }
 CONTEXT_COLOR = "#B8C2BC"
+PALE_BIN = "#DDE2DE"
+GROUND = "#F2F4EF"
+BOUNDARY_INK = "#9A8A62"
+
+# Prism footprint, as a share of the hexagon: the busiest bin fills most
+# of its cell, the quietest stays visible. Area, not radius, follows the
+# count, so twice the events reads as twice the size.
+_PRISM_MAX = 0.82
+_PRISM_MIN = 0.28
+# Height of a prism in steps; the gap between keeps steps apart.
+_PRISM_HEIGHT = 0.8
+# Scenes narrower than this get beat outlines, wider ones ranges.
+_BEAT_FLOOR_KM = 25.0
+
+# The 20 triangles of a hexagonal prism over 12 vertices: bottom ring
+# 0-5, top ring 6-11, both counter-clockwise from above. Fans close the
+# ends, two triangles per side, every face wound to point outward so the
+# lighting shades it from the right side.
+_PRISM_FACES = np.array(
+    [(0, k + 1, k) for k in range(1, 5)]
+    + [(6, 6 + k, 6 + k + 1) for k in range(1, 5)]
+    + [f for e in range(6) for f in ((e, (e + 1) % 6, 6 + (e + 1) % 6),
+                                     (e, 6 + (e + 1) % 6, 6 + e))]
+)
+_HEX_ANGLES = np.radians(60 * np.arange(6) - 30)
+
+
+def _prisms(x, y, z, radius, half_height: float):
+    """Vertex and face arrays for many hexagonal prisms in one mesh."""
+    x, y, z, radius = (np.asarray(v, dtype=float) for v in (x, y, z, radius))
+    ring_x = x[:, None] + radius[:, None] * np.cos(_HEX_ANGLES)[None, :]
+    ring_y = y[:, None] + radius[:, None] * np.sin(_HEX_ANGLES)[None, :]
+    vx = np.concatenate([ring_x, ring_x], axis=1).ravel()
+    vy = np.concatenate([ring_y, ring_y], axis=1).ravel()
+    vz = np.concatenate([np.repeat((z - half_height)[:, None], 6, axis=1),
+                         np.repeat((z + half_height)[:, None], 6, axis=1)], axis=1).ravel()
+    faces = (_PRISM_FACES[None, :, :] + 12 * np.arange(len(x))[:, None, None]).reshape(-1, 3)
+    return vx, vy, vz, faces[:, 0], faces[:, 1], faces[:, 2]
+
+
+def _clip_rings(rings, km, x0, x1, y0, y1):
+    """Ring vertices inside the box as one polyline, broken where they leave it.
+
+    Dropping outside vertices rather than intersecting segments stops a
+    line at most one vertex short of the edge: boundary vertices are tens
+    of metres apart, far below what the floor can show.
+    """
+    xs: List[Optional[float]] = []
+    ys: List[Optional[float]] = []
+    names: List[str] = []
+    for name, ring in rings:
+        rx, ry = km(ring[:, 1], ring[:, 0])
+        keep = (rx >= x0) & (rx <= x1) & (ry >= y0) & (ry <= y1)
+        if keep.sum() < 2:
+            continue
+        for a, b in _runs(keep):
+            if b - a < 2:
+                continue
+            xs += list(rx[a:b]) + [None]
+            ys += list(ry[a:b]) + [None]
+            names += [name] * (b - a) + [""]
+    return xs, ys, names
+
+
+def _runs(mask: np.ndarray):
+    """Start and end indices of each run of True."""
+    padded = np.concatenate([[False], mask, [False]]).astype(int)
+    edges = np.flatnonzero(np.diff(padded))
+    return list(zip(edges[::2], edges[1::2]))
 
 
 def space_time_cube(
@@ -463,18 +534,27 @@ def space_time_cube(
     highlight_step: Optional[pd.Timestamp] = None,
     limit: int = 30,
     context: bool = True,
+    floor_boundaries: bool = True,
 ) -> go.Figure:
     """The cube itself: the ground on two axes, time rising on the third.
 
-    Each place with a pattern is a column of bins, one per step with
-    events, sized by count. A bin is drawn in its place's pattern colour
-    in the steps it was a significant hotspot and pale grey otherwise, so
-    a column reads bottom to top as the place's history: a New place is
+    Each place with a pattern is a column of hexagonal prisms, one per
+    step with events, the same hexagon the map draws, its footprint area
+    following the count. A prism takes its place's pattern colour in the
+    steps it was a significant hotspot and pale grey otherwise, so a
+    column reads bottom to top as the place's history: a New place is
     grey with a coloured cap, a Diminishing one coloured with a grey cap.
     A thin stalk runs the full height of every column so empty steps are
     visible as gaps rather than read as a shorter history.
 
-    The floor carries hexagon outlines and the nearest villages, since a
+    Prisms rather than markers: a marker is a sprite of fixed pixel size
+    that neither foreshortens nor takes light, so a column of them reads
+    as a stack of stamps. A prism is a solid in the scene, shaded by its
+    faces, and keeps its true size as the camera moves.
+
+    The floor is ground: a plane carrying the forest boundaries (beats
+    when the scene is small enough to read them, ranges otherwise), the
+    hexagon outlines and the villages the places are nearest to, since a
     3D scene has no basemap to orient by. Horizontal axes are kilometres
     from the centre of the data at true ratio; time is stretched to fit.
     """
@@ -486,6 +566,7 @@ def space_time_cube(
         return _base_layout(fig, 200)
 
     steps = cube.steps
+    top = len(steps) - 1
     fmt = "%b %Y" if cube.step == "Month" else "%d %b %Y"
     lat0 = float(cube.cells["Centre Latitude"].mean())
     lon0 = float(cube.cells["Centre Longitude"].mean())
@@ -493,9 +574,6 @@ def space_time_cube(
 
     def km(lat, lon):
         return (np.asarray(lon) - lon0) * lon_km, (np.asarray(lat) - lat0) * KM_PER_DEG_LAT
-
-    def size(n):
-        return np.clip(5 + 3.2 * np.sqrt(n), 5, 26)
 
     floor = -0.6
     tx, ty = km(named["Centre Latitude"], named["Centre Longitude"])
@@ -508,6 +586,31 @@ def space_time_cube(
 
     def inside(x, y):
         return (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
+
+    # Ground first, so everything else draws over it.
+    fig.add_mesh3d(
+        x=[x0, x1, x1, x0], y=[y0, y0, y1, y1], z=[floor] * 4, i=[0, 0], j=[1, 2], k=[2, 3],
+        color=GROUND, opacity=1.0, hoverinfo="skip", showlegend=False, flatshading=True,
+        lighting=dict(ambient=1.0, diffuse=0.0, specular=0.0),
+    )
+    if floor_boundaries:
+        from core import boundaries
+
+        if boundaries.available():
+            level = (boundaries.BEAT if max(x1 - x0, y1 - y0) <= _BEAT_FLOOR_KM
+                     else boundaries.RANGE)
+            west, south = lon0 + x0 / lon_km, lat0 + y0 / KM_PER_DEG_LAT
+            east, north = lon0 + x1 / lon_km, lat0 + y1 / KM_PER_DEG_LAT
+            bx, by, bnames = _clip_rings(boundaries.outlines(level, west, south, east, north),
+                                         km, x0, x1, y0, y1)
+            if bx:
+                label = boundaries.LEVEL_LABELS[level]
+                fig.add_scatter3d(
+                    x=bx, y=by, z=[floor + 0.01] * len(bx), mode="lines",
+                    name=f"{label} boundaries",
+                    line=dict(color=BOUNDARY_INK, width=2),
+                    text=bnames, hovertemplate=f"{label}: %{{text}}<extra></extra>",
+                )
 
     # Context: every other cell with events, faint, so the named columns
     # are seen against the landscape's activity and not in a void.
@@ -527,8 +630,8 @@ def space_time_cube(
                 hoverinfo="skip",
             )
 
-    hot_x, hot_y, hot_z, hot_s, hot_c, hot_t = [], [], [], [], [], []
-    pale_x, pale_y, pale_z, pale_s, pale_t = [], [], [], [], []
+    # Every bin to draw: (pattern or None for not hot, x, y, step, count, tip).
+    bins = []
     for row in named.to_dict("records"):
         counts = cube.counts.loc[row["Cell"]]
         is_hot = hot.loc[row["Cell"]]
@@ -544,66 +647,81 @@ def space_time_cube(
             tip = f"{label}<br>{step:{fmt}}: {int(n)} event{'s' if n != 1 else ''}"
             if n <= 0:
                 tip += " (hot from the step before)"
-            if is_hot.iloc[k]:
-                hot_x.append(x); hot_y.append(y); hot_z.append(k); hot_s.append(n)
-                hot_c.append(PATTERN_COLORS[row["Pattern"]])
-                hot_t.append(tip + "<br>Significant hotspot this step")
-            else:
-                pale_x.append(x); pale_y.append(y); pale_z.append(k); pale_s.append(n)
-                pale_t.append(tip + "<br>Not a hotspot this step")
+            tip += ("<br>Significant hotspot this step" if is_hot.iloc[k]
+                    else "<br>Not a hotspot this step")
+            bins.append((row["Pattern"] if is_hot.iloc[k] else None, x, y, k, int(n), tip))
 
-    # Stalks and floor hexes, one trace per pattern so the legend
-    # doubles as the colour key and clicking it hides a pattern.
+    peak = max((b[4] for b in bins), default=1) or 1
+    hex_size = cube.cell_km / np.sqrt(3)
+
+    def radius(n):
+        share = np.sqrt(np.asarray(n, dtype=float) / peak)
+        return hex_size * np.clip(_PRISM_MAX * share, _PRISM_MIN, _PRISM_MAX)
+
+    # Mostly ambient: colour is the pattern, and strong diffuse light
+    # darkens Persistent into Intensifying and Consecutive into olive.
+    # What diffuse is left only tells the faces apart.
+    shading = dict(ambient=0.85, diffuse=0.3, specular=0.04, roughness=0.95, fresnel=0.05)
+    light = dict(x=-1.0, y=-2.0, z=3.0)
+
+    def add_prisms(group, name, color, legendgroup, showlegend=True):
+        if not group:
+            return
+        _, gx, gy, gz, gn, gt = zip(*group)
+        vx, vy, vz, i, j, k = _prisms(gx, gy, gz, radius(gn), _PRISM_HEIGHT / 2)
+        fig.add_mesh3d(
+            x=vx, y=vy, z=vz, i=i, j=j, k=k, color=color, opacity=1.0, flatshading=True,
+            lighting=shading, lightposition=light, name=name, legendgroup=legendgroup,
+            showlegend=showlegend,
+            # Hover lands on a vertex; all twelve of a prism carry its tip.
+            text=np.repeat(np.asarray(gt, dtype=object), 12),
+            hovertemplate="%{text}<extra></extra>",
+        )
+
+    add_prisms([b for b in bins if b[0] is None], "Events, not hot that step", PALE_BIN,
+               "not-hot")
+
+    # Per pattern: hot prisms, stalks and floor hexes in one legend group,
+    # so the legend is the colour key and clicking it hides the pattern.
     for pattern in PATTERN_ORDER:
         group = named[named["Pattern"] == pattern]
         if group.empty:
             continue
         color = PATTERN_COLORS[pattern]
+        add_prisms([b for b in bins if b[0] == pattern], pattern, color, pattern)
         sx, sy, sz, hx, hy, hz = [], [], [], [], [], []
         for row in group.to_dict("records"):
             x, y = km(row["Centre Latitude"], row["Centre Longitude"])
-            sx += [x, x, None]; sy += [y, y, None]; sz += [floor, len(steps) - 1, None]
+            sx += [x, x, None]; sy += [y, y, None]; sz += [floor, top, None]
             corners = hex_polygon(row["Centre Latitude"], row["Centre Longitude"],
                                   cube.cell_km, cube.reference_lat)
             corners.append(corners[0])
             cx, cy = km([c[1] for c in corners], [c[0] for c in corners])
-            hx += list(cx) + [None]; hy += list(cy) + [None]; hz += [floor] * 7 + [None]
-        fig.add_scatter3d(x=sx, y=sy, z=sz, mode="lines", name=pattern, legendgroup=pattern,
-                          line=dict(color=color, width=2), hoverinfo="skip")
+            hx += list(cx) + [None]; hy += list(cy) + [None]; hz += [floor + 0.02] * 7 + [None]
+        fig.add_scatter3d(x=sx, y=sy, z=sz, mode="lines", legendgroup=pattern,
+                          showlegend=False, line=dict(color=color, width=2), hoverinfo="skip")
         fig.add_scatter3d(x=hx, y=hy, z=hz, mode="lines", legendgroup=pattern,
                           showlegend=False, line=dict(color=color, width=4), hoverinfo="skip")
-
-    fig.add_scatter3d(
-        x=pale_x, y=pale_y, z=pale_z, mode="markers", name="Events, not hot that step",
-        marker=dict(size=size(np.array(pale_s, dtype=float)), color="#D9DED9", symbol="square",
-                    opacity=0.75, line=dict(color="#8C9A93", width=1)),
-        text=pale_t, hovertemplate="%{text}<extra></extra>",
-    )
-    fig.add_scatter3d(
-        x=hot_x, y=hot_y, z=hot_z, mode="markers", name="Hot that step",
-        marker=dict(size=size(np.array(hot_s, dtype=float)), color=hot_c, symbol="square",
-                    opacity=1.0, line=dict(color=INK, width=1)),
-        text=hot_t, hovertemplate="%{text}<extra></extra>",
-    )
 
     # Place IDs on top of each column, where the eye lands first. Columns
     # in neighbouring cells would print their IDs over each other, so
     # each label steps up past any already placed within 1.5 cells.
+    base = top + 0.7
     label_z: List[float] = []
     for i in range(len(named)):
         level = 0
-        while any(abs(label_z[j] - (len(steps) - 0.3 + level * 1.1)) < 0.5
+        while any(abs(label_z[j] - (base + level * 1.1)) < 0.5
                   and np.hypot(tx[i] - tx[j], ty[i] - ty[j]) < 1.5 * cube.cell_km
                   for j in range(i)):
             level += 1
-        label_z.append(len(steps) - 0.3 + level * 1.1)
+        label_z.append(base + level * 1.1)
     # Up to three labels per stack; past that a column of IDs reads as
     # noise and the hover names each bin anyway.
-    keep_label = [round((z - (len(steps) - 0.3)) / 1.1) < 3 for z in label_z]
+    keep_label = [round((z - base) / 1.1) < 3 for z in label_z]
     fig.add_scatter3d(
         x=tx, y=ty, z=label_z, mode="text",
-        text=[p if k else "" for p, k in zip(named["Place"], keep_label)], textfont=dict(color=INK, size=11), showlegend=False,
-        hoverinfo="skip",
+        text=[p if k else "" for p, k in zip(named["Place"], keep_label)],
+        textfont=dict(color=INK, size=11), showlegend=False, hoverinfo="skip",
     )
 
     # Villages on the floor: only the one each place is nearest to. A
@@ -622,7 +740,7 @@ def space_time_cube(
         if close.any():
             names = pool["Village"].astype(str).to_numpy()[close]
             fig.add_scatter3d(
-                x=vx[close], y=vy[close], z=[floor] * int(close.sum()),
+                x=vx[close], y=vy[close], z=[floor + 0.03] * int(close.sum()),
                 mode="markers+text", name="Villages",
                 marker=dict(size=4, color=INK_MUTED, symbol="diamond"),
                 text=names, textposition="bottom center",
@@ -641,7 +759,10 @@ def space_time_cube(
     # True ground ratio; time gets about as much height as the wider side.
     span_x, span_y = x1 - x0, y1 - y0
     widest = max(span_x, span_y)
-    ticks = list(range(0, len(steps), max(1, int(np.ceil(len(steps) / 8)))))
+    # About eight ticks, always ending on the latest step: "New" and the
+    # recent-events count are both read off it.
+    stride = max(1, int(np.ceil(len(steps) / 8)))
+    ticks = list(range(top, -1, -stride))[::-1]
     axis = dict(backgroundcolor=SURFACE, gridcolor=GRID, zerolinecolor=GRID,
                 showspikes=False, tickfont=dict(color=INK_MUTED, size=10),
                 title_font=dict(color=INK_MUTED, size=11))
@@ -661,7 +782,8 @@ def space_time_cube(
             yaxis=dict(axis, title="km north", range=[y0, y1]),
             zaxis=dict(axis, title="", tickvals=ticks,
                        ticktext=[f"{steps[t]:{fmt}}" for t in ticks],
-                       range=[floor - 0.2, max(z for z, k in zip(label_z, keep_label) if k) + 0.4]),
+                       range=[floor - 0.2,
+                              max(z for z, k in zip(label_z, keep_label) if k) + 0.4]),
             aspectmode="manual",
             aspectratio=dict(x=span_x / widest, y=span_y / widest, z=0.9),
             camera=CUBE_CAMERAS.get(camera, CUBE_CAMERAS["Oblique"]),

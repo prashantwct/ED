@@ -170,24 +170,85 @@ def test_hot_bins_match_the_labels():
     assert not (hot & (own == 0)).to_numpy().any()
 
 
-def test_cube_chart_colours_hot_bins_and_greys_the_rest():
+def _named_bins(cube, table, hot):
+    """Hot and not-hot bins the cube should draw for the named places."""
+    named = table[table["Place"] != ""]
+    counts = cube.counts.loc[named["Cell"]]
+    is_hot = hot.loc[named["Cell"]]
+    return int(is_hot.to_numpy().sum()), int(((counts > 0) & ~is_hot).to_numpy().sum())
+
+
+def test_cube_chart_draws_a_prism_per_bin_coloured_where_hot():
     cube, table = _cube_and_table()
     hot = spacetime.hot_bins(cube)
-    fig = charts.space_time_cube(cube, table, hot)
-    traces = {t.name: t for t in fig.data if t.name}
-    hot_trace = traces["Hot that step"]
-    pale_trace = traces["Events, not hot that step"]
-    named = table[table["Place"] != ""]
-    assert len(hot_trace.x) == int(hot.loc[named["Cell"]].to_numpy().sum())
-    assert set(hot_trace.marker.color) <= set(spacetime.PATTERN_COLORS.values())
-    assert len(pale_trace.x) > 0
-    # Time is the vertical axis, labelled with dates, and ground at true ratio.
+    fig = charts.space_time_cube(cube, table, hot, floor_boundaries=False)
+    n_hot, n_pale = _named_bins(cube, table, hot)
+    meshes = {t.name: t for t in fig.data if t.type == "mesh3d" and t.name}
+    pattern_meshes = [m for name, m in meshes.items() if name in spacetime.PATTERN_COLORS]
+    # Twelve vertices and twenty faces a prism.
+    assert sum(len(m.x) for m in pattern_meshes) == 12 * n_hot
+    assert sum(len(m.i) for m in pattern_meshes) == 20 * n_hot
+    assert {m.color for m in pattern_meshes} <= set(spacetime.PATTERN_COLORS.values())
+    assert len(meshes["Events, not hot that step"].x) == 12 * n_pale
+    # Every vertex of a prism carries that bin's tip, for the hover.
+    tips = meshes["Events, not hot that step"].text
+    assert all(len(set(tips[i:i + 12])) == 1 for i in range(0, len(tips), 12))
+
+
+def test_cube_chart_time_axis_ends_on_the_latest_step_at_true_ground_ratio():
+    cube, table = _cube_and_table()
+    fig = charts.space_time_cube(cube, table, spacetime.hot_bins(cube), floor_boundaries=False)
     scene = fig.layout.scene
-    assert scene.zaxis.ticktext[0] == "Jan 2024"
+    assert scene.zaxis.tickvals[-1] == len(cube.steps) - 1
+    assert scene.zaxis.ticktext[-1] == f"{cube.steps[-1]:%b %Y}"
+    assert list(scene.zaxis.tickvals) == sorted(scene.zaxis.tickvals)
     assert scene.aspectmode == "manual"
     span_x = scene.xaxis.range[1] - scene.xaxis.range[0]
     span_y = scene.yaxis.range[1] - scene.yaxis.range[0]
     assert scene.aspectratio.x / scene.aspectratio.y == pytest.approx(span_x / span_y)
+
+
+def test_prisms_face_outward_and_size_by_area():
+    vx, vy, vz, i, j, k = charts._prisms([0, 10], [0, 0], [0, 3], [1.0, 2.0], 0.4)
+    points = np.c_[vx, vy, vz]
+    for prism in range(2):
+        faces = slice(20 * prism, 20 * prism + 20)
+        a, b, c = points[i[faces]], points[j[faces]], points[k[faces]]
+        centre = points[12 * prism:12 * prism + 12].mean(axis=0)
+        normals = np.cross(b - a, c - a)
+        assert (np.einsum("ij,ij->i", normals, (a + b + c) / 3 - centre) > 0).all()
+    assert vz[:12].min() == pytest.approx(-0.4) and vz[12:].max() == pytest.approx(3.4)
+
+
+def test_cube_floor_carries_the_forest_boundaries_inside_the_scene():
+    from core import boundaries
+
+    if not boundaries.available():
+        pytest.skip("boundary layers not vendored")
+    cube, table = _cube_and_table()
+    hot = spacetime.hot_bins(cube)
+    fig = charts.space_time_cube(cube, table, hot)
+    lines = [t for t in fig.data if (t.name or "").endswith("boundaries")]
+    assert len(lines) == 1
+    xs = [v for v in lines[0].x if v is not None]
+    ys = [v for v in lines[0].y if v is not None]
+    scene = fig.layout.scene
+    assert xs and scene.xaxis.range[0] <= min(xs) and max(xs) <= scene.xaxis.range[1]
+    assert scene.yaxis.range[0] <= min(ys) and max(ys) <= scene.yaxis.range[1]
+    assert len({z for z in lines[0].z if z is not None}) == 1  # flat on the floor
+    off = charts.space_time_cube(cube, table, hot, floor_boundaries=False)
+    assert not [t for t in off.data if (t.name or "").endswith("boundaries")]
+
+
+def test_boundary_outlines_are_limited_to_the_box():
+    from core import boundaries
+
+    if not boundaries.available():
+        pytest.skip("boundary layers not vendored")
+    rings = boundaries.outlines(boundaries.RANGE, 81.3, 23.0, 81.8, 23.5)
+    everything = boundaries.load(boundaries.RANGE)["features"]
+    assert rings and len({name for name, _ in rings}) < len(everything)
+    assert all(ring.ndim == 2 and ring.shape[1] == 2 for _, ring in rings)
 
 
 def test_cube_chart_draws_only_the_villages_places_are_nearest_to():
@@ -199,7 +260,8 @@ def test_cube_chart_draws_only_the_villages_places_are_nearest_to():
         "Longitude": [STEADY[1], FRESH[1], 81.50] + list(np.linspace(81.3, 81.8, 50)),
     })
     table = emerging_hotspots(cube, villages=villages)
-    fig = charts.space_time_cube(cube, table, spacetime.hot_bins(cube), villages)
+    fig = charts.space_time_cube(cube, table, spacetime.hot_bins(cube), villages,
+                                 floor_boundaries=False)
     shown = [t for t in fig.data if t.name == "Villages"][0]
     assert {"Steadypur", "Freshgaon"} <= set(shown.text)
     assert len(shown.text) < 10
@@ -209,11 +271,12 @@ def test_cube_chart_cameras_and_slice():
     cube, table = _cube_and_table()
     hot = spacetime.hot_bins(cube)
     for camera, preset in charts.CUBE_CAMERAS.items():
-        fig = charts.space_time_cube(cube, table, hot, camera=camera)
+        fig = charts.space_time_cube(cube, table, hot, camera=camera, floor_boundaries=False)
         assert fig.layout.scene.camera.eye.x == preset["eye"]["x"]
         assert fig.layout.uirevision == camera
-    sliced = charts.space_time_cube(cube, table, hot, highlight_step=cube.steps[5])
-    plane = [t for t in sliced.data if t.type == "mesh3d"]
+    sliced = charts.space_time_cube(cube, table, hot, highlight_step=cube.steps[5],
+                                    floor_boundaries=False)
+    plane = [t for t in sliced.data if t.name == f"{cube.steps[5]:%b %Y}"]
     assert len(plane) == 1 and set(plane[0].z) == {5}
 
 
@@ -223,22 +286,64 @@ def test_cube_chart_with_nothing_to_show_is_empty():
     assert len(charts.space_time_cube(cube, quiet, spacetime.hot_bins(cube)).data) == 0
 
 
-def test_pattern_map_extrudes_and_tilts(monkeypatch):
+@pytest.fixture
+def deck(monkeypatch):
     from core import map_engine
 
     captured = {}
     monkeypatch.setattr(map_engine, "_render_deck",
                         lambda layers, view, style: captured.update(layers=layers, view=view))
+    return captured
+
+
+def _layers(captured, kind):
+    return [layer for layer in captured["layers"] if layer.type == kind]
+
+
+def test_pattern_map_flat_and_columns(deck):
+    from core import map_engine
+
     cube, table = _cube_and_table()
     map_engine.render_pattern_map(table, cube.cell_km, cube.reference_lat, cube.step,
-                                  show_boundaries=False, extruded=True)
-    hexes = [l for l in captured["layers"] if l.type == "PolygonLayer"][0]
-    assert hexes.extruded and captured["view"].pitch > 0
+                                  show_boundaries=False, mode=map_engine.MAP_COLUMNS)
+    hexes = _layers(deck, "PolygonLayer")[0]
+    assert hexes.extruded and deck["view"].pitch > 0
     data = pd.DataFrame(hexes.data)
-    tallest = data.loc[data["_elev"].idxmax()]
-    assert tallest["_elev"] == pytest.approx(3 * cube.cell_km * 1000)
+    assert data["_elev"].max() == pytest.approx(3 * cube.cell_km * 1000)
 
     map_engine.render_pattern_map(table, cube.cell_km, cube.reference_lat, cube.step,
                                   show_boundaries=False)
-    flat = [l for l in captured["layers"] if l.type == "PolygonLayer"][0]
-    assert not flat.extruded and captured["view"].pitch == 0
+    flat = _layers(deck, "PolygonLayer")[0]
+    assert not flat.extruded and deck["view"].pitch == 0
+
+
+def test_pattern_map_stacked_builds_the_cube_on_the_map(deck):
+    from core import map_engine
+
+    cube, table = _cube_and_table()
+    hot = spacetime.hot_bins(cube)
+    map_engine.render_pattern_map(table, cube.cell_km, cube.reference_lat, cube.step,
+                                  show_boundaries=False, mode=map_engine.MAP_STACKED,
+                                  counts=cube.counts, hot=hot)
+    ground, slabs = _layers(deck, "PolygonLayer")
+    assert not ground.extruded and slabs.extruded
+    data = pd.DataFrame(slabs.data)
+    n_hot, n_pale = _named_bins(cube, table, hot)
+    assert len(data) == n_hot + n_pale
+    # Each slab's base is its step's height: oldest on the ground, latest on top.
+    tower = 3 * cube.cell_km * 1000
+    slab = tower / len(cube.steps)
+    bases = sorted({round(poly[0][2], 6) for poly in data["_polygon"]})
+    assert bases[0] >= 0 and bases[-1] <= tower - slab + 1e-6
+    assert all(round(b / slab, 6).is_integer() for b in bases)
+    assert (data["_elev"] < slab).all()
+    assert _layers(deck, "LineLayer") and deck["view"].pitch > 0
+
+
+def test_pattern_map_stacked_without_the_cube_draws_flat(deck):
+    from core import map_engine
+
+    cube, table = _cube_and_table()
+    map_engine.render_pattern_map(table, cube.cell_km, cube.reference_lat, cube.step,
+                                  show_boundaries=False, mode=map_engine.MAP_STACKED)
+    assert len(_layers(deck, "PolygonLayer")) == 1 and deck["view"].pitch == 0
