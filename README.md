@@ -399,7 +399,12 @@ villages the places are nearest to. The scene is fitted to the named places,
 with other activity as faint dots. Camera presets (oblique, from above, and two
 side views that turn the cube into a time chart) keep it from being a puzzle to
 rotate, the time axis always labels the latest step, and a step slider lays a
-translucent plane through one moment in time.
+translucent plane through one moment in time. *Focus* zooms the cube onto one
+place and the four cells round it, where prisms read as solids, the floor
+switches to beats and every column gets its own label; across the whole
+landscape, adjacent columns share one label instead. The floor names the
+polygons it draws. The cube keeps two toolbar buttons the other charts drop:
+reset the camera, and save the current view as a PNG.
 
 The map's *Stacked by time* mode builds the same cube on the basemap: a slab
 per step, extruded from its step's height, so each place is a tower with the

@@ -273,7 +273,7 @@ def test_cube_chart_cameras_and_slice():
     for camera, preset in charts.CUBE_CAMERAS.items():
         fig = charts.space_time_cube(cube, table, hot, camera=camera, floor_boundaries=False)
         assert fig.layout.scene.camera.eye.x == preset["eye"]["x"]
-        assert fig.layout.uirevision == camera
+        assert fig.layout.uirevision.startswith(camera)
     sliced = charts.space_time_cube(cube, table, hot, highlight_step=cube.steps[5],
                                     floor_boundaries=False)
     plane = [t for t in sliced.data if t.name == f"{cube.steps[5]:%b %Y}"]
@@ -347,3 +347,64 @@ def test_pattern_map_stacked_without_the_cube_draws_flat(deck):
     map_engine.render_pattern_map(table, cube.cell_km, cube.reference_lat, cube.step,
                                   show_boundaries=False, mode=map_engine.MAP_STACKED)
     assert len(_layers(deck, "PolygonLayer")) == 1 and deck["view"].pitch == 0
+
+
+def test_adjacent_groups_chain_neighbours_and_keep_order():
+    x = np.array([0.0, 1.0, 2.0, 10.0, 0.5])
+    y = np.zeros(5)
+    assert charts._adjacent_groups(x, y, 1.2) == [[0, 1, 2, 4], [3]]
+    assert charts._adjacent_groups(x, y, 0.0) == [[0], [1], [2], [3], [4]]
+
+
+def _labels(fig):
+    return [t for t in fig.data if t.type == "scatter3d" and t.mode == "text"
+            and t.textfont.color == charts.INK][0]
+
+
+def test_cube_chart_shares_one_label_between_adjacent_columns():
+    cube, table = _cube_and_table()
+    fig = charts.space_time_cube(cube, table, spacetime.hot_bins(cube), floor_boundaries=False)
+    labels = list(_labels(fig).text)
+    named = table[table["Place"] != ""]
+    # Every named place appears in exactly one label, worst first within it.
+    listed = [p.strip() for label in labels for p in label.split("+")[0].split(",") if p.strip()]
+    assert len(labels) < len(named)
+    assert labels[0].startswith("E1")
+    assert set(listed) <= set(named["Place"]) and len(listed) == len(set(listed))
+
+
+def test_cube_chart_focus_zooms_onto_one_place():
+    cube, table = _cube_and_table()
+    hot = spacetime.hot_bins(cube)
+    steady = _place(table, *STEADY)["Place"]
+    fig = charts.space_time_cube(cube, table, hot, floor_boundaries=False, focus=steady)
+    scene = fig.layout.scene
+    width = scene.xaxis.range[1] - scene.xaxis.range[0]
+    assert width == pytest.approx(2 * charts._FOCUS_CELLS * cube.cell_km)
+    assert fig.layout.uirevision.endswith(f"|{steady}")
+    # The far-off fresh place is out of frame; columns are labelled one each.
+    fresh = _place(table, *FRESH)["Place"]
+    labels = list(_labels(fig).text)
+    assert steady in labels and fresh not in labels
+    assert all("," not in label for label in labels)
+    # An unknown place falls back to the whole landscape.
+    whole = charts.space_time_cube(cube, table, hot, floor_boundaries=False, focus="E99")
+    assert whole.layout.scene.xaxis.range[1] - whole.layout.scene.xaxis.range[0] > width
+
+
+def test_cube_floor_names_the_polygons_it_draws():
+    from core import boundaries
+
+    if not boundaries.available():
+        pytest.skip("boundary layers not vendored")
+    cube, table = _cube_and_table()
+    steady = _place(table, *STEADY)["Place"]
+    fig = charts.space_time_cube(cube, table, spacetime.hot_bins(cube), focus=steady)
+    names = [t for t in fig.data if t.type == "scatter3d" and t.mode == "text"
+             and t.legendgroup == "boundaries"]
+    lines = [t for t in fig.data if (t.name or "").endswith("boundaries")][0]
+    assert lines.name == "Beat boundaries"  # a focused scene is small enough for beats
+    assert names and 0 < len(names[0].text) <= charts._MAX_FLOOR_LABELS
+    assert set(names[0].text) <= set(lines.text) - {""}
+    scene = fig.layout.scene
+    assert all(scene.xaxis.range[0] <= x <= scene.xaxis.range[1] for x in names[0].x)
