@@ -1076,11 +1076,19 @@ def render_pattern_map(
     style_name: str = DEFAULT_BASEMAP,
     show_boundaries: bool = True,
     boundary_level: Optional[str] = None,
+    extruded: bool = False,
+    height_by: str = "Events",
 ) -> None:
     """Hex cells coloured by their emerging hotspot pattern.
 
     Cells with no pattern are not drawn: hundreds of grey hexes would
     bury the dozen that carry the message.
+
+    ``extruded`` raises each hex by ``height_by`` (``Events`` or
+    ``Recent Events``) and tilts the view, so colour says what kind of
+    hotspot a place is and height how much is happening there. The
+    tallest column is about three cell widths: tall enough to rank by
+    eye at landscape zoom, short enough not to hide the cells behind it.
     """
     from core.spacetime import NO_PATTERN, PATTERN_COLORS, PATTERN_MEANING, hex_polygon
 
@@ -1094,8 +1102,12 @@ def render_pattern_map(
         for row in cells.to_dict("records")
     ]
     rgb = cells["Pattern"].map(lambda p: list(_hex_to_rgb(PATTERN_COLORS[p])))
-    cells["_fill"] = [c + [175] for c in rgb]
+    cells["_fill"] = [c + [(215 if extruded else 175)] for c in rgb]
     cells["_line"] = [c + [255] for c in rgb]
+    peak = max(float(cells[height_by].max()), 1.0)
+    # A floor so a place with no recent events still stands as a sliver.
+    cells["_elev"] = (np.sqrt(cells[height_by].clip(lower=0) / peak) * 3 * cell_km * 1000
+                      ).clip(lower=40.0)
     cells = cells.reset_index(drop=True)
     tips = pd.DataFrame([
         _slots(
@@ -1117,13 +1129,21 @@ def render_pattern_map(
 
     view_state = _adaptive_view_state(cells.rename(columns={
         "Centre Latitude": "Latitude", "Centre Longitude": "Longitude"}))
+    if extruded:
+        view_state.pitch = 50
+        view_state.bearing = -18
     layers = list(boundary_layers(view_state, boundary_level)) if show_boundaries else []
     layers.append(pdk.Layer(
         "PolygonLayer",
-        data=cells[["_polygon", "_fill", "_line", *TOOLTIP_FIELDS]],
+        data=cells[["_polygon", "_fill", "_line", "_elev", *TOOLTIP_FIELDS]],
         get_polygon="_polygon",
         get_fill_color="_fill",
         get_line_color="_line",
+        get_elevation="_elev",
+        extruded=extruded,
+        wireframe=extruded,
+        **({"material": {"ambient": 0.55, "diffuse": 0.6, "shininess": 24}}
+           if extruded else {}),
         line_width_min_pixels=1,
         stroked=True,
         filled=True,
@@ -1131,8 +1151,10 @@ def render_pattern_map(
     ))
     layers.append(pdk.Layer(
         "TextLayer",
-        data=cells[["Centre Longitude", "Centre Latitude", "Place"]],
-        get_position="[Centre Longitude, Centre Latitude]",
+        data=cells[["Centre Longitude", "Centre Latitude", "_elev", "Place"]],
+        # Labels ride on top of the column in 3D rather than inside it.
+        get_position="[Centre Longitude, Centre Latitude, _elev + 60]" if extruded
+        else "[Centre Longitude, Centre Latitude]",
         get_text="Place",
         get_size=12,
         get_color=[255, 255, 255, 255],
