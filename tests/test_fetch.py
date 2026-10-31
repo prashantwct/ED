@@ -12,17 +12,31 @@ reaches a cache.
 
 The site is a Laravel + Inertia app, so the replica is driven over that
 protocol: a page load carrying the asset version, a login POST checked
-against the XSRF cookie, and the listing as JSON page by page. Nothing
-here configures an endpoint or pastes a cookie, because the client no
-longer has anywhere to put either.
+against the XSRF cookie, then the listing's Export button for the window
+-- or, where no export can be found, the listing as JSON page by page.
 """
+
+from datetime import date
 
 import pytest
 
 from core.data_loader import load_and_validate_csv
-from core.fetch import FetchError, FetchResult, fetch_sightings, observed_window
+from core.fetch import (
+    SOURCE_EXPORT,
+    SOURCE_LISTING,
+    FetchError,
+    FetchResult,
+    fetch_sightings,
+    observed_window,
+)
 from core.landing import FetchRequest
 from replica import EMAIL, PASSWORD, TOTAL_ROWS, Handler
+from tools.fetch_sightings import EXPORT_PATHS, export_candidates
+
+
+def _no_export():
+    """A site whose Export button is nowhere the client looks."""
+    Handler.export_route = "/nowhere"
 
 
 def _fetch(site, **overrides):
@@ -54,7 +68,94 @@ def test_the_rows_keep_the_dashboard_column_names(site):
         assert column in result.columns
 
 
+# --- the export -----------------------------------------------------------
+
+
+def test_a_fetch_downloads_the_export_in_one_request(site):
+    """The point of the change: one download, no pages walked."""
+    result = _fetch(site)
+    assert result.source == SOURCE_EXPORT and not result.note
+    assert len(Handler.export_requests) == 1
+    assert Handler.inertia_pages == []
+    assert result.pages == 1
+
+
+def test_the_export_is_asked_for_the_register_start_to_today(site):
+    """The window defaults to 1 October 2025 through the viewer's today,
+    with the listing's filters sent empty beside it."""
+    result = _fetch(site, today=date(2026, 10, 31))
+    query = Handler.export_requests[0]
+    assert query["start_date"] == ["2025-10-01"]
+    assert query["end_date"] == ["2026-10-31"]
+    assert query["division"] == [""] and query["beat"] == [""]
+    assert (result.window_start, result.window_end) == ("2025-10-01", "2026-10-31")
+    assert result.fetched_at == "2026-10-31"
+
+
+def test_a_narrower_window_returns_only_its_rows(site):
+    result = _fetch(site, start_date=date(2025, 10, 3), end_date=date(2025, 10, 5))
+    assert result.rows == 3
+    assert (result.start_date, result.end_date) == ("2025-10-03", "2025-10-05")
+
+
+def test_the_export_route_is_read_off_the_pages_route_table(site):
+    """Laravel ships its routes to the page; the Export button's is found
+    there wherever the site happens to put it."""
+    Handler.export_route = "/admin/registers/sightings-download"
+    Handler.ziggy_routes = {
+        "admin.sightings.index": {"uri": "admin/sightings", "methods": ["GET", "HEAD"]},
+        "admin.sightings.export": {"uri": "admin/registers/sightings-download",
+                                   "methods": ["GET", "HEAD"]},
+    }
+    result = _fetch(site)
+    assert result.source == SOURCE_EXPORT and result.rows == TOTAL_ROWS
+    assert len(Handler.export_requests) == 1
+
+
+def test_a_pinned_export_path_is_used_first(site):
+    Handler.export_route = "/custom/download"
+    result = _fetch(site, export_path="/custom/download")
+    assert result.source == SOURCE_EXPORT and result.rows == TOTAL_ROWS
+
+
+def test_a_spreadsheet_export_loads_too(site, tmp_path):
+    Handler.export_as = "xlsx"
+    result = _fetch(site)
+    path = tmp_path / result.name
+    path.write_bytes(result.data)
+    frame, _ = load_and_validate_csv(str(path))
+    assert len(frame) == TOTAL_ROWS
+
+
+def test_export_candidates_lead_with_the_sightings_route():
+    payload = {"props": {"ziggy": {"routes": {
+        "admin.users.export": {"uri": "admin/users/export"},
+        "admin.sightings.export": {"uri": "admin/sightings/download",
+                                   "methods": ["GET", "HEAD"]},
+        "admin.sighting.export.one": {"uri": "admin/sightings/{id}/export"},
+    }}}}
+    paths = [path for path, _ in export_candidates(payload)]
+    assert paths[0] == "/admin/sightings/download"
+    assert "/admin/sightings/{id}/export" not in paths   # cannot be filled in
+    assert paths.index("/admin/users/export") < paths.index(EXPORT_PATHS[0])
+    assert export_candidates(payload, explicit="/pinned")[0] == ("/pinned", "GET")
+
+
+# --- no export: the listing, page by page ----------------------------------
+
+
+def test_with_no_export_the_listing_is_read_over_the_same_window(site):
+    _no_export()
+    result = _fetch(site, start_date=date(2025, 10, 2), end_date=date(2025, 10, 30))
+    assert result.source == SOURCE_LISTING
+    assert "FORESTALERTS_EXPORT_PATH" in result.note
+    assert Handler.inertia_pages == [1, 2, 3]
+    assert all(q["start_date"] == ["2025-10-02"] and q["end_date"] == ["2025-10-30"]
+               for q in Handler.inertia_queries)
+
+
 def test_progress_is_reported_page_by_page(site):
+    _no_export()
     seen = []
     _fetch(site, progress=lambda page, rows: seen.append((page, rows)))
     assert seen == [(1, 4), (2, 8), (3, 9)]
@@ -62,7 +163,30 @@ def test_progress_is_reported_page_by_page(site):
 
 
 def test_the_result_counts_the_pages_it_read(site):
+    _no_export()
     assert _fetch(site).pages == 3
+
+
+def test_each_step_is_said_in_words(site):
+    _no_export()
+    said = []
+    _fetch(site, stage=said.append)
+    assert said[0].startswith("Downloading the export")
+    assert "page by page" in said[1]
+
+
+# --- refusals ---------------------------------------------------------------
+
+
+def test_an_end_before_the_start_is_refused_before_any_request(site):
+    with pytest.raises(FetchError, match="before the start date"):
+        _fetch(site, start_date=date(2025, 11, 1), end_date=date(2025, 10, 1))
+    assert Handler.export_requests == []
+
+
+def test_an_empty_window_is_a_sentence(site):
+    with pytest.raises(FetchError, match="No sightings were recorded"):
+        _fetch(site, start_date=date(2025, 10, 20), end_date=date(2025, 10, 25))
 
 
 def test_a_rejected_sign_in_is_a_sentence_not_a_traceback(site):
@@ -184,6 +308,12 @@ def test_a_complete_sign_in_is_accepted():
 
 def test_an_empty_form_is_refused():
     assert FetchRequest(email="", password="").is_usable()
+
+
+def test_a_window_that_ends_before_it_starts_is_refused():
+    request = FetchRequest(EMAIL, PASSWORD, start_date=date(2025, 12, 1),
+                           end_date=date(2025, 11, 1))
+    assert "before the start date" in request.is_usable()
 
 
 def test_the_refusal_does_not_offer_a_field_the_form_no_longer_has():

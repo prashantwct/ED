@@ -1,10 +1,19 @@
-"""Pull the full sightings register off the Forest Alerts admin site via its API.
+"""Pull the sightings register off the Forest Alerts admin site.
 
 Gaj Rakshak (mpforest.forestalerts.com) is a Laravel + Inertia.js app. The
 admin pages have no fillable HTML form and no separate REST API -- instead
 every page request returns its data as JSON when asked for an Inertia
-response. This script logs in with email/password and reads the sightings
-listing straight off that JSON, page by page, into one CSV.
+response. This script logs in with email/password the way that page does.
+
+**The listing's Export button comes first.** It is one request for the
+whole window, where reading the listing is one request per page with a
+pause between each -- minutes against seconds on a register of a few
+thousand rows. :meth:`ForestAlertsClient.export_sightings` finds the
+button's route (from the route table Laravel ships to the page, failing
+that a few likely paths), downloads the file for the window and reads it
+whatever format it arrives in. Where no export can be found, the listing
+is still read page by page, over the same window, so a fetch never comes
+back empty-handed because a route was guessed wrong.
 
 Because it authenticates itself, it needs no copied browser cookie and can
 run unattended on a schedule. Point it at a daily cron / Task Scheduler job
@@ -16,9 +25,9 @@ Run it:
     export FORESTALERTS_PASSWORD=...
     python -m tools.fetch_sightings -o data/sightings.csv
 
-The window is deliberately not a parameter: every run is a full pull of all
-pages, so a re-run cannot develop a gap. The register is small enough
-(a few thousand rows) that this is cheaper than being clever about deltas.
+The window runs from the day the register opens (``START_DATE``) to today
+unless narrowed, so a re-run is a full refresh rather than an increment to
+be merged.
 """
 
 from __future__ import annotations
@@ -39,12 +48,56 @@ from urllib.parse import unquote
 
 import requests
 
+from tools.export_source import (
+    ExportFormatError,
+    detect_format,
+    records_from_csv_text,
+    suggested_filename,
+    to_csv_text,
+)
+
 logger = logging.getLogger("fetch_sightings")
 
 BASE_URL = "https://mpforest.forestalerts.com"
 LOGIN_PATH = "/login"
 SIGHTINGS_PATH = "/admin/sightings"
 DEFAULT_OUT = Path("data/sightings.csv")
+
+# The register opens on 1 October 2025; there is nothing before it.
+START_DATE = "2025-10-01"
+
+# The listing's filters, sent empty as the unfiltered listing sends them,
+# with the window beside them. Named rather than omitted: a filter the
+# site defaults to non-empty would otherwise narrow the pull unseen.
+LISTING_FILTERS: Dict[str, str] = {
+    "beat": "",
+    "damage_type": "",
+    "division": "",
+    "elephant_visible": "",
+    "range": "",
+    "search": "",
+}
+
+# Where the Export button's route is tried when the page's own route
+# table does not name it. A wrong guess costs one 404.
+EXPORT_PATHS = (
+    "/admin/sightings/export",
+    "/admin/sightings-export",
+    "/admin/export/sightings",
+)
+
+# What a download asks for: the file types an admin panel exports, then
+# anything, so a server that keys its response on Accept sends a file.
+_EXPORT_ACCEPT = (
+    "text/csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, "
+    "application/vnd.ms-excel, application/octet-stream;q=0.9, */*;q=0.8"
+)
+
+# What makes a downloaded file the sightings register and not another.
+_SIGHTING_COLUMNS = frozenset({"Date", "Latitude", "Longitude"})
+
+# The route table Ziggy's @routes directive writes into the page.
+_ZIGGY = re.compile(r"\bZiggy\s*=\s*\{")
 
 # data-page="{...}" is where Inertia hides the page payload (and its version)
 # in the initial HTML document.
@@ -108,6 +161,99 @@ class FetchError(RuntimeError):
     """A step failed in a way the caller should see spelled out."""
 
 
+class ExportUnavailable(FetchError):
+    """No route on the site handed back an export file.
+
+    Not a failure of the fetch as a whole: the listing can still be read
+    page by page. The message lists what was tried, for whoever pins the
+    real route.
+    """
+
+
+def _routes_in(node: Any, found: Dict[str, Tuple[str, Tuple[str, ...]]]) -> None:
+    """Collect ``name -> (uri, methods)`` from every Ziggy-style route table."""
+    if isinstance(node, dict):
+        if node and all(isinstance(v, dict) and "uri" in v for v in node.values()):
+            for name, route in node.items():
+                methods = tuple(m.upper() for m in route.get("methods") or ("GET",))
+                found[str(name)] = (str(route["uri"]), methods)
+            return
+        for value in node.values():
+            _routes_in(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            _routes_in(value, found)
+
+
+def _export_strings(node: Any, found: List[str]) -> None:
+    """Every string in the payload that reads as a link to an export."""
+    if isinstance(node, dict):
+        for value in node.values():
+            _export_strings(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            _export_strings(value, found)
+    elif isinstance(node, str) and "export" in node.lower() and (
+            node.startswith("/") or node.startswith("http")) and " " not in node:
+        found.append(node)
+
+
+def _ziggy_from_html(page_html: str) -> Dict[str, Any]:
+    """The route table ``@routes`` wrote into the page, if it did."""
+    match = _ZIGGY.search(page_html or "")
+    if not match:
+        return {}
+    try:
+        table, _ = json.JSONDecoder().raw_decode(page_html, match.end() - 1)
+    except ValueError:
+        return {}
+    return table if isinstance(table, dict) else {}
+
+
+def export_candidates(
+    payload: Optional[Dict[str, Any]],
+    page_html: str = "",
+    explicit: Optional[str] = None,
+) -> List[Tuple[str, str]]:
+    """Where the Export button might point, best lead first, as (path, method).
+
+    A path configured by hand wins. Then routes from the table Laravel
+    ships to the page (Ziggy, in the Inertia props or written by
+    ``@routes``) whose name or path says both export and sightings, then
+    links to an export found anywhere in the props, then the usual
+    paths. A route with a parameter in it cannot be filled from here and
+    is skipped.
+    """
+    routes: Dict[str, Tuple[str, Tuple[str, ...]]] = {}
+    _routes_in(payload or {}, routes)
+    _routes_in(_ziggy_from_html(page_html), routes)
+    links: List[str] = []
+    _export_strings((payload or {}).get("props", {}), links)
+
+    ranked: List[Tuple[int, str, str]] = []
+    if explicit:
+        ranked.append((0, explicit, "GET"))
+    for name, (uri, methods) in routes.items():
+        words = f"{name} {uri}".lower()
+        if "export" not in words or "{" in uri:
+            continue
+        method = "GET" if "GET" in methods or not methods else methods[0]
+        ranked.append((1 if "sight" in words else 3, "/" + uri.lstrip("/"), method))
+    for link in links:
+        ranked.append((2 if "sight" in link.lower() else 3, link, "GET"))
+    for path in EXPORT_PATHS:
+        ranked.append((4, path, "GET"))
+
+    seen = set()
+    out: List[Tuple[str, str]] = []
+    for _, path, method in sorted(ranked, key=lambda item: item[0]):
+        key = (path.split("?")[0].rstrip("/"), method)
+        if key not in seen:
+            seen.add(key)
+            out.append((path, method))
+    return out
+
+
 class ForestAlertsClient:
     def __init__(
         self,
@@ -124,6 +270,9 @@ class ForestAlertsClient:
             "User-Agent": "ED-sightings-fetch/1.0 (+wildlife monitoring)",
         })
         self._version: Optional[str] = None
+        # The listing page as last loaded, kept for the routes it names.
+        self._payload: Optional[Dict[str, Any]] = None
+        self._page_html: str = ""
 
     # -- low level --------------------------------------------------------
 
@@ -159,6 +308,8 @@ class ForestAlertsClient:
         if not version:
             raise FetchError("Inertia payload carried no version string.")
         self._version = version
+        if path == SIGHTINGS_PATH:
+            self._payload, self._page_html = payload, resp.text
         return version
 
     def _inertia_headers(self) -> Dict[str, str]:
@@ -210,24 +361,94 @@ class ForestAlertsClient:
         self._page_version(SIGHTINGS_PATH)
         logger.info("Signed in as %s", email)
 
+    def export_sightings(
+        self,
+        start_date: str,
+        end_date: str,
+        export_path: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, str]], str]:
+        """Download the listing's export for the window, as dashboard rows.
+
+        Returns the rows, renamed to the dashboard's columns through the
+        same synonym table the scraper uses, and the URL that served
+        them. Each candidate route is asked once with the listing's
+        filters and the window; one that answers with a page rather than
+        a file (the listing itself, a login shell, a queued-export
+        notice) is passed over.
+
+        Raises:
+            ExportUnavailable: No candidate handed back a file.
+        """
+        from tools.scrape_sightings import map_record
+
+        if self._payload is None:
+            self._page_version(SIGHTINGS_PATH)
+        params = {**LISTING_FILTERS, "start_date": start_date, "end_date": end_date}
+        tried: List[str] = []
+        for path, method in export_candidates(self._payload, self._page_html, export_path):
+            url = self._url(path if path.startswith("http") else "/" + path.lstrip("/"))
+            headers = {"Accept": _EXPORT_ACCEPT}
+            if method == "POST":
+                resp = self.session.post(url, data=params, timeout=self.timeout,
+                                         headers={**headers, **self._xsrf_header()})
+            else:
+                resp = self.session.get(url, params=params, headers=headers,
+                                        timeout=self.timeout)
+            if resp.status_code != 200:
+                tried.append(f"{method} {path}: HTTP {resp.status_code}")
+                continue
+            filename = suggested_filename(resp.headers.get("Content-Disposition", ""))
+            try:
+                fmt = detect_format(resp.content, resp.headers.get("Content-Type", ""),
+                                    filename)
+                if fmt == "html":
+                    tried.append(f"{method} {path}: a page, not a file")
+                    continue
+                text = to_csv_text(resp.content, fmt)
+            except ExportFormatError as error:
+                tried.append(f"{method} {path}: {error}")
+                continue
+            rows = [map_record(row) for row in records_from_csv_text(text)]
+            # A generic export route may hand back some other register;
+            # sightings are the file whose rows carry a date and a place.
+            if rows and not _SIGHTING_COLUMNS.issubset(rows[0]):
+                tried.append(f"{method} {path}: a file without sighting columns")
+                continue
+            logger.info("Export from %s: %s, %d bytes", path, fmt, len(resp.content))
+            return rows, resp.url
+        raise ExportUnavailable(
+            "The site's export could not be found, so the listing was read page "
+            "by page instead. Tried: " + "; ".join(tried) + ". Set "
+            "FORESTALERTS_EXPORT_PATH to the address the Export button requests "
+            "(browser developer tools, Network tab) to use it directly."
+        )
+
     def fetch_sightings(
         self,
         delay: float = 0.5,
         on_page: Optional[Callable[[int, int], None]] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Page through the sightings listing and return every row.
 
         ``on_page(page, rows_so_far)`` is called after each page, so a
-        caller (the app's status panel) can report progress.
+        caller (the app's status panel) can report progress. A window, when
+        given, is sent with the listing's filters as the page itself
+        sends it.
         """
         if self._version is None:
             self._page_version(SIGHTINGS_PATH)
+        window: Dict[str, str] = {}
+        if start_date or end_date:
+            window = {**LISTING_FILTERS, "start_date": start_date or START_DATE,
+                      "end_date": end_date or ""}
 
         rows: List[Dict[str, Any]] = []
         page = 1
         last_page = 1
         while page <= last_page:
-            data = self._get_page(page)
+            data = self._get_page(page, window)
             block = data["props"]["sightings"]
             rows.extend(block.get("data", []))
             meta = block.get("meta", {})
@@ -245,12 +466,12 @@ class ForestAlertsClient:
                 time.sleep(delay)
         return rows
 
-    def _get_page(self, page: int) -> Dict[str, Any]:
+    def _get_page(self, page: int, window: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """One listing page as Inertia JSON, refreshing version on 409."""
         for attempt in (1, 2):
             resp = self.session.get(
                 self._url(SIGHTINGS_PATH),
-                params={"page": page},
+                params={**(window or {}), "page": page},
                 headers=self._inertia_headers(),
                 timeout=self.timeout,
             )

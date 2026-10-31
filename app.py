@@ -257,17 +257,25 @@ def _fetch(request: landing.FetchRequest):
     be a cache keyed on a password; the CSV it returns goes through the
     same cached ``_load`` as an upload instead.
     """
-    from core.fetch import FetchError, fetch_sightings
+    from core.fetch import SOURCE_EXPORT, FetchError, fetch_sightings
 
     with st.status("Signing in to Forest Alerts...", expanded=True) as status:
         def progress(page: int, rows: int) -> None:
             status.update(label=f"Reading page {page} -- {rows:,} row(s) so far")
 
+        def stage(text: str) -> None:
+            status.update(label=text)
+
         try:
             result = fetch_sightings(
                 email=request.email,
                 password=request.password,
+                start_date=request.start_date,
+                end_date=request.end_date,
+                today=request.today,
+                export_path=_setting("FORESTALERTS_EXPORT_PATH"),
                 progress=progress,
+                stage=stage,
             )
         except FetchError as exc:
             status.update(label="Could not fetch the register", state="error")
@@ -278,11 +286,25 @@ def _fetch(request: landing.FetchRequest):
             if detail.strip():
                 st.code(detail.strip())
             return None
-        status.update(
-            label=f"Fetched {result.rows:,} row(s) from {result.pages} page(s)",
-            state="complete",
-        )
+        if result.source == SOURCE_EXPORT:
+            label = f"Fetched {result.rows:,} row(s) from the export"
+        else:
+            label = (f"Fetched {result.rows:,} row(s) from {result.pages} page(s) "
+                     "-- no export found")
+            st.warning(result.note)
+        status.update(label=label, state="complete")
     return result
+
+
+def _setting(name: str) -> Optional[str]:
+    """An optional setting, from Streamlit secrets or the environment."""
+    try:
+        value = st.secrets.get(name)
+        if value:
+            return str(value)
+    except Exception:  # noqa: BLE001 - no secrets file is a normal state
+        pass
+    return os.getenv(name) or None
 
 
 # ---------------------------------------------------------------------------
@@ -435,11 +457,13 @@ if fetched:
                 f"go back to it.",
             )
         else:
+            # A fetch held from before this field existed has no source.
+            how = ("from the export" if getattr(fetched, "source", "") == "export"
+                   else f"over {fetched.pages} page(s) of the listing")
             landing.source_note(
                 "Forest Alerts",
-                f"{fetched.rows:,} rows over {fetched.pages} page(s), "
-                f"{fetched.start_date} to {fetched.end_date}, fetched "
-                f"{fetched.fetched_at}.",
+                f"{fetched.rows:,} rows {how}, {fetched.start_date} to "
+                f"{fetched.end_date}, fetched {fetched.fetched_at}.",
             )
     with clear:
         if st.button("Clear", help="Discard the fetched register."):
