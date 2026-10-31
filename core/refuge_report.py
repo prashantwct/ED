@@ -180,7 +180,9 @@ def _table(df: pd.DataFrame, columns, top_n: int, noun: str) -> str:
     rows = "".join(
         "<tr>" + "".join(f"<td>{_cell(c, r.get(c))}</td>" for c, _ in cols) + "</tr>"
         for r in df.head(top_n).to_dict("records"))
-    more = (f'<p class="empty-note">{len(df) - top_n} more {noun} in the app\'s '
+    from core.brief_insights import plural
+
+    more = (f'<p class="empty-note">{plural(len(df) - top_n, "more " + noun)} in the app\'s '
             "Day refuges view.</p>" if len(df) > top_n else "")
     return ("<table><thead><tr>" + "".join(f"<th>{escape(h)}</th>" for _, h in cols)
             + f"</tr></thead><tbody>{rows}</tbody></table>{more}")
@@ -199,7 +201,7 @@ def brief_section(result: Dict[str, object], top_n: int = 12,
     areas = areas if areas is not None else pd.DataFrame()
     source = result.get("land_cover", "")
     sub = ("where herds lie up by day, the raids each refuge sends, and raids with no "
-           "known refuge" + (f" -- land cover: {source}" if source else ""))
+           "known refuge" + (f"; land cover: {source}" if source else ""))
     head = f'<h2>Day Refuges <span class="sub">{escape(sub)}</span></h2>'
     lines: List[str] = rf.headlines(result)
     findings = "".join(f"<li>{escape(line)}</li>" for line in lines)
@@ -211,14 +213,14 @@ def brief_section(result: Dict[str, object], top_n: int = 12,
                    "</div>")
     if len(table):
         out.append("<div class='chart-title'>Day refuges that send raids</div>")
-        out.append(_table(table, BRIEF_COLUMNS, top_n, "refuge(s)"))
+        out.append(_table(table, BRIEF_COLUMNS, top_n, "refuge"))
     else:
         out.append('<p class="empty-note">No day refuge had a night raid linked to it in '
                    "this period.</p>")
     if len(areas):
-        out.append("<div class='chart-title'>Raid areas with no known refuge -- where to "
+        out.append("<div class='chart-title'>Raid areas with no known refuge: where to "
                    "search by day</div>")
-        out.append(_table(areas, AREA_BRIEF_COLUMNS, top_n, "raid area(s)"))
+        out.append(_table(areas, AREA_BRIEF_COLUMNS, top_n, "raid area"))
     caveats = [*result.get("land_cover_notes", []), *result["caveats"]]
     if caveats:
         out.append('<div class="caveats"><ul>'

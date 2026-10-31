@@ -1,8 +1,11 @@
 """Self-contained HTML brief.
 
 Inline CSS, no external assets, so it can be emailed or printed without
-the dashboard being online. Leads with what needs deciding, keeps the
-evidence beside each claim, and closes with the data's limits.
+the dashboard being online. It reads in the order a range officer works:
+the findings, then the action plan (one row per action, every place it
+applies to, why and when), then the evidence -- where, when, and what
+the register says about the elephants themselves -- and closes with a
+short appendix and the data's limits.
 """
 
 from __future__ import annotations
@@ -14,15 +17,14 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from core import brief_insights as insights
 from core import report_charts
 from core.analytics import (
     classify_conflict,
     division_conflict_rate,
     division_monthly_conflict,
     monthly_conflict_breakdown,
-    night_day_comparison,
     seasonal_matrix,
-    severity_distribution,
     window_comparison,
 )
 from core.charts import division_colors
@@ -36,11 +38,10 @@ from core.intelligence import (
     TIER_CRITICAL,
     TIER_HIGH,
     TIER_WATCH,
-    format_window,
     management_brief,
 )
 from core.map_engine import DEFAULT_BASEMAP
-from core.spacetime import PATTERN_COLORS, PATTERN_MEANING, PATTERN_ORDER, headline
+from core.spacetime import PATTERN_COLORS, PATTERN_MEANING, PATTERN_ORDER
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,9 @@ _CSS = """
     h2 { font-size: 18px; color: #1f5f3f; border-bottom: 2px solid #e5ece8; padding-bottom: 6px;
          margin-top: 30px; }
     h2 .sub { font-weight: 400; font-size: 13px; color: #789; margin-left: 8px; }
-    .kpi-grid { display: flex; gap: 16px; flex-wrap: wrap; margin: 16px 0 8px 0; }
-    .kpi-card { flex: 1; min-width: 130px; background: #f0f6f2; border: 1px solid #dce8e0;
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+                gap: 12px; margin: 16px 0 8px 0; }
+    .kpi-card { background: #f0f6f2; border: 1px solid #dce8e0;
                 border-radius: 8px; padding: 14px 16px; }
     .kpi-card.alert { background: #fdf0ee; border-color: #f0cdc7; }
     .kpi-card .label { font-size: 12px; color: #567; text-transform: uppercase; letter-spacing: .04em; }
@@ -103,9 +105,40 @@ _CSS = """
     table.heatmap td.heat { text-align: center; padding: 7px 4px;
                             -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     table.heatmap td.heat-na { background: #fafbfa; }
+    .findings { margin: 14px 0 6px 0; padding: 0; list-style: none; counter-reset: f; }
+    .findings li { position: relative; padding: 9px 12px 9px 40px; margin: 6px 0;
+                   background: #f6faf7; border-radius: 6px; font-size: 14.5px; line-height: 1.45; }
+    .findings li::before { counter-increment: f; content: counter(f); position: absolute;
+                           left: 12px; top: 9px; width: 19px; height: 19px; border-radius: 50%;
+                           background: #1f5f3f; color: #fff; font-size: 11.5px; font-weight: 700;
+                           text-align: center; line-height: 19px; }
+    table.plan td { padding: 10px; }
+    table.plan td.what { font-weight: 600; color: #16221c; width: 30%; }
+    table.plan td.when { white-space: nowrap; color: #33413a; }
+    table.plan .why { color: #5a6b62; font-size: 12px; margin-top: 3px; }
+    .kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+            margin-right: 7px; vertical-align: 1px;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .part { margin: 38px 0 0 0; font-size: 11.5px; font-weight: 700; letter-spacing: .12em;
+            text-transform: uppercase; color: #789; border-top: 3px solid #1f5f3f;
+            padding-top: 8px; }
+    .part + h2 { margin-top: 10px; }
+    .notes { font-size: 13.5px; color: #33413a; line-height: 1.5; margin: 8px 0 4px 0;
+             padding-left: 18px; }
+    .notes li { margin: 4px 0; }
+    td .sub, .sub { color: #789; font-size: 11.5px; }
+    .more { font-size: 12px; color: #5a6b62; margin: -12px 0 18px 0; }
     @media print { .header, .kpi-card, .chart svg { -webkit-print-color-adjust: exact;
-                   print-color-adjust: exact; } }
+                   print-color-adjust: exact; }
+                   .part { break-before: auto; } h2 { break-after: avoid; } }
 """
+
+# Colour keys for the action plan, so the kinds of work read at a glance.
+_ACTION_COLORS = {
+    "respond": "#b3261e", "warn": "#e8751a", "bulls": "#7A4A2A", "herds": "#1f5f3f",
+    "survey": "#5b6b62", "refuge": "#2E6B4A", "search": "#4F8C6A", "crops": "#EE8A3C",
+    "homes": "#D04E14", "verify": "#8C9A93", "confirm": "#C5CDC8",
+}
 
 _TIER_CLASSES = {
     TIER_CRITICAL: "tier-critical",
@@ -165,97 +198,83 @@ def generate_html_report(
     Returns:
         A complete HTML document as a string.
     """
-    brief = management_brief(df, recent_days=recent_days)
-    kpis = brief["kpis"]
     as_of = None if end_date is None or pd.isna(end_date) else pd.Timestamp(end_date)
+    brief = management_brief(df, recent_days=recent_days, as_of=as_of)
+    kpis = brief["kpis"]
     change = window_comparison(df, recent_days, as_of=as_of)
-
-    period_str = _format_period(start_date, end_date)
-    night_pct_str = (
-        "N/A" if pd.isna(kpis["night_pct"]) else f"{kpis['night_pct']:.1f}%"
-    )
-    deaths = int(kpis["human_deaths"])
-    injuries = int(kpis["human_injuries"])
-    casualty_class = "kpi-card alert" if (deaths or injuries) else "kpi-card"
+    findings = insights.key_findings(df, brief, change, recent_days, emerging, refuges)
+    plan = insights.action_plan(brief, recent_days, emerging, refuges, village_risk)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Elephant Conflict Intelligence Brief</title>
+<title>Elephant Conflict Brief</title>
 <style>{_CSS}</style>
 </head>
 <body>
 <div class="wrap">
   <div class="header">
-    <h1>Elephant Conflict Intelligence Brief</h1>
-    <p>Period covered: {escape(period_str)} &nbsp;|&nbsp; Generated: {datetime.now():%d %b %Y, %H:%M}</p>
+    <h1>Elephant Conflict Brief</h1>
+    <p>{escape(_format_period(start_date, end_date))} &nbsp;|&nbsp; Generated {datetime.now():%d %b %Y, %H:%M}</p>
     <p class="scope">{filter_summary(filters)}</p>
   </div>
   <div class="content">
 
-    <h2>Assessment</h2>
-    {_headlines_html(brief["headlines"])}
+    {_kpi_strip(kpis, change, recent_days, brief, emerging)}
 
-    <div class="kpi-grid">
-      <div class="kpi-card"><div class="label">Reports</div><div class="value">{kpis['entries']:,}</div></div>
-      <div class="kpi-card"><div class="label">Conflict Events</div><div class="value">{kpis['conflicts']:,}</div>{_change_html(change, "conflicts", recent_days)}</div>
-      <div class="{casualty_class}"><div class="label">People Killed</div><div class="value">{deaths}</div></div>
-      <div class="{casualty_class}"><div class="label">People Injured</div><div class="value">{injuries}</div>{_change_html(change, "casualties", recent_days, noun="casualties")}</div>
-      <div class="kpi-card"><div class="label">Night Share</div><div class="value">{night_pct_str}</div></div>
-    </div>
+    <h2>Key Findings</h2>
+    {_findings_html(findings)}
 
-    {_trend_section(df, kpis, recent_days, as_of)}
+    <h2>Action Plan <span class="sub">what to do, where, and when</span></h2>
+    {_action_plan_html(plan)}
 
-    <h2>Priority Beats <span class="sub">tier set by fixed rules; score orders within tier</span></h2>
-    {_beat_table_html(brief["beats"])}
-
-    <h2>Which Animals <span class="sub">damage rate by the kind of group seen</span></h2>
-    {_composition_html(brief.get("composition"))}
+    <div class="part">Where</div>
+    <h2>Priority Beats <span class="sub">Critical and High tiers, worst first</span></h2>
+    {_priority_beats_html(brief["beats"])}
 
     <h2>Spatial View <span class="sub">sightings by conflict type, hotspot footprints to scale</span></h2>
     {sightings_map_svg(df, hotspots, basemap_style_name)}
 
-    <h2>Movement Hotspots <span class="sub">density clusters in the point data</span></h2>
-    {_hotspot_html(hotspots)}
-
     {_emerging_section(emerging, emerging_step)}
 
-    <h2>Villages at Risk</h2>
+    <h2>Villages at Risk <span class="sub">conflict within reach of each village</span></h2>
     {village_map_svg(village_risk, hotspots, basemap_style_name)}
     {_village_risk_html(village_risk)}
+
+    <h2>Movement Hotspots <span class="sub">where reports cluster on the ground</span></h2>
+    {_hotspot_html(hotspots)}
+
+    <h2>Escalating Beats <span class="sub">last {recent_days} days against the {recent_days} before</span></h2>
+    {_escalation_chart(brief["escalating"])}
+    {_escalation_html(brief["escalating"], recent_days)}
+
+    <div class="part">When</div>
+    {_trend_section(df, kpis, recent_days, as_of)}
+    {_rhythm_section(df)}
+
+    <div class="part">The Elephants</div>
+    {_ecology_section(df, brief)}
 
     {_refuge_section(refuges, basemap_style_name)}
 
     {_coverage_section(coverage, coverage_stats)}
 
-    <h2>Escalating Beats <span class="sub">last {brief['coverage']['recent_days']} days vs the window before</span></h2>
-    {_escalation_chart(brief["escalating"])}
-    {_escalation_html(brief["escalating"])}
-
-    <h2>Timing <span class="sub">when to staff</span></h2>
-    {_temporal_html(brief["temporal"])}
-
-    <h2>Conflict Type Breakdown</h2>
-    {_conflict_breakdown_table(df)}
-
+    <div class="part">Appendix</div>
     <h2>Conflict Rate by Division</h2>
     {_division_chart(df, kpis)}
     {_division_html(division_conflict_rate(df))}
 
-    <h2>Severity Distribution</h2>
-    {_bands_table_html(severity_distribution(df))}
+    <h2>Reports by Type</h2>
+    {_conflict_breakdown_table(df)}
 
-    <h2>Night vs. Day</h2>
-    {_night_day_table_html(night_day_comparison(df))}
-
-    <h2>How to read this</h2>
-    {_caveats_html(brief["caveats"])}
+    <h2>Notes</h2>
+    {_notes_html(df, brief)}
 
     <div class="footer">
-      Generated by the Elephant Sighting &amp; Conflict Dashboard. Figures reflect the
-      filters active at the time of generation.
+      Elephant Conflict Intelligence dashboard. Figures follow the filters set when the
+      brief was generated.
     </div>
   </div>
 </div>
@@ -266,13 +285,6 @@ def generate_html_report(
 # ---------------------------------------------------------------------------
 # Section renderers
 # ---------------------------------------------------------------------------
-def _headlines_html(headlines: List[str]) -> str:
-    if not headlines:
-        return '<p class="empty-note">No findings for the current filters.</p>'
-    items = "".join(f"<li>{escape(str(line))}</li>" for line in headlines)
-    return f'<div class="headlines"><ul>{items}</ul></div>'
-
-
 def _caveats_html(caveats: List[str]) -> str:
     if not caveats:
         return ""
@@ -280,94 +292,217 @@ def _caveats_html(caveats: List[str]) -> str:
     return f'<div class="caveats"><ul>{items}</ul></div>'
 
 
-def _beat_table_html(beats: pd.DataFrame, top_n: int = 15) -> str:
+def _kpi_strip(kpis: Dict[str, float], change: Dict[str, float], recent_days: int,
+               brief: Dict[str, object], emerging: Optional[pd.DataFrame]) -> str:
+    deaths, injuries = int(kpis["human_deaths"]), int(kpis["human_injuries"])
+    harm = "kpi-card alert" if (deaths or injuries) else "kpi-card"
+    beats = brief["beats"]
+    acting = 0 if beats.empty else int(beats["Priority Tier"].isin([TIER_CRITICAL,
+                                                                    TIER_HIGH]).sum())
+    cards = [
+        f'<div class="kpi-card"><div class="label">Reports</div>'
+        f'<div class="value">{kpis["entries"]:,}</div></div>',
+        f'<div class="kpi-card"><div class="label">Conflict events</div>'
+        f'<div class="value">{kpis["conflicts"]:,}</div>'
+        f'{_change_html(change, "conflicts", recent_days)}</div>',
+        f'<div class="{harm}"><div class="label">People killed</div>'
+        f'<div class="value">{deaths}</div></div>',
+        f'<div class="{harm}"><div class="label">People injured</div>'
+        f'<div class="value">{injuries}</div></div>',
+        f'<div class="kpi-card"><div class="label">Beats to act on</div>'
+        f'<div class="value">{acting}</div>'
+        f'<div class="change">of {len(beats)} with reports</div></div>',
+    ]
+    if emerging is not None and len(emerging):
+        from core.spacetime import NEW
+
+        new = int((emerging["Pattern"] == NEW).sum())
+        cards.append(f'<div class="kpi-card"><div class="label">New hotspots</div>'
+                     f'<div class="value">{new}</div>'
+                     f'<div class="change">this month</div></div>')
+    return '<div class="kpi-grid">' + "".join(cards) + "</div>"
+
+
+def _findings_html(lines: List[str]) -> str:
+    if not lines:
+        return ""
+    return '<ol class="findings">' + "".join(
+        f"<li>{escape(line)}</li>" for line in lines) + "</ol>"
+
+
+def _action_plan_html(plan: List["insights.Action"]) -> str:
+    if not plan:
+        return ('<p class="empty-note">Nothing in the period calls for action beyond '
+                "routine monitoring.</p>")
+    rows = "".join(
+        "<tr>"
+        f"<td class='what'><span class='kind' style='background:"
+        f"{_ACTION_COLORS.get(item.kind, '#8C9A93')}'></span>{escape(item.action)}</td>"
+        f"<td>{escape(item.where)}<div class='why'>{escape(item.why)}</div></td>"
+        f"<td class='when'>{escape(item.when)}</td>"
+        "</tr>"
+        for item in plan
+    )
+    return ("<table class='plan'><thead><tr><th>Action</th><th>Where, and why</th>"
+            f"<th>When</th></tr></thead><tbody>{rows}</tbody></table>")
+
+
+def _priority_beats_html(beats: pd.DataFrame, top_n: int = 12) -> str:
     if beats.empty:
         return '<p class="empty-note">No beat data available for the current filters.</p>'
-
+    focus = beats[beats["Priority Tier"].isin([TIER_CRITICAL, TIER_HIGH])]
+    shown = (focus if len(focus) else beats).head(top_n)
     rows = []
-    for row in beats.head(top_n).to_dict("records"):
-        conf = str(row["Confidence"])
-        conf_html = (
-            f'<span class="conf-low">{escape(conf)}</span>' if conf == "Low" else escape(conf)
-        )
+    for row in shown.to_dict("records"):
+        conf = " <span class='conf-low'>(thin data)</span>" if row["Confidence"] == "Low" else ""
         rows.append(
             "<tr>"
             f"<td><b>{escape(str(row['Beat']))}</b><br/>"
             f"<span class='sub'>{escape(str(row['Division']))} / {escape(str(row['Range']))}</span></td>"
             f"<td>{_tier_cell(row['Priority Tier'])}</td>"
-            f"<td class='num'>{row['Priority Score']:.0f}</td>"
-            f"<td class='num'>{int(row['Reports'])}</td>"
-            f"<td class='num'>{int(row['Conflict Events'])}</td>"
-            f"<td class='num'>{_pct(row['Adj. Conflict Rate %'])}</td>"
+            f"<td class='num'>{int(row['Conflict Events'])}"
+            f"<br/><span class='sub'>of {int(row['Reports'])} reports</span></td>"
             f"<td class='num'>{_casualty_cell(row)}</td>"
-            f"<td class='num'>{_pct(row['Night Conflict %'])}</td>"
-            f"<td>{_trend_html(row['Trend'], row['Recent vs Prior'])}</td>"
-            f"<td>{conf_html}</td>"
-            f"<td class='action'>{escape(str(row['Recommended Action']))}</td>"
+            f"<td>{escape(insights.beat_driver(row))}{conf}</td>"
             "</tr>"
         )
+    more = len(focus) - len(shown)
+    note = (f"<p class='more'>{insights.plural(more, 'more beat')} in the Critical or High "
+            "tier in the dashboard's beat table.</p>") if more > 0 else ""
     return (
-        "<table><thead><tr>"
-        "<th>Beat</th><th>Tier</th><th class='num'>Score</th><th class='num'>Reports</th>"
-        "<th class='num'>Conflicts</th><th class='num'>Adj. rate</th>"
-        "<th class='num'>Killed / injured<br/><span class='sub'>recent</span></th>"
-        "<th class='num'>Night</th>"
-        "<th>Trend</th><th>Confidence</th><th>Recommended action</th>"
-        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+        "<table><thead><tr><th>Beat</th><th>Tier</th><th class='num'>Conflicts</th>"
+        "<th class='num'>Killed / injured</th><th>What is driving it</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>" + note
     )
 
 
-def _composition_html(composition: Optional[pd.DataFrame]) -> str:
-    """Bull against breeding herd, which decides how a response is run."""
-    if composition is None or composition.empty:
-        return '<p class="empty-note">No group composition recorded.</p>'
-
-    rows = []
-    for row in composition.to_dict("records"):
-        rows.append(
-            "<tr>"
-            f"<td><b>{escape(str(row['Group Type']))}</b></td>"
-            f"<td class='num'>{int(row['Sightings']):,}</td>"
-            f"<td class='num'>{int(row['Conflict Events']):,}</td>"
-            f"<td class='num'>{_pct(row['Damage Rate %'])}</td>"
-            f"<td class='num'>{row['Human Deaths']:.0f}</td>"
-            "</tr>"
-        )
-    return (
-        "<table><thead><tr><th>Group</th><th class='num'>Sightings</th>"
-        "<th class='num'>Conflicts</th><th class='num'>Damage rate</th>"
-        "<th class='num'>Killed</th></tr></thead><tbody>"
-        + "".join(rows)
-        + "</tbody></table>"
-        "<p class='table-note'>Only bulls carry tusks in this species, so the male "
-        "count is the tusker count. A bull raids and occasionally kills; a "
-        "breeding herd with calves is avoiding people. The two take opposite "
-        "handling, and the beat table carries the split per beat.</p>"
-    )
-
-
-def _escalation_html(escalating: pd.DataFrame) -> str:
+def _escalation_html(escalating: pd.DataFrame, recent_days: int, top_n: int = 12) -> str:
     if escalating.empty:
         return (
             '<p class="empty-note">No beat shows a materially higher conflict count '
             "than in the preceding window.</p>"
         )
+    ordered = escalating.assign(
+        _rise=escalating["Recent Conflicts"] - escalating["Prior Conflicts"]
+    ).sort_values("_rise", ascending=False)
     rows = "".join(
         "<tr>"
-        f"<td><b>{escape(str(r['Beat']))}</b></td>"
-        f"<td>{escape(str(r['Division']))} / {escape(str(r['Range']))}</td>"
-        f"<td class='num trend-up'>{escape(str(r['Recent vs Prior']))}</td>"
-        f"<td class='num'>{int(r['Human Deaths'])} / {int(r['People Injured'])}</td>"
-        f"<td class='action'>{escape(str(r['Recommended Action']))}</td>"
+        f"<td><b>{escape(str(r['Beat']))}</b><br/>"
+        f"<span class='sub'>{escape(str(r['Division']))} / {escape(str(r['Range']))}</span></td>"
+        f"<td class='num trend-up'>{int(r['Recent Conflicts'])}</td>"
+        f"<td class='num'>{int(r['Prior Conflicts'])}</td>"
+        f"<td>{escape(insights.beat_driver(r))}</td>"
         "</tr>"
-        for r in escalating.to_dict("records")
+        for r in ordered.head(top_n).to_dict("records")
     )
+    more = len(ordered) - min(len(ordered), top_n)
+    note = f"<p class='more'>{insights.plural(more, 'more escalating beat')}.</p>" if more else ""
     return (
-        "<table><thead><tr><th>Beat</th><th>Division / Range</th>"
-        "<th class='num'>Recent vs prior</th><th class='num'>Killed / injured</th>"
-        "<th>Recommended action</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>"
+        "<table><thead><tr><th>Beat</th>"
+        f"<th class='num'>Last {recent_days} days</th><th class='num'>{recent_days} before</th>"
+        "<th>What is driving it</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>{note}"
     )
+
+
+def _rhythm_section(df: pd.DataFrame) -> str:
+    """When in the day elephants are seen, and when in the year they raid."""
+    try:
+        hours = insights.diel_activity(df)
+        months = insights.damage_by_month(df)
+        left = right = ""
+        if hours.sum() >= 10:
+            peak = insights.peak_hours(hours)
+            left = (_chart(report_charts.diel_clock_svg(hours, NIGHT_HOUR_START, NIGHT_HOUR_END),
+                           "When elephants are seen")
+                    + f"<p class='table-note'>Direct sightings only: signs and damage are "
+                      f"written up the morning after. Busiest two hours: {escape(peak or '')}.</p>")
+        if months.to_numpy().sum() > 0:
+            right = _chart(report_charts.damage_season_svg(months), "When crops and homes are hit")
+        if not (left or right):
+            return ""
+        return ("<h2>Daily and Seasonal Rhythm</h2><div class='chart-grid'>"
+                f"<div>{left}</div><div>{right}</div></div>")
+    except Exception:  # noqa: BLE001 - report generation must never crash
+        logger.exception("Rhythm charts failed")
+        return ""
+
+
+def _ecology_section(df: pd.DataFrame, brief: Dict[str, object]) -> str:
+    """What the register says about the animals: who, how many, where, when."""
+    try:
+        notes = insights.ecology_notes(df)
+        parts = ["<h2>Who, How Many, and Where They Range</h2>"]
+        if notes:
+            parts.append('<ul class="notes">' + "".join(
+                f"<li>{escape(n)}</li>" for n in notes) + "</ul>")
+        composition = brief.get("composition")
+        sizes = insights.herd_sizes(df)
+        left = right = ""
+        if composition is not None and len(composition):
+            left = (_chart(report_charts.herd_composition_svg(composition),
+                           "Kind of group, and how often it raided")
+                    + _composition_table(composition))
+        if sizes.sum() >= 10:
+            right = _chart(report_charts.bars_svg(
+                list(sizes.index), list(sizes.values), "Group size",
+                y_title="Direct sightings", width=report_charts.HALF_WIDTH),
+                "Size of the groups seen")
+        if left or right:
+            parts.append(f"<div class='chart-grid'><div>{left}</div><div>{right}</div></div>")
+        used = insights.range_by_month(df)
+        if len(used) >= 3:
+            parts.append(_chart(report_charts.range_use_svg(used),
+                                "How much of the landscape elephants used, month by month"))
+        grid = insights.presence_grid(df)
+        if not grid.empty and grid.shape[1] >= 2:
+            parts.append(_chart(
+                report_charts.seasonal_heatmap_svg(
+                    grid, left=120, steps=report_charts.PRESENCE_STEPS,
+                    label="Elephant reports by division and month"),
+                "Where elephants were through the year: reports by division and month"))
+        return "".join(parts) if len(parts) > 1 else ""
+    except Exception:  # noqa: BLE001 - report generation must never crash
+        logger.exception("Ecology section failed")
+        return ""
+
+
+def _composition_table(composition: pd.DataFrame) -> str:
+    rows = "".join(
+        "<tr>"
+        f"<td>{escape(str(row['Group Type']))}</td>"
+        f"<td class='num'>{int(row['Sightings']):,}</td>"
+        f"<td class='num'>{int(row['Conflict Events']):,}</td>"
+        f"<td class='num'>{_pct(row['Damage Rate %'])}</td>"
+        f"<td class='num'>{row['Human Deaths']:.0f}</td>"
+        "</tr>"
+        for row in composition.to_dict("records")
+    )
+    return ("<table><thead><tr><th>Group</th><th class='num'>Reports</th>"
+            "<th class='num'>Conflict</th><th class='num'>Raided</th>"
+            f"<th class='num'>Killed</th></tr></thead><tbody>{rows}</tbody></table>")
+
+
+def _notes_html(df: pd.DataFrame, brief: Dict[str, object]) -> str:
+    """The data's limits, said once and plainly."""
+    window = brief["coverage"].get("critical_window_days", 90)
+    notes = [
+        "Counts follow patrol effort as well as elephant activity: a beat watched more "
+        "closely reports more.",
+        f"Critical means a death or injury in the last {window} days; an older casualty "
+        "puts a beat in High.",
+        "Signs and damage are written up the morning after, so they are dated to the night "
+        "before and their hour is not used.",
+        "Group type is read from the male, female and calf counts; conflict with none "
+        "recorded is left out of the bull and herd shares.",
+    ]
+    beats = brief["beats"]
+    if not beats.empty:
+        thin = int((beats["Confidence"] == "Low").sum())
+        if thin:
+            notes.insert(1, f"{thin} of {len(beats)} beats have fewer than 10 reports; their "
+                            "rates are pulled toward the landscape average and marked thin data.")
+    return '<ul class="notes">' + "".join(f"<li>{escape(n)}</li>" for n in notes) + "</ul>"
 
 
 def _hotspot_html(hotspots: Optional[pd.DataFrame], top_n: int = 10) -> str:
@@ -377,7 +512,7 @@ def _hotspot_html(hotspots: Optional[pd.DataFrame], top_n: int = 10) -> str:
         )
     if hotspots.empty:
         return (
-            '<p class="empty-note">No density hotspots at the current settings -- '
+            '<p class="empty-note">No density hotspots at the current settings: '
             "sightings are too dispersed to form clusters.</p>"
         )
 
@@ -391,7 +526,6 @@ def _hotspot_html(hotspots: Optional[pd.DataFrame], top_n: int = 10) -> str:
         f"<td class='num'>{int(r['Conflict Events']):,}</td>"
         f"<td class='num'>{r['Conflict Share %']:.0f}%</td>"
         f"<td class='num'>{int(r['Human Deaths'])} / {int(r['People Injured'])}</td>"
-        f"<td class='num'>{_pct(r['Night Share %'])}</td>"
         f"<td class='num'>{r['Radius (km)']:.1f} km</td>"
         f"<td class='num'>{r['Centre Latitude']:.4f},<br/>{r['Centre Longitude']:.4f}</td>"
         "</tr>"
@@ -400,9 +534,8 @@ def _hotspot_html(hotspots: Optional[pd.DataFrame], top_n: int = 10) -> str:
     return (
         "<table><thead><tr><th>ID</th><th>Tier</th><th>Where</th>"
         "<th class='num'>Sightings</th><th class='num'>Conflicts</th>"
-        "<th class='num'>Share</th><th class='num'>Killed / injured</th>"
-        "<th class='num'>Night</th><th class='num'>Radius</th>"
-        "<th class='num'>Centre</th></tr></thead>"
+        "<th class='num'>Conflict share</th><th class='num'>Killed / injured</th>"
+        "<th class='num'>Radius</th><th class='num'>Centre</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
 
@@ -410,16 +543,18 @@ def _hotspot_html(hotspots: Optional[pd.DataFrame], top_n: int = 10) -> str:
 def _emerging_section(emerging: Optional[pd.DataFrame], step: str, top_n: int = 10) -> str:
     if emerging is None:
         return ""
-    head = (f"<h2>Emerging Hotspots <span class='sub'>space-time trend by "
-            f"{escape(step.lower())}</span></h2>")
+    head = (f"<h2>Emerging Hotspots <span class='sub'>places turning hot, {escape(step.lower())} "
+            "by month</span></h2>") if step == "Month" else (
+        f"<h2>Emerging Hotspots <span class='sub'>places turning hot, "
+        f"{escape(step.lower())} by {escape(step.lower())}</span></h2>")
     named = emerging[emerging["Place"] != ""] if not emerging.empty else emerging
     if named.empty:
         return head + (
             '<p class="empty-note">No place was a significant hotspot in any '
             f"{escape(step.lower())} of the period, or the period is too short to say.</p>"
         )
-    line = headline(emerging)
     fmt = "%b %Y" if step == "Month" else "%d %b %Y"
+    unit = step.lower()
     rows = "".join(
         "<tr>"
         f"<td><b>{escape(str(r['Place']))}</b></td>"
@@ -435,14 +570,15 @@ def _emerging_section(emerging: Optional[pd.DataFrame], step: str, top_n: int = 
         "</tr>"
         for r in named.head(top_n).to_dict("records")
     )
-    legend = "".join(f"<li><b>{escape(p)}</b>: {escape(PATTERN_MEANING[p])}</li>"
-                     for p in PATTERN_ORDER[:-1] if (named["Pattern"] == p).any())
+    legend = "".join(
+        f"<li><b>{escape(p)}</b>: {escape(PATTERN_MEANING[p].replace('step', unit))}</li>"
+        for p in PATTERN_ORDER[:-1] if (named["Pattern"] == p).any())
     return (
-        head + (f"<p>{escape(line)}</p>" if line else "")
-        + "<table><thead><tr><th>ID</th><th>Pattern</th><th>Where</th>"
-        "<th class='num'>Events</th><th class='num'>Last 3 steps</th>"
-        "<th class='num'>Hot steps</th><th>Trend</th><th class='num'>Last hot</th>"
-        f"</tr></thead><tbody>{rows}</tbody></table><ul>{legend}</ul>"
+        head
+        + "<table><thead><tr><th>ID</th><th>Pattern</th><th>Nearest village</th>"
+        f"<th class='num'>Events</th><th class='num'>Last 3 {escape(unit)}s</th>"
+        f"<th class='num'>Hot {escape(unit)}s</th><th>Trend</th><th class='num'>Last hot</th>"
+        f"</tr></thead><tbody>{rows}</tbody></table><ul class='notes'>{legend}</ul>"
     )
 
 
@@ -462,7 +598,6 @@ def _village_risk_html(village_risk: Optional[pd.DataFrame], top_n: int = 15) ->
         f"<td class='num'>{int(r['Human Deaths'])} / {int(r['People Injured'])}</td>"
         f"<td class='num'>{int(r['House Damage Events'])}</td>"
         f"<td class='num'>{int(r['Crop Damage Events'])}</td>"
-        f"<td class='num'>{_pct(r['Night Share %'])}</td>"
         f"<td>{escape(str(r['Nearest Hotspot']))}"
         f"{' (inside)' if r['Inside Hotspot'] else ''}</td>"
         f"<td class='num'>{_km(r['Distance to Hotspot (km)'])}</td>"
@@ -473,8 +608,7 @@ def _village_risk_html(village_risk: Optional[pd.DataFrame], top_n: int = 15) ->
         "<table><thead><tr><th>Village</th><th>Tier</th>"
         "<th class='num'>Conflicts</th><th class='num'>Killed / injured</th>"
         "<th class='num'>House</th><th class='num'>Crop</th>"
-        "<th class='num'>Night</th><th>Hotspot</th>"
-        "<th class='num'>Distance</th></tr></thead>"
+        "<th>Nearest hotspot</th><th class='num'>To its centre</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
 
@@ -550,46 +684,6 @@ def _tier_cell(tier: object) -> str:
     return f"<span class='tier {css}'>{glyph} {escape(label)}</span>"
 
 
-def _temporal_html(temporal: Dict[str, object]) -> str:
-    window = temporal.get("peak_window")
-    months = temporal.get("peak_months") or []
-    night_share = temporal.get("night_share", float("nan"))
-
-    parts = [f"<p><b>Injuries and deaths peak:</b> {escape(format_window(window))}</p>"]
-    if temporal.get("night_damage"):
-        parts.append(
-            f"<p><b>Damage and indirect reports:</b> {temporal['night_damage']:,} conflict "
-            f"report(s), counted as night raids ({NIGHT_HOUR_START:02d}:00-"
-            f"{NIGHT_HOUR_END:02d}:00). Damage and indirect signs are recorded after the "
-            "night, so their entry hour is not when they happened. Only direct sightings "
-            "are timed.</p>")
-    if not pd.isna(night_share):
-        parts.append(f"<p><b>Night share of conflict:</b> {night_share:.0f}%</p>")
-    if months:
-        parts.append(f"<p><b>Seasonal peak:</b> {escape(', '.join(months))}</p>")
-    else:
-        parts.append(
-            "<p><b>Seasonal peak:</b> none marked -- conflict is spread through the year.</p>"
-        )
-
-    hourly = temporal.get("hourly")
-    if hourly is not None and len(hourly) and float(hourly.sum()) > 0:
-        parts.append(_chart(report_charts.hourly_svg(
-            hourly, NIGHT_HOUR_START, NIGHT_HOUR_END
-        )))
-        cells = "".join(
-            f"<td class='num'>{int(v)}</td>" for v in hourly.to_numpy()
-        )
-        heads = "".join(f"<th class='num'>{h:02d}</th>" for h in range(24))
-        parts.append(
-            "<table style='font-size:11.5px;'><thead><tr>"
-            f"<th>Hour</th>{heads}</tr></thead><tbody><tr><td><b>Events</b></td>{cells}"
-            "</tr></tbody></table>"
-        )
-    return "".join(parts)
-
-
-
 def _division_html(rates: pd.DataFrame) -> str:
     if rates.empty:
         return '<p class="empty-note">No division data available for the current filters.</p>'
@@ -607,35 +701,6 @@ def _division_html(rates: pd.DataFrame) -> str:
         "<table><thead><tr><th>Division</th><th class='num'>Reports</th>"
         "<th class='num'>Conflict events</th><th class='num'>Killed</th>"
         "<th class='num'>Conflict rate</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>"
-    )
-
-
-def _bands_table_html(bands: pd.DataFrame) -> str:
-    if bands.empty:
-        return '<p class="empty-note">No severity data available for the current filters.</p>'
-    rows = "".join(
-        f"<tr><td>{escape(str(r.Band))}</td><td class='num'>{int(r.Count)}</td></tr>"
-        for r in bands.itertuples()
-    )
-    return (
-        "<table><thead><tr><th>Severity band</th><th class='num'>Reports</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>"
-    )
-
-
-def _night_day_table_html(night_day: pd.DataFrame) -> str:
-    if night_day.empty:
-        return '<p class="empty-note">Night/day classification unavailable for the current filters.</p>'
-    rows = "".join(
-        f"<tr><td>{escape(str(row['Period']))}</td>"
-        f"<td class='num'>{int(row['Entries'])}</td>"
-        f"<td class='num'>{row['Avg Severity']:.1f}</td></tr>"
-        for _, row in night_day.iterrows()
-    )
-    return (
-        "<table><thead><tr><th>Period</th><th class='num'>Reports</th>"
-        "<th class='num'>Avg severity</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>"
     )
 
@@ -721,7 +786,7 @@ def _trend_section(df: pd.DataFrame, kpis: Dict[str, float], recent_days: int,
             parts.append("<div class='chart-title'>Casualties</div>"
                          "<p class='empty-note'>None recorded in the period.</p>")
         parts.append("</div></div>")
-        parts.append("<div class='chart-title'>Seasonal pattern -- conflict events "
+        parts.append("<div class='chart-title'>Seasonal pattern: conflict events "
                      "by month and year</div>")
         parts.append(report_charts.seasonal_heatmap_html(seasonal_matrix(df)))
         divisions = division_monthly_conflict(df)
@@ -802,13 +867,3 @@ def _pct(value: object) -> str:
 
 def _km(value: object) -> str:
     return "N/A" if pd.isna(value) else f"{float(value):.1f} km"
-
-
-def _trend_html(trend: object, detail: object) -> str:
-    label = escape(str(trend))
-    detail_str = escape(str(detail))
-    if trend == "Escalating":
-        return f"<span class='trend-up'>{label}</span><br/><span class='sub'>{detail_str}</span>"
-    if trend == "Easing":
-        return f"<span class='trend-down'>{label}</span><br/><span class='sub'>{detail_str}</span>"
-    return f"{label}<br/><span class='sub'>{detail_str}</span>"

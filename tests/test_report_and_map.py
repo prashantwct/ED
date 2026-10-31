@@ -71,8 +71,8 @@ def test_report_renders_on_an_empty_dataframe():
 def test_report_includes_casualty_and_priority_sections():
     df = _df()
     html = generate_html_report(df, df["Date"].min(), df["Date"].max())
-    for section in ["Assessment", "Priority Beats", "Timing", "People Killed",
-                    "Villages at Risk", "Movement Hotspots", "How to read this"]:
+    for section in ["Key Findings", "Action Plan", "Priority Beats", "People killed",
+                    "Villages at Risk", "Movement Hotspots", "Notes"]:
         assert section in html
 
 
