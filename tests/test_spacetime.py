@@ -152,3 +152,93 @@ def test_hex_polygon_is_closed_around_its_centre():
     corners = np.array(spacetime.hex_polygon(23.3, 81.4, 2.0, 23.3))
     assert corners.shape == (6, 2)
     assert np.allclose(corners.mean(axis=0), [81.4, 23.3], atol=1e-6)
+
+
+def _cube_and_table():
+    cube = build_cube(_frame(), as_of=pd.Timestamp("2025-06-28"))
+    return cube, emerging_hotspots(cube)
+
+
+def test_hot_bins_match_the_labels():
+    cube, table = _cube_and_table()
+    hot = spacetime.hot_bins(cube)
+    assert hot.shape == cube.counts.shape
+    for row in table.to_dict("records"):
+        assert int(hot.loc[row["Cell"]].sum()) == row["Hot Steps"]
+    # Never hot without a report of its own in the window.
+    own = cube.counts.T.rolling(2, min_periods=1).sum().T
+    assert not (hot & (own == 0)).to_numpy().any()
+
+
+def test_cube_chart_colours_hot_bins_and_greys_the_rest():
+    cube, table = _cube_and_table()
+    hot = spacetime.hot_bins(cube)
+    fig = charts.space_time_cube(cube, table, hot)
+    traces = {t.name: t for t in fig.data if t.name}
+    hot_trace = traces["Hot that step"]
+    pale_trace = traces["Events, not hot that step"]
+    named = table[table["Place"] != ""]
+    assert len(hot_trace.x) == int(hot.loc[named["Cell"]].to_numpy().sum())
+    assert set(hot_trace.marker.color) <= set(spacetime.PATTERN_COLORS.values())
+    assert len(pale_trace.x) > 0
+    # Time is the vertical axis, labelled with dates, and ground at true ratio.
+    scene = fig.layout.scene
+    assert scene.zaxis.ticktext[0] == "Jan 2024"
+    assert scene.aspectmode == "manual"
+    span_x = scene.xaxis.range[1] - scene.xaxis.range[0]
+    span_y = scene.yaxis.range[1] - scene.yaxis.range[0]
+    assert scene.aspectratio.x / scene.aspectratio.y == pytest.approx(span_x / span_y)
+
+
+def test_cube_chart_draws_only_the_villages_places_are_nearest_to():
+    cube, _ = _cube_and_table()
+    villages = pd.DataFrame({
+        "Village": ["Steadypur", "Freshgaon", "Faraway"] + [f"V{i}" for i in range(50)],
+        "Latitude": [STEADY[0] + 0.004, FRESH[0] + 0.004, 23.40]
+        + list(np.linspace(23.0, 23.5, 50)),
+        "Longitude": [STEADY[1], FRESH[1], 81.50] + list(np.linspace(81.3, 81.8, 50)),
+    })
+    table = emerging_hotspots(cube, villages=villages)
+    fig = charts.space_time_cube(cube, table, spacetime.hot_bins(cube), villages)
+    shown = [t for t in fig.data if t.name == "Villages"][0]
+    assert {"Steadypur", "Freshgaon"} <= set(shown.text)
+    assert len(shown.text) < 10
+
+
+def test_cube_chart_cameras_and_slice():
+    cube, table = _cube_and_table()
+    hot = spacetime.hot_bins(cube)
+    for camera, preset in charts.CUBE_CAMERAS.items():
+        fig = charts.space_time_cube(cube, table, hot, camera=camera)
+        assert fig.layout.scene.camera.eye.x == preset["eye"]["x"]
+        assert fig.layout.uirevision == camera
+    sliced = charts.space_time_cube(cube, table, hot, highlight_step=cube.steps[5])
+    plane = [t for t in sliced.data if t.type == "mesh3d"]
+    assert len(plane) == 1 and set(plane[0].z) == {5}
+
+
+def test_cube_chart_with_nothing_to_show_is_empty():
+    cube, table = _cube_and_table()
+    quiet = table.assign(Pattern=NO_PATTERN, Place="")
+    assert len(charts.space_time_cube(cube, quiet, spacetime.hot_bins(cube)).data) == 0
+
+
+def test_pattern_map_extrudes_and_tilts(monkeypatch):
+    from core import map_engine
+
+    captured = {}
+    monkeypatch.setattr(map_engine, "_render_deck",
+                        lambda layers, view, style: captured.update(layers=layers, view=view))
+    cube, table = _cube_and_table()
+    map_engine.render_pattern_map(table, cube.cell_km, cube.reference_lat, cube.step,
+                                  show_boundaries=False, extruded=True)
+    hexes = [l for l in captured["layers"] if l.type == "PolygonLayer"][0]
+    assert hexes.extruded and captured["view"].pitch > 0
+    data = pd.DataFrame(hexes.data)
+    tallest = data.loc[data["_elev"].idxmax()]
+    assert tallest["_elev"] == pytest.approx(3 * cube.cell_km * 1000)
+
+    map_engine.render_pattern_map(table, cube.cell_km, cube.reference_lat, cube.step,
+                                  show_boundaries=False)
+    flat = [l for l in captured["layers"] if l.type == "PolygonLayer"][0]
+    assert not flat.extruded and captured["view"].pitch == 0

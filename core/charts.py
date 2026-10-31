@@ -17,13 +17,14 @@ Colour rules, checked with the dataviz palette validator:
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
 from core.analytics import TREND_CATEGORIES
+from core.config import KM_PER_DEG_LAT, KM_PER_DEG_LON_EQUATOR
 
 INK = "#16221c"
 INK_MUTED = "#5b6b62"
@@ -441,4 +442,230 @@ def place_time_heatmap(matrix: pd.DataFrame, step: str) -> go.Figure:
     _base_layout(fig, 90 + 26 * max(len(matrix), 1))
     fig.update_yaxes(autorange="reversed", showgrid=False, type="category")
     fig.update_xaxes(type="category", tickangle=-45, nticks=24)
+    return fig
+
+
+CUBE_CAMERAS: Dict[str, dict] = {
+    "Oblique": dict(eye=dict(x=1.55, y=-1.55, z=0.95), up=dict(x=0, y=0, z=1)),
+    "From above": dict(eye=dict(x=0, y=-0.01, z=2.6), up=dict(x=0, y=1, z=0)),
+    "Time vs east-west": dict(eye=dict(x=0, y=-2.6, z=0.05), up=dict(x=0, y=0, z=1)),
+    "Time vs north-south": dict(eye=dict(x=2.6, y=0, z=0.05), up=dict(x=0, y=0, z=1)),
+}
+CONTEXT_COLOR = "#B8C2BC"
+
+
+def space_time_cube(
+    cube,
+    table: pd.DataFrame,
+    hot: pd.DataFrame,
+    villages: Optional[pd.DataFrame] = None,
+    camera: str = "Oblique",
+    highlight_step: Optional[pd.Timestamp] = None,
+    limit: int = 30,
+    context: bool = True,
+) -> go.Figure:
+    """The cube itself: the ground on two axes, time rising on the third.
+
+    Each place with a pattern is a column of bins, one per step with
+    events, sized by count. A bin is drawn in its place's pattern colour
+    in the steps it was a significant hotspot and pale grey otherwise, so
+    a column reads bottom to top as the place's history: a New place is
+    grey with a coloured cap, a Diminishing one coloured with a grey cap.
+    A thin stalk runs the full height of every column so empty steps are
+    visible as gaps rather than read as a shorter history.
+
+    The floor carries hexagon outlines and the nearest villages, since a
+    3D scene has no basemap to orient by. Horizontal axes are kilometres
+    from the centre of the data at true ratio; time is stretched to fit.
+    """
+    from core.spacetime import NO_PATTERN, PATTERN_COLORS, PATTERN_ORDER, hex_polygon
+
+    fig = go.Figure()
+    named = table[table["Pattern"] != NO_PATTERN].head(limit)
+    if cube.counts.empty or named.empty:
+        return _base_layout(fig, 200)
+
+    steps = cube.steps
+    fmt = "%b %Y" if cube.step == "Month" else "%d %b %Y"
+    lat0 = float(cube.cells["Centre Latitude"].mean())
+    lon0 = float(cube.cells["Centre Longitude"].mean())
+    lon_km = KM_PER_DEG_LON_EQUATOR * np.cos(np.radians(cube.reference_lat))
+
+    def km(lat, lon):
+        return (np.asarray(lon) - lon0) * lon_km, (np.asarray(lat) - lat0) * KM_PER_DEG_LAT
+
+    def size(n):
+        return np.clip(5 + 3.2 * np.sqrt(n), 5, 26)
+
+    floor = -0.6
+    tx, ty = km(named["Centre Latitude"], named["Centre Longitude"])
+    # The scene is fitted to the named places, two cells round, at true
+    # ground ratio. Fitting it to every event instead shrinks the columns
+    # that matter to a sliver in the middle of the landscape.
+    pad = cube.cell_km * 2
+    x0, x1 = float(tx.min()) - pad, float(tx.max()) + pad
+    y0, y1 = float(ty.min()) - pad, float(ty.max()) + pad
+
+    def inside(x, y):
+        return (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
+
+    # Context: every other cell with events, faint, so the named columns
+    # are seen against the landscape's activity and not in a void.
+    if context:
+        others = cube.counts.drop(index=named["Cell"], errors="ignore")
+        long = others.stack()
+        long = long[long > 0]
+        cells = cube.cells.loc[long.index.get_level_values(0)]
+        x, y = km(cells["Centre Latitude"], cells["Centre Longitude"])
+        keep = inside(x, y)
+        if keep.any():
+            fig.add_scatter3d(
+                x=x[keep], y=y[keep],
+                z=steps.get_indexer(long.index.get_level_values(1))[keep],
+                mode="markers", name="Other places",
+                marker=dict(size=2.5, color=CONTEXT_COLOR, opacity=0.35),
+                hoverinfo="skip",
+            )
+
+    hot_x, hot_y, hot_z, hot_s, hot_c, hot_t = [], [], [], [], [], []
+    pale_x, pale_y, pale_z, pale_s, pale_t = [], [], [], [], []
+    for row in named.to_dict("records"):
+        counts = cube.counts.loc[row["Cell"]]
+        is_hot = hot.loc[row["Cell"]]
+        x, y = km(row["Centre Latitude"], row["Centre Longitude"])
+        where = str(row["Nearest Village"]).split(" (")[0] or str(row["Beats"]).split(",")[0]
+        label = f"<b>{row['Place']} {row['Pattern']}</b>" + (f" - {where}" if where else "")
+        for k, (step, n) in enumerate(counts.items()):
+            # A step can be hot with no events of its own: the time window
+            # carries the step before. Drawn at the smallest size, so a hot
+            # run is not broken by a quiet week inside it.
+            if n <= 0 and not is_hot.iloc[k]:
+                continue
+            tip = f"{label}<br>{step:{fmt}}: {int(n)} event{'s' if n != 1 else ''}"
+            if n <= 0:
+                tip += " (hot from the step before)"
+            if is_hot.iloc[k]:
+                hot_x.append(x); hot_y.append(y); hot_z.append(k); hot_s.append(n)
+                hot_c.append(PATTERN_COLORS[row["Pattern"]])
+                hot_t.append(tip + "<br>Significant hotspot this step")
+            else:
+                pale_x.append(x); pale_y.append(y); pale_z.append(k); pale_s.append(n)
+                pale_t.append(tip + "<br>Not a hotspot this step")
+
+    # Stalks and floor hexes, one trace per pattern so the legend
+    # doubles as the colour key and clicking it hides a pattern.
+    for pattern in PATTERN_ORDER:
+        group = named[named["Pattern"] == pattern]
+        if group.empty:
+            continue
+        color = PATTERN_COLORS[pattern]
+        sx, sy, sz, hx, hy, hz = [], [], [], [], [], []
+        for row in group.to_dict("records"):
+            x, y = km(row["Centre Latitude"], row["Centre Longitude"])
+            sx += [x, x, None]; sy += [y, y, None]; sz += [floor, len(steps) - 1, None]
+            corners = hex_polygon(row["Centre Latitude"], row["Centre Longitude"],
+                                  cube.cell_km, cube.reference_lat)
+            corners.append(corners[0])
+            cx, cy = km([c[1] for c in corners], [c[0] for c in corners])
+            hx += list(cx) + [None]; hy += list(cy) + [None]; hz += [floor] * 7 + [None]
+        fig.add_scatter3d(x=sx, y=sy, z=sz, mode="lines", name=pattern, legendgroup=pattern,
+                          line=dict(color=color, width=2), hoverinfo="skip")
+        fig.add_scatter3d(x=hx, y=hy, z=hz, mode="lines", legendgroup=pattern,
+                          showlegend=False, line=dict(color=color, width=4), hoverinfo="skip")
+
+    fig.add_scatter3d(
+        x=pale_x, y=pale_y, z=pale_z, mode="markers", name="Events, not hot that step",
+        marker=dict(size=size(np.array(pale_s, dtype=float)), color="#D9DED9", symbol="square",
+                    opacity=0.75, line=dict(color="#8C9A93", width=1)),
+        text=pale_t, hovertemplate="%{text}<extra></extra>",
+    )
+    fig.add_scatter3d(
+        x=hot_x, y=hot_y, z=hot_z, mode="markers", name="Hot that step",
+        marker=dict(size=size(np.array(hot_s, dtype=float)), color=hot_c, symbol="square",
+                    opacity=1.0, line=dict(color=INK, width=1)),
+        text=hot_t, hovertemplate="%{text}<extra></extra>",
+    )
+
+    # Place IDs on top of each column, where the eye lands first. Columns
+    # in neighbouring cells would print their IDs over each other, so
+    # each label steps up past any already placed within 1.5 cells.
+    label_z: List[float] = []
+    for i in range(len(named)):
+        level = 0
+        while any(abs(label_z[j] - (len(steps) - 0.3 + level * 1.1)) < 0.5
+                  and np.hypot(tx[i] - tx[j], ty[i] - ty[j]) < 1.5 * cube.cell_km
+                  for j in range(i)):
+            level += 1
+        label_z.append(len(steps) - 0.3 + level * 1.1)
+    # Up to three labels per stack; past that a column of IDs reads as
+    # noise and the hover names each bin anyway.
+    keep_label = [round((z - (len(steps) - 0.3)) / 1.1) < 3 for z in label_z]
+    fig.add_scatter3d(
+        x=tx, y=ty, z=label_z, mode="text",
+        text=[p if k else "" for p, k in zip(named["Place"], keep_label)], textfont=dict(color=INK, size=11), showlegend=False,
+        hoverinfo="skip",
+    )
+
+    # Villages on the floor: only the one each place is nearest to. A
+    # landscape holds thousands of centroids, and drawing them all buries
+    # the hexes under a carpet of markers. Names repeat across districts,
+    # so a village must also sit close to the place that named it.
+    if villages is not None and not villages.empty:
+        nearest = {str(v).split(" (")[0] for v in named["Nearest Village"] if v}
+        pool = villages[villages["Village"].astype(str).isin(nearest)]
+        vx, vy = km(pool["Latitude"], pool["Longitude"])
+        reach = 3 * cube.cell_km
+        close = np.zeros(len(pool), dtype=bool)
+        for x, y in zip(tx, ty):
+            close |= np.hypot(vx - x, vy - y) <= reach
+        close &= inside(vx, vy)
+        if close.any():
+            names = pool["Village"].astype(str).to_numpy()[close]
+            fig.add_scatter3d(
+                x=vx[close], y=vy[close], z=[floor] * int(close.sum()),
+                mode="markers+text", name="Villages",
+                marker=dict(size=4, color=INK_MUTED, symbol="diamond"),
+                text=names, textposition="bottom center",
+                textfont=dict(color=INK_MUTED, size=10),
+                hovertemplate="%{text}<extra>Village</extra>",
+            )
+
+    if highlight_step is not None and pd.Timestamp(highlight_step) in steps:
+        k = steps.get_loc(pd.Timestamp(highlight_step))
+        fig.add_mesh3d(
+            x=[x0, x1, x1, x0], y=[y0, y0, y1, y1], z=[k] * 4, i=[0, 0], j=[1, 2], k=[2, 3],
+            color=BRAND, opacity=0.12, name=f"{steps[k]:{fmt}}", showlegend=True,
+            hoverinfo="skip",
+        )
+
+    # True ground ratio; time gets about as much height as the wider side.
+    span_x, span_y = x1 - x0, y1 - y0
+    widest = max(span_x, span_y)
+    ticks = list(range(0, len(steps), max(1, int(np.ceil(len(steps) / 8)))))
+    axis = dict(backgroundcolor=SURFACE, gridcolor=GRID, zerolinecolor=GRID,
+                showspikes=False, tickfont=dict(color=INK_MUTED, size=10),
+                title_font=dict(color=INK_MUTED, size=11))
+    fig.update_layout(
+        height=640,
+        margin=dict(t=8, b=8, l=8, r=8),
+        paper_bgcolor=SURFACE,
+        font=dict(color=INK, size=12),
+        hoverlabel=dict(bgcolor="#12211a", font_color="#eaf2ec", bordercolor="#12211a"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0,
+                    font=dict(color=INK_MUTED), itemsizing="constant"),
+        # A new camera preset resets the view; anything else keeps the
+        # angle the user has rotated to across reruns.
+        uirevision=camera,
+        scene=dict(
+            xaxis=dict(axis, title="km east", range=[x0, x1]),
+            yaxis=dict(axis, title="km north", range=[y0, y1]),
+            zaxis=dict(axis, title="", tickvals=ticks,
+                       ticktext=[f"{steps[t]:{fmt}}" for t in ticks],
+                       range=[floor - 0.2, max(z for z, k in zip(label_z, keep_label) if k) + 0.4]),
+            aspectmode="manual",
+            aspectratio=dict(x=span_x / widest, y=span_y / widest, z=0.9),
+            camera=CUBE_CAMERAS.get(camera, CUBE_CAMERAS["Oblique"]),
+            dragmode="turntable",
+        ),
+    )
     return fig

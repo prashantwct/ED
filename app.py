@@ -1139,9 +1139,24 @@ with tab_emerging:
                     "emerging_hotspots.csv", mime="text/csv",
                 )
         with map_col:
+            tilt_col, height_col = st.columns([1, 2], vertical_alignment="center")
+            map_3d = tilt_col.toggle("3D", key="emerging_3d",
+                                     help="Raise each hexagon by its events and tilt the map.")
+            height_by = "Events"
+            if map_3d:
+                height_by = height_col.segmented_control(
+                    "Height", ["Events", "Recent Events"], default="Events",
+                    key="emerging_height", label_visibility="collapsed",
+                    format_func=lambda h: "All events" if h == "Events"
+                    else "Last 3 steps",
+                ) or "Events"
             render_pattern_map(emerging, cube.cell_km, cube.reference_lat, cube.step,
                                style_name=basemap, show_boundaries=layer_boundaries,
-                               boundary_level=boundary_level)
+                               boundary_level=boundary_level, extruded=map_3d,
+                               height_by=height_by)
+            if map_3d:
+                st.caption("Colour is the pattern, height the events. Ctrl-drag (or two "
+                           "fingers) to rotate.")
 
         matrix = spacetime.location_time_matrix(cube, emerging)
         if not matrix.empty:
@@ -1150,6 +1165,34 @@ with tab_emerging:
             _plot(charts.place_time_heatmap(matrix, cube_step))
             st.caption("Read along a row to see whether a place is new, steady or fading; "
                        "down a column to see which places were active together.")
+
+        if not named.empty:
+            st.markdown("**The space-time cube** -- the ground on two axes, time rising "
+                        "on the third")
+            view_col, step_col, ctx_col = st.columns([3, 4, 1], vertical_alignment="bottom")
+            camera = view_col.segmented_control(
+                "View", list(charts.CUBE_CAMERAS), default="Oblique", key="cube_camera",
+            ) or "Oblique"
+            step_fmt = "%b %Y" if cube.step == "Month" else "%d %b %Y"
+            slice_labels = ["None"] + [f"{s:{step_fmt}}" for s in cube.steps]
+            picked_slice = step_col.select_slider(
+                "Highlight a step", slice_labels, value="None", key="cube_slice",
+            )
+            show_context = ctx_col.toggle("Others", value=True, key="cube_context",
+                                          help="Faint dots for places with no pattern.")
+            highlight = (None if picked_slice == "None"
+                         else cube.steps[slice_labels.index(picked_slice) - 1])
+            _plot(charts.space_time_cube(
+                cube, emerging, spacetime.hot_bins(cube, fdr=cube_fdr), villages,
+                camera=camera, highlight_step=highlight, context=show_context,
+            ))
+            st.caption(
+                "Each column is a place; each square, a step with events, sized by count. "
+                "Coloured squares are steps the place was a significant hotspot, grey "
+                "ones steps it was not, so a New place is grey with a coloured top and a "
+                "Diminishing one the reverse. Drag to rotate, scroll to zoom, click a "
+                "legend entry to hide it."
+            )
 
         with st.expander("How to read this", expanded=False):
             for pattern in spacetime.PATTERN_ORDER:

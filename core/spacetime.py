@@ -327,6 +327,22 @@ def _hot_mask(z: np.ndarray, fdr: bool, alpha: float = SIGNIFICANCE_ALPHA) -> np
     return (z > 0) & (p <= cutoff)
 
 
+def hot_bins(cube: Cube, time_window: int = DEFAULT_CUBE_TIME_WINDOW, fdr: bool = True,
+             z: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """Which cell-steps are significant hotspots, on the cube's index and columns.
+
+    A bin counts only if the cell itself had a report in its time window,
+    so Gi* borrowing from busy neighbours never marks an empty cell.
+    """
+    if cube.counts.empty:
+        return pd.DataFrame(index=cube.counts.index, columns=cube.counts.columns, dtype=bool)
+    if z is None:
+        z = gi_star(cube, time_window=time_window)
+    own = cube.counts.T.rolling(time_window + 1, min_periods=1).sum().T.to_numpy()
+    return pd.DataFrame(_hot_mask(z.to_numpy(), fdr=fdr) & (own > 0),
+                        index=cube.counts.index, columns=cube.counts.columns)
+
+
 def mann_kendall(series: np.ndarray) -> Tuple[float, float]:
     """Mann-Kendall trend test with the ties correction: (z, two-sided p)."""
     values = np.asarray(series, dtype=float)
@@ -404,8 +420,7 @@ def emerging_hotspots(
         return pd.DataFrame(columns=columns)
 
     z = gi_star(cube, time_window=time_window)
-    own = cube.counts.T.rolling(time_window + 1, min_periods=1).sum().T.to_numpy()
-    hot = _hot_mask(z.to_numpy(), fdr=fdr) & (own > 0)
+    hot = hot_bins(cube, time_window=time_window, fdr=fdr, z=z).to_numpy()
     steps = cube.steps
 
     rows = []
