@@ -11,11 +11,59 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import os
+import sys
+import time
 from typing import Optional
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+# Set on each core module when this process first sees it loaded.
+_LOADED_AT = "_ed_loaded_at"
+
+
+def _is_core(name: str) -> bool:
+    return name == "core" or name.startswith("core.")
+
+
+def _forget_stale_core_modules() -> bool:
+    """Drop every core module if any has changed on disk since it was loaded.
+
+    Streamlit re-reads this file on every run but keeps imported modules
+    in memory. After a deploy that pairs a new call here with a new
+    argument there, the page calls the old function and dies with a
+    TypeError until the app is rebooted. Forgetting the modules makes the
+    imports below load the current code, as Streamlit's own watcher does
+    in local development. All of them go, not just the changed one,
+    because the others hold names imported from it.
+    """
+    stale = False
+    for name, module in list(sys.modules.items()):
+        loaded = getattr(module, _LOADED_AT, None) if _is_core(name) else None
+        path = getattr(module, "__file__", None)
+        if loaded is not None and path:
+            try:
+                stale = os.path.getmtime(path) > loaded
+            except OSError:  # deleted by the deploy: certainly stale
+                stale = True
+            if stale:
+                break
+    if stale:
+        for name in [n for n in sys.modules if _is_core(n)]:
+            del sys.modules[name]
+    return stale
+
+
+def _stamp_core_modules() -> None:
+    now = time.time()
+    for name, module in list(sys.modules.items()):
+        if _is_core(name) and getattr(module, _LOADED_AT, None) is None:
+            setattr(module, _LOADED_AT, now)
+
+
+_reloaded_core = _forget_stale_core_modules()
 
 from core.analytics import (
     compute_is_night,
@@ -81,6 +129,8 @@ from core.ui import (
     tier_summary,
 )
 
+_stamp_core_modules()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -90,6 +140,8 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+if _reloaded_core:
+    logger.info("Core modules changed on disk since they were loaded; reloaded them.")
 
 st.set_page_config(
     page_title="Elephant Conflict Intelligence",
@@ -1215,11 +1267,24 @@ with tab_emerging:
                                           help="Faint dots for places with no pattern.")
             highlight = (None if picked_slice == "None"
                          else cube.steps[slice_labels.index(picked_slice) - 1])
-            st.plotly_chart(charts.space_time_cube(
-                cube, emerging, cube_hot, villages,
-                camera=camera, highlight_step=highlight, context=show_context,
-                floor_boundaries=layer_boundaries, focus=focus,
-            ), width="stretch", config=CUBE_CONFIG, key="cube_chart")
+            # Like the maps, a cube that fails to draw says so in its own
+            # place: an exception here would stop the script and take the
+            # Villages, When and Data tabs down with it.
+            try:
+                cube_figure = charts.space_time_cube(
+                    cube, emerging, cube_hot, villages,
+                    camera=camera, highlight_step=highlight, context=show_context,
+                    floor_boundaries=layer_boundaries, focus=focus,
+                )
+            except Exception as exc:  # noqa: BLE001 - the page must survive
+                logger.exception("Space-time cube failed")
+                st.error(
+                    f"The space-time cube could not be drawn: {type(exc).__name__}. "
+                    "Everything else on this page is unaffected."
+                )
+            else:
+                st.plotly_chart(cube_figure, width="stretch", config=CUBE_CONFIG,
+                                key="cube_chart")
             st.caption(
                 "Each column is a place; each hexagon, a step with events, its area "
                 "following the count. Coloured hexagons are steps the place was a "
