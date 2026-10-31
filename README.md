@@ -108,19 +108,30 @@ reach session state, where they go through the same cached load as an upload.
 `tests/test_app_fetch.py` asserts the password is absent from session state
 after a real round trip rather than merely unrendered.
 
-The form asks for an email and a password, and nothing else. The site is a
-Laravel + Inertia app, so `tools/fetch_sightings.py` signs in the way the
-login page itself does — `POST /login` with the XSRF cookie and the Inertia
-headers — and reads the listing as Inertia JSON, page by page. There is no
-endpoint to discover on the Network tab and no browser cookie to paste, so
-the fields that used to collect them are gone: a form that takes what nothing
-reads teaches a reader the fetch needs setting up, and it does not.
+The form asks for an email, a password and a window: *From* defaults to
+1 October 2025, when the register opens, and *To* to today in the viewer's
+own timezone (the browser's; India's when it does not say). The server's
+date would be wrong for the first five and a half hours of an Indian day,
+because Streamlit Cloud runs on UTC. The site is a Laravel + Inertia app, so
+`tools/fetch_sightings.py` signs in the way the login page itself does —
+`POST /login` with the XSRF cookie and the Inertia headers.
 
-The window is not a parameter of the job. The listing is not filtered by
-date, so every run is a full refresh rather than an increment to be merged;
-a full pull cannot develop a gap, and the register is small enough that this
-is cheaper than being clever. Nothing is promised in advance about the span:
-the dates on the result are read off the rows that arrived, which is why the
+**Then it downloads the listing's export for the window, in one request.**
+Reading the listing instead is one request per page with a pause between
+each, which took minutes; the export takes seconds. The Export button's
+route is read off the route table Laravel ships to the page (Ziggy, in the
+Inertia props or written by `@routes`), preferring one whose name says both
+export and sightings, and failing that a few likely paths are tried. The
+file is read whatever it turns out to be — CSV or a spreadsheet, as below —
+renamed to the dashboard's columns through the scraper's synonym table, and
+only accepted if its rows carry a date and coordinates, so a generic export
+route serving some other register is passed over. `FORESTALERTS_EXPORT_PATH`
+pins the route once it is known.
+
+**Where no export can be found, the listing is read page by page over the
+same window**, and the status panel says so with the routes that were tried,
+so a wrong guess makes a fetch slower rather than empty. Either way the
+dates on the result are read off the rows that arrived, which is why the
 loaded page can say what the pull actually covers rather than what was asked
 for.
 
@@ -251,10 +262,12 @@ about 110 m — enough to place someone in a village, not at a house. Only
 per-village counts reach the page, the brief or any download. Neither file is
 stored, and both file shapes are in `.gitignore`.
 
-**Forest Alerts endpoints (optional).** `FORESTALERTS_EXPORT_PATH`,
-`FORESTALERTS_API_PATH` and `FORESTALERTS_API_LOGIN_PATH`, in the environment
-or `.streamlit/secrets.toml`, pre-fill the landing page's endpoint fields. They are configuration rather than
-secrets; the credentials are never stored.
+**Forest Alerts export route (optional).** `FORESTALERTS_EXPORT_PATH`, in the
+environment or `.streamlit/secrets.toml`, is the address the listing's Export
+button requests (read it off the browser's Network tab), tried before any route
+the app finds for itself. It is configuration rather than a secret; the
+credentials are never stored. `FORESTALERTS_API_PATH` and
+`FORESTALERTS_API_LOGIN_PATH` are read only by the command-line scraper.
 
 **MapTiler key (optional).** Set `MAPTILER_KEY` in `.streamlit/secrets.toml`
 locally, or under Manage app → Settings → Secrets on Streamlit Cloud. See

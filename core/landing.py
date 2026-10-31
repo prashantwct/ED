@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import base64
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date, datetime
 from html import escape
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import streamlit as st
 
@@ -83,6 +85,32 @@ OPTIONAL_COLUMNS = (
 )
 
 SOURCE_URL = "https://mpforest.forestalerts.com/admin/sightings"
+
+# The register opens on 1 October 2025: the fetch starts there by default
+# and cannot start earlier, there being nothing before it.
+REGISTER_START = date(2025, 10, 1)
+# Whose "today" it is when the browser does not say: the register is
+# Madhya Pradesh's, and a server on UTC is a day behind it until 05:30.
+HOME_TIMEZONE = "Asia/Kolkata"
+
+
+def local_today() -> date:
+    """Today where the viewer is, from the browser's timezone.
+
+    The server's own date is the wrong one: Streamlit Cloud runs on UTC,
+    so for the first five and a half hours of an Indian day it would end
+    the fetch yesterday and leave that morning's sightings out.
+    """
+    name = None
+    try:
+        name = st.context.timezone
+    except Exception:  # noqa: BLE001 - no browser context, as under test
+        pass
+    try:
+        zone = ZoneInfo(name or HOME_TIMEZONE)
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo(HOME_TIMEZONE)
+    return datetime.now(zone).date()
 
 BROWSER_NOTE = (
     "Forest Alerts renders in the browser: its pages are a script shell with "
@@ -198,18 +226,26 @@ class FetchRequest:
 
     email: str
     password: str
+    start_date: date = REGISTER_START
+    end_date: Optional[date] = None
+    # The viewer's date when the form was sent; the end date defaults to it.
+    today: Optional[date] = field(default=None, compare=False)
 
     def is_usable(self) -> Optional[str]:
         """The reason this cannot be submitted, or None.
 
         The client signs in the way the site's own login page does, so
-        an email and a password are the whole of what it needs: there is
-        no endpoint to supply and no cookie to paste. Refusing a half-
-        filled form here saves a round trip to be told the same thing.
+        an email, a password and the dates are the whole of what it
+        needs: there is no endpoint to supply and no cookie to paste.
+        Refusing a half-filled form here saves a round trip to be told
+        the same thing.
         """
         if not self.email or not self.password:
             return ("Enter the email and password for your Forest Alerts "
                     "account.")
+        if self.end_date is not None and self.end_date < self.start_date:
+            return (f"The end date ({self.end_date:%d %b %Y}) is before the start "
+                    f"date ({self.start_date:%d %b %Y}).")
         return None
 
 
@@ -228,16 +264,27 @@ def fetch_panel() -> Optional[FetchRequest]:
     with st.expander("Sign in to Forest Alerts and fetch the register", expanded=False):
         st.markdown(
             f'<div class="lp-fetch__lede">Signs in to '
-            f'<code>{escape(SOURCE_URL)}</code> with your account and reads the '
-            f'whole sightings register into the same CSV the uploader takes. '
-            f'Every fetch is a full refresh.</div>',
+            f'<code>{escape(SOURCE_URL)}</code> with your account, downloads the '
+            f'sightings register from its Export button for the dates below, and '
+            f'loads it as if you had uploaded it.</div>',
             unsafe_allow_html=True,
         )
+        today = local_today()
         with st.form("forestalerts_signin", clear_on_submit=True):
             email = st.text_input("Email", autocomplete="username",
                                   placeholder="you@mpforest.gov.in")
             password = st.text_input("Password", type="password",
                                      autocomplete="current-password")
+            first, last = st.columns(2)
+            start = first.date_input(
+                "From", value=REGISTER_START, min_value=REGISTER_START,
+                max_value=today, format="DD/MM/YYYY",
+                help="The register opens on 1 October 2025.",
+            )
+            end = last.date_input(
+                "To", value=today, min_value=REGISTER_START, max_value=today,
+                format="DD/MM/YYYY", help="Today, where you are.",
+            )
             submitted = st.form_submit_button("Fetch the register",
                                               type="primary")
         st.markdown(f'<div class="lp-note">{escape(CREDENTIAL_NOTE)}</div>',
@@ -245,7 +292,8 @@ def fetch_panel() -> Optional[FetchRequest]:
 
     if not submitted:
         return None
-    return FetchRequest(email=email.strip(), password=password)
+    return FetchRequest(email=email.strip(), password=password,
+                        start_date=start, end_date=end, today=today)
 
 
 def source_note(label: str, detail: str) -> None:

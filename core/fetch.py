@@ -9,15 +9,20 @@ Both paths end in ``core.data_loader``, and there is no second parser.
 **The site is a Laravel + Inertia app.** Its login page is a script
 shell with no postable form and its listing renders in the browser, so
 the client signs in the way the page itself does -- POST /login with the
-XSRF cookie and Inertia headers -- and reads the listing as Inertia
-JSON, page by page. Nothing has to be configured for that: there is no
-endpoint to discover and no cookie to paste.
+XSRF cookie and Inertia headers. Nothing has to be configured for that.
 
-**A fetch is the whole register.** The listing is not filtered by date,
-so there is no window to ask for and none to advertise. What comes back
-is everything the account can see; the dates on the result are the span
-of the rows that arrived, read off them afterwards rather than promised
-in advance.
+**The Export button, then the listing.** A fetch asks for a window --
+by default from the day the register opens to the viewer's today -- and
+downloads the listing's export for it: one request, where reading the
+listing is one per page with a pause between. Only if no export route
+can be found is the listing read page by page, over the same window, and
+the result says which happened and why. ``FORESTALERTS_EXPORT_PATH``
+pins the route once it is known.
+
+**The dates on the result are what arrived.** The window is what was
+asked for; ``start_date`` and ``end_date`` are the span of the rows that
+came back, read off them afterwards, so the screen never reports a
+window as covered when it was not.
 
 **Credentials are a request parameter and nothing else.** They are read
 off the form, used for one sign-in, and never written to session state,
@@ -52,12 +57,14 @@ logger = logging.getLogger(__name__)
 
 # A pause between page requests. Someone waiting at a screen is the
 # reason to keep it short, and somebody else's production server is the
-# reason it is not zero.
+# reason it is not zero. Only the page-by-page fallback pays it.
 PAGE_DELAY_SECONDS = 0.5
 
-# Only used to describe the window when the scraper cannot be imported at
-# all; the real value is read from it below.
-FALLBACK_START_DATE = "2025-10-01"
+# The register opens on 1 October 2025, so a fetch starts there unless
+# asked to start later.
+START_DATE = date(2025, 10, 1)
+
+SOURCE_EXPORT, SOURCE_LISTING = "export", "listing"
 
 
 def observed_window(dates: "pd.Series") -> Tuple[str, str]:
@@ -112,6 +119,13 @@ class FetchResult:
     start_date: str
     end_date: str
     fetched_at: str
+    # The window asked for, as ISO dates.
+    window_start: str = ""
+    window_end: str = ""
+    # SOURCE_EXPORT, or SOURCE_LISTING when no export could be found.
+    source: str = SOURCE_EXPORT
+    # Why the listing was read instead of the export, when it was.
+    note: str = ""
 
 
 class FetchError(RuntimeError):
@@ -122,11 +136,23 @@ def fetch_sightings(
     email: str = "",
     password: str = "",
     *,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    today: Optional[date] = None,
+    export_path: Optional[str] = None,
     base_url: Optional[str] = None,
     delay: float = PAGE_DELAY_SECONDS,
     progress: Optional[Callable[[int, int], None]] = None,
+    stage: Optional[Callable[[str], None]] = None,
 ) -> FetchResult:
-    """Sign in, read the register, and return it as CSV bytes.
+    """Sign in, download the register for a window, and return it as CSV bytes.
+
+    The window runs from ``start_date`` (default: the day the register
+    opens) to ``end_date`` (default: ``today``). ``today`` is the
+    viewer's local date; the server's is only the fallback, because a
+    server on UTC is still on yesterday for the first hours of an Indian
+    morning. ``export_path`` pins the Export button's route. ``stage``
+    hears each step in words, ``progress`` each page of the fallback.
 
     ``base_url`` overrides the site and ``delay`` the pause between page
     requests; both exist so this can be driven against the test replica
@@ -139,10 +165,12 @@ def fetch_sightings(
     try:
         from tools.fetch_sightings import (
             BASE_URL,
+            ExportUnavailable,
             FetchError as ClientError,
             ForestAlertsClient,
             rows_to_csv_text,
         )
+        from tools.scrape_sightings import order_columns
     except ImportError as error:  # requests missing from the deployment
         raise FetchError(
             "The fetch feature needs the 'requests' package, which is not "
@@ -156,6 +184,20 @@ def fetch_sightings(
             "The sign-in happens once and nothing is stored."
         )
 
+    stamp = (today or date.today()).isoformat()
+    first_day = start_date or START_DATE
+    last_day = end_date or today or date.today()
+    if last_day < first_day:
+        raise FetchError(
+            f"The end date ({last_day:%d %b %Y}) is before the start date "
+            f"({first_day:%d %b %Y})."
+        )
+    window = (first_day.isoformat(), last_day.isoformat())
+
+    def _say(text: str) -> None:
+        if stage is not None:
+            stage(text)
+
     pages = 0
 
     def _on_page(page: int, rows: int) -> None:
@@ -165,13 +207,22 @@ def fetch_sightings(
             progress(page, rows)
 
     site = base_url or BASE_URL
+    source, note = SOURCE_EXPORT, ""
     try:
         client = ForestAlertsClient(site, verify=True)
         client.login(email, password)
-        # The site's listing is the whole register; it is not windowed by
-        # date here, so a fetch is always a full, gap-free pull.
-        records = client.fetch_sightings(delay=delay, on_page=_on_page)
-        text, columns = rows_to_csv_text(records)
+        _say(f"Downloading the export for {first_day:%d %b %Y} to {last_day:%d %b %Y}...")
+        try:
+            records, _ = client.export_sightings(*window, export_path=export_path)
+            pages = 1
+            text, columns = _rows_to_csv(records, order_columns)
+        except ExportUnavailable as gap:
+            logger.warning("%s", gap)
+            source, note = SOURCE_LISTING, str(gap)
+            _say("No export found; reading the listing page by page instead...")
+            records = client.fetch_sightings(delay=delay, on_page=_on_page,
+                                             start_date=window[0], end_date=window[1])
+            text, columns = rows_to_csv_text(records)
     except ClientError as error:
         # Deliberately not chained into the UI: the message is written to
         # be read by a forest officer, and a traceback is not.
@@ -180,7 +231,12 @@ def fetch_sightings(
         logger.exception("Fetch from Forest Alerts failed")
         raise FetchError(_unreachable(site, error)) from error
 
-    stamp = date.today().isoformat()
+    if not records:
+        raise FetchError(
+            f"No sightings were recorded between {first_day:%d %b %Y} and "
+            f"{last_day:%d %b %Y}. Widen the dates and fetch again."
+        )
+
     import pandas as pd
 
     frame = pd.read_csv(io.StringIO(text), dtype=str) if text.strip() else pd.DataFrame()
@@ -195,4 +251,27 @@ def fetch_sightings(
         start_date=first,
         end_date=last,
         fetched_at=stamp,
+        window_start=window[0],
+        window_end=window[1],
+        source=source,
+        note=note,
     )
+
+
+def _rows_to_csv(records, order_columns) -> Tuple[str, List[str]]:
+    """Export rows, already under the dashboard's names, as CSV text.
+
+    An export with no rows is an empty window, not a failure: it comes
+    back as an empty file the caller reports.
+    """
+    import csv
+
+    if not records:
+        return "", []
+    columns = order_columns(records)
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for record in records:
+        writer.writerow({column: record.get(column, "") for column in columns})
+    return buffer.getvalue(), columns

@@ -79,13 +79,16 @@ def test_the_page_offers_no_field_the_fetch_would_ignore(app):
         assert gone not in labels
 
 
-def test_the_page_describes_a_full_refresh_rather_than_a_window(app):
-    """The listing is not filtered by date, so naming one would promise
-    a pull nobody makes."""
+def test_the_form_asks_for_dates_from_the_register_start_to_today(app):
+    """The export is asked for a window: by default the whole register,
+    1 October 2025 through the viewer's today."""
+    from core.landing import REGISTER_START, local_today
+
     at = app.run()
+    dates = {w.label: w.value for w in at.date_input}
+    assert dates == {"From": REGISTER_START, "To": local_today()}
     markdown = " ".join(m.value for m in at.markdown)
-    assert "whole sightings register" in markdown
-    assert "full refresh" in markdown
+    assert "Export button" in markdown
 
 
 def test_signing_in_loads_the_dashboard(app):
@@ -99,7 +102,7 @@ def test_the_loaded_page_says_where_the_data_came_from(app):
     at = _sign_in(app.run())
     markdown = " ".join(m.value for m in at.markdown)
     assert "Forest Alerts" in markdown
-    assert f"{TOTAL_ROWS:,} rows over 3 page(s)" in markdown
+    assert f"{TOTAL_ROWS:,} rows from the export" in markdown
 
 
 def test_the_loaded_page_reports_the_span_that_actually_arrived(app):

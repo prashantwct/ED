@@ -152,8 +152,16 @@ def _export_row(row):
     ))
 
 
-def export_csv_text():
-    return "\n".join([EXPORT_HEADER, *(_export_row(row) for row in ROWS)]) + "\n"
+def _export_day(row):
+    return f"2025-10-{row['id'] - 99:02d}"
+
+
+def export_csv_text(start_date="", end_date=""):
+    """The export over a window, filtered the way the site filters it."""
+    rows = [row for row in ROWS
+            if (not start_date or _export_day(row) >= start_date)
+            and (not end_date or _export_day(row) <= end_date)]
+    return "\n".join([EXPORT_HEADER, *(_export_row(row) for row in rows)]) + "\n"
 
 
 def _api_row(row):
@@ -250,7 +258,10 @@ class Handler(BaseHTTPRequestHandler):
     api_needs_token = True # whether /api/sightings checks Authorization
     export_requests = []   # every export query the scraper sent
     export_as = "csv"      # what the Export button hands back
+    export_route = "/admin/sightings/export"  # where the Export button points
+    ziggy_routes = None    # the route table the listing page ships, if any
     inertia_pages = []     # every Inertia listing page requested
+    inertia_queries = []   # the query each of those pages was asked with
     inertia_stale_once = False  # answer the first listing page with a 409
 
     def log_message(self, *args):  # keep pytest output clean
@@ -301,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(SPA_SHELL)
         if parsed.path == "/api/sightings":
             return self._api_sightings(query)
-        if parsed.path == "/admin/sightings/export":
+        if parsed.path == self.export_route:
             return self._export(query)
         if parsed.path == self.login_path:
             return self._send(self.login_html or LOGIN_PAGE)
@@ -334,6 +345,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _export(self, query):
         if not (self._authenticated()
+                or INERTIA_SESSION in (self.headers.get("Cookie") or "")
                 or f"Bearer {API_TOKEN}" == (self.headers.get("Authorization") or "")):
             return self._send_json({"message": "Unauthenticated."}, status=401)
         type(self).export_requests.append(query)
@@ -348,7 +360,8 @@ class Handler(BaseHTTPRequestHandler):
             body = b"<html><body><h1>Session expired</h1></body></html>"
             name, content_type = "login.html", "text/html"
         else:
-            body = export_csv_text().encode("utf-8")
+            body = export_csv_text(query.get("start_date", [""])[0],
+                                   query.get("end_date", [""])[0]).encode("utf-8")
             name, content_type = "sightings.csv", "application/octet-stream"
 
         self.send_response(200)
@@ -407,8 +420,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(_data_page("Auth/Login"))
         page = int(query.get("page", ["1"])[0])
         if self._boots_inertia():
-            return self._send(_data_page("Admin/Sightings/Index"))
+            props = {"ziggy": {"routes": self.ziggy_routes}} if self.ziggy_routes else None
+            return self._send(_data_page("Admin/Sightings/Index", props))
         type(self).inertia_pages.append(page)
+        type(self).inertia_queries.append(query)
         if self.inertia_stale_once and len(self.inertia_pages) == 1:
             return self._send_json({"message": "version mismatch"}, status=409)
         return self._send_json(_inertia_page(page))
