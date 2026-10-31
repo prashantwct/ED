@@ -53,8 +53,8 @@ from core.config import (
 from core.analytics import (
     BULL_TYPE_GROUPS,
     classify_conflict,
+    classify_group,
     composition_summary,
-    is_bull_type,
     compute_kpis,
     conflict_mask,
     human_deaths,
@@ -86,6 +86,8 @@ CONFIDENCE_LOW = "Low"
 
 
 EASING_RATIO = 1 / ESCALATION_RATIO
+# Timed injuries and deaths needed before a peak hour is worth a headline.
+MIN_TIMED_CASUALTIES = 5
 
 
 BEAT_KEY_COLUMNS = ["Division", "Range", "Beat"]
@@ -230,7 +232,14 @@ def beat_intelligence(
     working["_injuries"] = human_injuries(working)
     working["_property"] = property_severity(working)
     working["_category"] = classify_conflict(working)
-    working["_bull"] = is_bull_type(working)
+    # Bull or breeding herd, where the group was seen well enough to say.
+    # A raid nobody sexed is neither: counted as "not bulls" it made a
+    # beat of unsexed reports read as herd-driven and drew the advice to
+    # give the herd passage, for animals that may well be bulls.
+    group = classify_group(working)
+    known = group.isin([*BULL_TYPE_GROUPS, "Family herd"])
+    working["_bull"] = group.isin(BULL_TYPE_GROUPS).astype(float).where(known)
+    working["_group_known"] = (known & working["_conflict"]).astype(int)
 
     key_cols = [c for c in BEAT_KEY_COLUMNS if c in working.columns]
     if "Beat" not in key_cols:
@@ -245,6 +254,7 @@ def beat_intelligence(
             "Human Deaths": ("_deaths", "sum"),
             "People Injured": ("_injuries", "sum"),
             "Damage Burden": ("_property", "sum"),
+            "Group-Known Conflicts": ("_group_known", "sum"),
         },
     ).reset_index()
 
@@ -265,7 +275,9 @@ def beat_intelligence(
     # Which kind of animal is causing this beat's conflict. A bull raids
     # and occasionally kills; a breeding herd is avoiding people. The two
     # take different interventions, so the share is carried alongside the
-    # count rather than left implicit.
+    # count rather than left implicit. It is a share of the conflicts whose
+    # group was recorded as bulls or a herd, and Group-Known Conflicts says
+    # how many that is.
     table["Bull-Type Conflict %"] = _share_by_group(
         working, key_cols, "_bull", conflict_only=True
     )
@@ -344,6 +356,7 @@ def _beat_columns() -> List[str]:
         "Night Conflict %",
         "Near Village %",
         "Bull-Type Conflict %",
+        "Group-Known Conflicts",
         "Trend",
         "Recent vs Prior",
         "Recent Conflicts",
@@ -534,7 +547,7 @@ def _priority_score(table: pd.DataFrame) -> pd.Series:
     # mean anything. Thin beats sit at the neutral midpoint rather than
     # being rewarded or punished for one report.
     composition = table["Bull-Type Conflict %"].fillna(50.0).where(
-        table["Conflict Events"] >= MIN_CONFLICTS_FOR_COMPOSITION, 50.0
+        table["Group-Known Conflicts"] >= MIN_CONFLICTS_FOR_COMPOSITION, 50.0
     )
 
     trend = table["Trend"].map(
@@ -638,7 +651,7 @@ def _recommended_actions(table: pd.DataFrame, max_actions: int = 3) -> pd.Series
         bulls = row["Bull-Type Conflict %"]
         if (
             pd.notna(bulls)
-            and row["Conflict Events"] >= MIN_CONFLICTS_FOR_COMPOSITION
+            and row["Group-Known Conflicts"] >= MIN_CONFLICTS_FOR_COMPOSITION
             and room()
         ):
             if bulls >= BULL_SHARE_FOR_ALERT:
@@ -981,17 +994,18 @@ def _headlines(
     composition: Optional[pd.DataFrame] = None,
 ) -> List[str]:
     """The handful of sentences worth putting at the top of the brief."""
+    from core.brief_insights import harm, plural
+
     lines: List[str] = []
 
     deaths = kpis.get("human_deaths", 0)
     injuries = kpis.get("human_injuries", 0)
     if deaths or injuries:
-        lines.append(
-            f"{int(deaths)} human fatality(ies) and {int(injuries)} injury(ies) "
-            f"recorded across {kpis['human_death_incidents']} fatal incident(s)."
-        )
+        incidents = kpis["human_death_incidents"]
+        lines.append(f"{harm(deaths, injuries).capitalize()}"
+                     + (f"; {plural(incidents, 'fatal incident')}." if incidents else "."))
     else:
-        lines.append("No human fatalities or injuries recorded in this period.")
+        lines.append("No one was killed or injured by elephants in this period.")
 
     rate = kpis.get("conflict_rate", float("nan"))
     if not pd.isna(rate):
@@ -1004,24 +1018,28 @@ def _headlines(
     if len(critical):
         names = ", ".join(critical["Beat"].head(5).astype(str))
         lines.append(
-            f"{len(critical)} beat(s) in the Critical tier -- a casualty in the last "
-            f"{critical_window_days} days: {names}."
+            f"{plural(len(critical), 'beat')} in the Critical tier, with a casualty in the "
+            f"last {critical_window_days} days: {names}."
         )
     elif len(priority):
         names = ", ".join(priority["Beat"].head(5).astype(str))
-        lines.append(f"{len(priority)} beat(s) require priority attention: {names}.")
+        verb = "needs" if len(priority) == 1 else "need"
+        lines.append(f"{plural(len(priority), 'beat')} {verb} priority attention: {names}.")
 
     if len(escalating):
         names = ", ".join(escalating["Beat"].head(5).astype(str))
-        lines.append(f"{len(escalating)} beat(s) escalating versus the previous window: {names}.")
+        lines.append(f"{plural(len(escalating), 'beat')} escalating against the previous "
+                     f"window: {names}.")
 
     window = temporal.get("peak_window")
-    if window:
+    # A peak from a handful of timed casualties is an anecdote, not a
+    # shift pattern: one event at 01:00 is "100% of casualties".
+    if window and window.get("events", 0) >= MIN_TIMED_CASUALTIES:
         lines.append(f"Injuries and deaths concentrate in {format_window(window)}.")
     if temporal.get("night_damage"):
-        lines.append(f"{temporal['night_damage']:,} conflict report(s) -- damage, and anything "
-                     "not a direct sighting -- are counted as night raids: they are recorded "
-                     "after the night.")
+        lines.append(f"{plural(temporal['night_damage'], 'conflict report')} (damage and "
+                     "signs, not direct sightings) are counted as night raids: they are "
+                     "written up after the night.")
 
     lines.extend(_composition_headline(composition))
 
@@ -1066,9 +1084,11 @@ def _composition_headline(composition: Optional[pd.DataFrame]) -> List[str]:
     lines = [line + "."]
 
     if total_deaths > 0:
+        from core.brief_insights import plural
+
         lines.append(
-            f"{deaths:.0f} of {total_deaths:.0f} human fatality(ies) involved a "
-            "bull-type group."
+            f"{deaths:.0f} of {plural(total_deaths, 'death')} involved a lone bull or "
+            "bull party."
         )
     return lines
 

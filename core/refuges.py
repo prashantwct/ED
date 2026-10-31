@@ -953,36 +953,65 @@ def to_kml(refuges: pd.DataFrame, areas: Optional[pd.DataFrame] = None) -> str:
 
 
 def headlines(result: Dict[str, object]) -> List[str]:
+    from core.brief_insights import plural
+
     s, table = result["summary"], result["refuges"]
     lines = []
     if s["night_raids"]:
         chance = s.get("chance_links", 0.0)
-        lines.append(f"Of {s['night_raids']:,} night raids (damage and indirect reports dated "
-                     f"to the night before their entry): {s['linked_raids']:,} link to a forest "
-                     f"refuge in use ({s['same_night']:,} the same night), {s['area_raids']:,} "
-                     f"fall in {s['areas']} raid area(s) with no refuge on record, and "
-                     f"{s['scattered_raids']:,} are scattered.")
+        lines.append(f"Of {plural(s['night_raids'], 'night raid')} (damage and signs, dated "
+                     f"to the night before they were written up), {s['linked_raids']:,} link "
+                     f"to a forest refuge in use ({s['same_night']:,} the same night), "
+                     f"{s['area_raids']:,} fall in {plural(s['areas'], 'raid area')} with no "
+                     f"refuge on record, and {s['scattered_raids']:,} are scattered.")
         if s["linked_raids"]:
             lines.append(f"With the refuges' dates shuffled, about {chance:.0f} raids would "
-                         "link by coincidence of place and season; "
+                         "link by coincidence of place and season, so "
                          f"{max(s['linked_raids'] - chance, 0):.0f} links are what the refuges "
-                         f"explain ({s['linked_raids'] / max(chance, 1):.1f}x chance).")
+                         f"explain ({s['linked_raids'] / max(chance, 1):.1f} times chance).")
     areas = result.get("areas")
     if areas is not None and len(areas):
         top = areas.iloc[0]
         where = top["Villages Raided"] or f"{top['Beat']} beat"
         lines.append(f"The biggest raid area with no known refuge, {top['Area']} around "
-                     f"{where}, saw {top['Raids']} raids on {top['Nights']} nights: an "
-                     "unreported refuge lies within a night's walk of it.")
+                     f"{where}, saw {plural(top['Raids'], 'raid')} on "
+                     f"{plural(top['Nights'], 'night')}: an unreported refuge lies within a "
+                     "night's walk of it.")
     if s.get("forest", "none") == "none":
         lines.append(f"All {s['reports']:,} sightings and signs are refuge evidence: no forest "
                      "layer was used.")
     else:
         lines.append(f"{s['forest_evidence']:,} of {s['reports']:,} sightings and signs fall "
-                     f"inside forest -- {FOREST_LABELS[s['forest']]} -- and are the refuge "
+                     f"inside forest ({FOREST_LABELS[s['forest']]}) and are the refuge "
                      "evidence.")
     if not s["refuges"]:
         return lines
+    lines.append(f"{plural(s['refuges'], 'forest refuge')} send raids: {s['confirmed']} "
+                 f"confirmed, {s['probable']} probable, the rest possible.")
+    top = table.sort_values("Linked Raids", ascending=False).iloc[0]
+    if top["Linked Raids"]:
+        lines.append(
+            f"{top['Refuge']} ({top.get('Beat', '')}) feeds the most raids, "
+            f"{top['Linked Raids']}, "
+            + (f"heading {top['Raids Head']}" if top["Raids Head"] in COMPASS
+               else "in several directions")
+            + f" a median {top['Raid Distance (km, median)']} km into "
+            f"{top['Villages Raided'] or 'nearby fields'}.")
+    signs_only = int((table["Direct Sightings"] == 0).sum())
+    if signs_only:
+        lines.append(f"{plural(signs_only, 'refuge')} rest on signs alone, with nobody having "
+                     "seen the elephants there: confirm them by day.")
+    if "Tree Patch (ha)" in table:
+        small = table[(table["Tree Patch (ha)"] > 0) & (table["Tree Patch (ha)"] < 25)
+                      & ~table["Patch Extends Beyond Window"].fillna(False).astype(bool)]
+        if len(small):
+            lines.append(f"{plural(len(small), 'refuge')} are isolated tree patches under "
+                         "25 ha. Elephants resting in a small patch are close to the people "
+                         "who use it by day.")
+    if s["villages_to_warn"]:
+        lines.append(f"{plural(s['villages_to_warn'], 'village')} lie within a night's reach "
+                     "of a refuge; the table lists them per refuge.")
+    return lines
     lines.append(f"{s['refuges']} forest refuge(s) send raids: {s['confirmed']} confirmed, "
                  f"{s['probable']} probable, the rest possible.")
     top = table.sort_values("Linked Raids", ascending=False).iloc[0]

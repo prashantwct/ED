@@ -39,6 +39,17 @@ FONT = "font-family=\"Segoe UI, Arial, sans-serif\""
 
 # Heat steps for the seasonal grid, light to dark, same hue as the ramp.
 HEAT_STEPS = ["#FBF1EA", "#F6D2B5", "#F2B27E", "#E07B3C", "#C2410C", "#8A2A0A", "#5C1406"]
+# The same steps in the brand green, for presence rather than conflict:
+# where elephants were is not, by itself, bad news.
+PRESENCE_STEPS = ["#EEF5F0", "#D3E6DA", "#A9C8B6", "#7FAE93", "#4F8C6A", "#2E6B4A", "#1A4A32"]
+# Daylight hours on the activity clock; night keeps the brief's navy.
+DAYLIGHT = "#C9952B"
+# Group types: bulls in an earth brown, breeding herds in the brand green,
+# groups nobody could sex in greys.
+GROUP_COLORS = {
+    "Lone bull": "#7A4A2A", "Bull party": "#A8683C", "Family herd": BRAND,
+    "Mixed / unsexed": "#8C9A93", "Unrecorded": "#C5CDC8",
+}
 
 
 def _nice_max(value: float) -> Tuple[float, float]:
@@ -510,11 +521,19 @@ def sightings_vs_conflict_svg(trend: pd.DataFrame) -> str:
     )
 
 
-def seasonal_heatmap_svg(matrix: pd.DataFrame, width: int = WIDTH) -> str:
-    """Year by calendar month as shaded cells, the count in each."""
+def seasonal_heatmap_svg(matrix: pd.DataFrame, width: int = WIDTH, left: int = 56,
+                         steps: Sequence[str] = HEAT_STEPS,
+                         label: str = "Conflict events by month and year") -> str:
+    """Rows by columns as shaded cells, the count in each.
+
+    Drawn for year by calendar month (conflict), and for division by
+    month (presence, in ``PRESENCE_STEPS``), with ``left`` room for the
+    longer row names.
+    """
+    HEAT_STEPS = list(steps)  # noqa: N806 - the ramp this grid is drawn in
     values = matrix.to_numpy(dtype=float)
     top = np.nanmax(values) if np.isfinite(values).any() else 0.0
-    left, head, row_h = 56, 26, 34
+    head, row_h = 26, 34
     cell_w = (width - left - 10) / max(len(matrix.columns), 1)
     height = head + row_h * len(matrix) + 10
     parts = []
@@ -542,5 +561,164 @@ def seasonal_heatmap_svg(matrix: pd.DataFrame, width: int = WIDTH) -> str:
                 f'font-size="11" fill="{ink}">{value:.0f}</text>'
             )
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-            f'role="img" aria-label="Conflict events by month and year" {FONT}>'
+            f'role="img" aria-label="{escape(label)}" {FONT}>'
             + "".join(parts) + "</svg>")
+
+
+# ---------------------------------------------------------------------------
+# The elephants
+# ---------------------------------------------------------------------------
+def _polar(cx: float, cy: float, r: float, angle: float) -> Tuple[float, float]:
+    return cx + r * math.cos(angle), cy + r * math.sin(angle)
+
+
+def diel_clock_svg(hourly: pd.Series, night_start: int, night_end: int,
+                   size: int = HALF_WIDTH) -> str:
+    """Direct sightings round a 24-hour clock, midnight at the top.
+
+    A clock rather than a row of bars because the day wraps: the dusk to
+    dawn run that matters reads as one arc here, where a bar chart cuts
+    it in two at midnight.
+    """
+    counts = hourly.reindex(range(24), fill_value=0).to_numpy(dtype=float)
+    top = counts.max() if counts.max() > 0 else 1.0
+    height = size
+    cx, cy = size / 2, height / 2 + 6
+    r0, r1 = size * 0.11, size * 0.40
+    step = 2 * math.pi / 24
+
+    def angle(hour: float) -> float:
+        return hour * step - math.pi / 2
+
+    parts = []
+    # The night as a shaded sector behind the bars.
+    span = (night_end - night_start) % 24
+    a0, a1 = angle(night_start), angle(night_start + span)
+    xo0, yo0 = _polar(cx, cy, r1 + 8, a0)
+    xo1, yo1 = _polar(cx, cy, r1 + 8, a1)
+    large = 1 if span > 12 else 0
+    parts.append(f'<path d="M{cx:.1f},{cy:.1f} L{xo0:.1f},{yo0:.1f} A{r1 + 8:.1f},{r1 + 8:.1f} '
+                 f'0 {large} 1 {xo1:.1f},{yo1:.1f} Z" fill="{NIGHT_COLOR}" opacity="0.07"/>')
+    for share in (0.5, 1.0):
+        parts.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r0 + (r1 - r0) * share:.1f}" '
+                     f'fill="none" stroke="{GRID}"/>')
+    for hour, value in enumerate(counts):
+        if value <= 0:
+            continue
+        r = r0 + (r1 - r0) * value / top
+        b0, b1 = angle(hour + 0.1), angle(hour + 0.9)
+        x0, y0 = _polar(cx, cy, r0, b0)
+        x1, y1 = _polar(cx, cy, r, b0)
+        x2, y2 = _polar(cx, cy, r, b1)
+        x3, y3 = _polar(cx, cy, r0, b1)
+        night = hour >= night_start or hour < night_end
+        parts.append(
+            f'<path d="M{x0:.1f},{y0:.1f} L{x1:.1f},{y1:.1f} A{r:.1f},{r:.1f} 0 0 1 '
+            f'{x2:.1f},{y2:.1f} L{x3:.1f},{y3:.1f} A{r0:.1f},{r0:.1f} 0 0 0 {x0:.1f},{y0:.1f} Z" '
+            f'fill="{NIGHT_COLOR if night else DAYLIGHT}"><title>{hour:02d}:00-'
+            f'{(hour + 1) % 24:02d}:00: {value:.0f} sightings</title></path>')
+    for hour in range(0, 24, 3):
+        x, y = _polar(cx, cy, r1 + 20, angle(hour))
+        parts.append(f'<text x="{x:.1f}" y="{y + 4:.1f}" text-anchor="middle" font-size="11" '
+                     f'fill="{INK_MUTED}">{hour:02d}</text>')
+    parts.append(f'<text x="{cx:.1f}" y="{cy - 2:.1f}" text-anchor="middle" font-size="15" '
+                 f'font-weight="600" fill="{INK}">{counts.sum():,.0f}</text>'
+                 f'<text x="{cx:.1f}" y="{cy + 13:.1f}" text-anchor="middle" font-size="10" '
+                 f'fill="{INK_MUTED}">sightings</text>')
+    parts.append(f'<rect x="8" y="8" width="10" height="10" rx="2" fill="{DAYLIGHT}"/>'
+                 f'<text x="22" y="17" font-size="11" fill="{INK_MUTED}">Day</text>'
+                 f'<rect x="56" y="8" width="10" height="10" rx="2" fill="{NIGHT_COLOR}"/>'
+                 f'<text x="70" y="17" font-size="11" fill="{INK_MUTED}">Night '
+                 f'{night_start:02d}:00-{night_end:02d}:00</text>')
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {height + 12}" '
+            f'role="img" aria-label="Direct sightings by hour of day" {FONT}>'
+            + "".join(parts) + "</svg>")
+
+
+def herd_composition_svg(composition: pd.DataFrame, width: int = HALF_WIDTH) -> str:
+    """Sightings by kind of group, the share that raided filled in darker."""
+    data = composition[composition["Sightings"] > 0]
+    row_h, left = 34, 112
+    height = 30 + row_h * len(data) + 26
+    plot = _Plot(height, float(data["Sightings"].max()) if len(data) else 1.0,
+                 left=left, top=30, bottom=26, right=86, width=width)
+
+    def x(value: float) -> float:
+        return left + plot.inner_w * value / plot.y_top
+
+    for tick in np.arange(0, plot.y_top + plot.y_step / 2, plot.y_step):
+        plot.parts.append(
+            f'<line x1="{x(tick):.1f}" x2="{x(tick):.1f}" y1="{plot.top - 4}" '
+            f'y2="{height - plot.bottom}" stroke="{GRID}"/>'
+            f'<text x="{x(tick):.1f}" y="{height - plot.bottom + 15}" text-anchor="middle" '
+            f'font-size="10.5" fill="{INK_MUTED}">{_fmt(tick)}</text>')
+    for i, row in enumerate(data.to_dict("records")):
+        y = plot.top + row_h * i
+        name = str(row["Group Type"])
+        seen, raids = float(row["Sightings"]), float(row["Conflict Events"])
+        color = GROUP_COLORS.get(name, OTHER_COLOR)
+        plot.parts.append(
+            f'<text x="{left - 10}" y="{y + row_h / 2 + 4:.1f}" text-anchor="end" '
+            f'font-size="11" fill="{INK}">{escape(name)}</text>'
+            f'<rect x="{left}" y="{y + 7:.1f}" width="{max(x(seen) - left, 1):.1f}" '
+            f'height="{row_h - 14}" rx="3" fill="{color}" opacity="0.28">'
+            f'<title>{escape(name)}: {seen:,.0f} reports</title></rect>'
+            f'<rect x="{left}" y="{y + 7:.1f}" width="{max(x(raids) - left, 0):.1f}" '
+            f'height="{row_h - 14}" rx="3" fill="{color}">'
+            f'<title>{escape(name)}: {raids:,.0f} conflict events</title></rect>'
+            f'<text x="{x(seen) + 6:.1f}" y="{y + row_h / 2 + 4:.1f}" font-size="10.5" '
+            f'fill="{INK}">{float(row["Damage Rate %"]):.0f}% raided</text>')
+    plot.parts.append(
+        f'<text x="{width - plot.right}" y="{plot.top - 14}" text-anchor="end" font-size="11" '
+        f'fill="{INK_MUTED}">solid: conflict events, pale: all reports</text>')
+    return plot.svg("Reports and conflict by kind of group")
+
+
+def range_use_svg(used: pd.DataFrame, width: int = WIDTH) -> str:
+    """Beats with elephants each month, those used for the first time darker."""
+    months = pd.DatetimeIndex(used.index)
+    plot = _Plot(230, float(used["Beats used"].max()) if len(used) else 1.0, width=width)
+    band, x_of = _band_x(plot, len(months))
+    bar_w = band * 0.66
+    plot.grid("Beats with elephant reports")
+    for i, row in enumerate(used.to_dict("records")):
+        total, first = float(row["Beats used"]), float(row["First used"])
+        if total > 0:
+            plot.parts.append(
+                f'<rect x="{x_of(i) - bar_w / 2:.1f}" y="{plot.y(total):.1f}" width="{bar_w:.1f}" '
+                f'height="{plot.y(0) - plot.y(total):.1f}" rx="2" fill="#A9C8B6">'
+                f'<title>{months[i]:%b %Y}: {total:.0f} beats, {first:.0f} for the first time'
+                '</title></rect>')
+        if first > 0:
+            plot.parts.append(
+                f'<rect x="{x_of(i) - bar_w / 2:.1f}" y="{plot.y(first):.1f}" width="{bar_w:.1f}" '
+                f'height="{plot.y(0) - plot.y(first):.1f}" rx="2" fill="{BRAND}"/>')
+    _month_ticks(plot, months, x_of)
+    plot.legend([("box", "#A9C8B6", "Beats with reports"), ("box", BRAND, "First time")])
+    return plot.svg("Beats with elephant reports each month")
+
+
+def damage_season_svg(months: pd.DataFrame, width: int = HALF_WIDTH) -> str:
+    """Crop and house or store damage by calendar month, stacked."""
+    totals = months.sum(axis=1).to_numpy(dtype=float)
+    plot = _Plot(240, float(totals.max()) if len(totals) else 1.0, width=width)
+    band, x_of = _band_x(plot, len(months))
+    bar_w = band * 0.68
+    plot.grid("Damage reports")
+    for i, (month, row) in enumerate(months.iterrows()):
+        base = 0.0
+        for column, color in (("Crop", SEVERITY_RAMP["Crop"]), ("House", SEVERITY_RAMP["House"])):
+            value = float(row[column])
+            if value > 0:
+                plot.parts.append(
+                    f'<rect x="{x_of(i) - bar_w / 2:.1f}" y="{plot.y(base + value):.1f}" '
+                    f'width="{bar_w:.1f}" height="{plot.y(base) - plot.y(base + value):.1f}" '
+                    f'fill="{color}"><title>{escape(str(month))}: {value:.0f} '
+                    f'{column.lower()} damage</title></rect>')
+            base += value
+        plot.parts.append(
+            f'<text x="{x_of(i):.1f}" y="{plot.height - plot.bottom + 16}" text-anchor="middle" '
+            f'font-size="10.5" fill="{INK_MUTED}">{escape(str(month))[:1]}</text>')
+    plot.legend([("box", SEVERITY_RAMP["Crop"], "Crop"),
+                 ("box", SEVERITY_RAMP["House"], "House / store")])
+    return plot.svg("Damage by calendar month")

@@ -500,6 +500,35 @@ drawn into the brief as inline SVG in the dashboard's colours -- no chart
 library, no script -- with the seasonal grid as a shaded table, so the brief
 still opens offline and prints as it looks on screen.
 
+It reads in the order a range officer works (`core/brief_insights.py` builds
+the words):
+
+* **Key findings**: a handful of numbered sentences, each with its number --
+  casualties and how recent, the trend and the beats behind it, what is lost
+  and when it peaks, bulls against breeding herds, how concentrated conflict
+  is, new hotspots, and the busiest day refuge.
+* **Action plan**: one row per action, naming every beat or village it applies
+  to, why (the evidence) and when (now, at night 18:00-06:00, before the peak
+  months). Rapid response for recent casualties, alerts beside new hotspots,
+  night watch for raiding bulls, passage for breeding herds, re-survey of
+  escalating beats, dusk watch at the busiest refuges and day searches for the
+  unreported ones, early warning for the most exposed villages, crop and grain
+  protection, a check on past-fatality beats, and confirmation where the
+  ranking rests on thin data. It replaces the per-beat recommendation that used
+  to repeat down every table; the beat tables now carry a short driver instead
+  ("Bulls 82%, crops, up, 8 vs 3").
+* **Where**, **When** and **The Elephants**: the priority beats, maps and
+  hotspot tables; the trend charts with a 24-hour clock of direct sightings and
+  damage by calendar month; and what the register says about the animals --
+  group types and how often each raided, group sizes, how many beats elephants
+  used each month (and which for the first time), and reports by division and
+  month. Then day refuges and early-warning coverage, and a short appendix.
+
+Signs and damage are written up the morning after, so the clock and group
+sizes read direct sightings only. Bull and herd shares are over conflict whose
+group was recorded as bulls or a breeding herd: counted against all conflict, a
+beat of unsexed raids read as herd-driven and was told to give the herd passage.
+
 **Every chart and map downloads.** A Download menu under each figure, in both
 views, gives SVG (vector), PNG at four times its drawn size, and PDF (vector).
 Each is exported from an SVG twin of the figure -- the brief's and the damage
@@ -714,6 +743,7 @@ core/refuge_dashboard.py The vendored atlas plate, filled with a run
 core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief
+core/brief_insights.py Findings, action plan and ecology for the brief
 core/intelligence.py Beat priorities, escalation, timing, the brief
 core/hotspots.py     DBSCAN clustering and village risk
 core/spacetime.py    Space-time cube and emerging hotspot labels
