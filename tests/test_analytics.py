@@ -116,3 +116,29 @@ def test_monthly_trend_and_hourly_profile_run_without_error():
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_night_sightings_are_measured_on_direct_sightings_only():
+    """Signs and damage are night by rule; counting them reports the rule."""
+    from core.analytics import compute_is_night, compute_kpis
+
+    df = pd.DataFrame({
+        "Date": pd.Timestamp("2026-01-01"), "Hour": [20, 21, 9, 8, 8],
+        "Crop Damage": [0, 0, 0, 1, 1], "Sighting Type": ["direct"] * 4 + ["dung"],
+    })
+    df["Is_Night"] = compute_is_night(df)
+    kpis = compute_kpis(df)
+    assert kpis["night_pct"] == 80.0          # damage and dung counted as night
+    assert kpis["sightings_timed"] == 3       # the three direct, undamaged sightings
+    assert round(kpis["sighting_night_pct"]) == 67
+
+
+def test_the_year_ago_window_appears_once_the_data_reaches_back():
+    from core.analytics import window_comparison
+
+    dates = pd.date_range("2025-01-01", "2026-03-31", freq="7D")
+    df = pd.DataFrame({"Date": dates, "Crop Damage": 1})
+    change = window_comparison(df, 60)
+    assert change["conflicts_year"] > 0
+    short = window_comparison(df[df["Date"] >= "2025-12-01"], 60)
+    assert pd.isna(short["conflicts_year"])
