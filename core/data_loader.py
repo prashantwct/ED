@@ -10,6 +10,7 @@ reinterpreting a row is the worst outcome available.
 from __future__ import annotations
 
 import logging
+import re
 from typing import BinaryIO, List, Optional, Tuple, Union
 
 import pandas as pd
@@ -45,6 +46,11 @@ DEATH_COUNT_COLUMNS = ["Male Death Count", "Female Death Count", "Children Death
 
 # Text columns that get normalised (title-cased, trimmed) if present.
 TEXT_COLUMNS = ["Division", "Range", "Beat"]
+
+# Quote marks around a letter or suffix in a place name: "Goraiya 'A'" and
+# "Goraiya A" are one beat, entered two ways. Straight and curly quotes
+# and backticks alike.
+_NAME_QUOTES = re.compile("[\"'`\u2018\u2019\u201c\u201d]")
 
 # Formats that are indistinguishable on a given file whenever every day
 # component happens to be <= 12. If both parse the whole column we have
@@ -103,6 +109,20 @@ def load_and_validate_csv(
     df = df.copy()
     original_rows = len(df)
 
+    # --- Duplicates ---------------------------------------------------------
+    # One report, twice: two overlapping exports combined, or a listing
+    # read page by page while new reports pushed rows across a page
+    # boundary. Counted twice it is two raids, so only the first is kept.
+    if "ID" in df.columns:
+        ids = df["ID"].astype(str).str.strip()
+        repeated = ids.ne("") & ids.str.lower().ne("nan") & ids.duplicated()
+        if repeated.any():
+            warnings.append(
+                f"Dropped {int(repeated.sum())} duplicate row(s) repeating a report ID "
+                f"already in the file{_id_suffix(df[repeated])}."
+            )
+            df = df[~repeated]
+
     # --- Date -----------------------------------------------------------
     df["Date"], date_warnings = _parse_dates(df["Date"])
     warnings.extend(date_warnings)
@@ -150,15 +170,29 @@ def load_and_validate_csv(
     # float to str -- one blank beat takes the app down.
     for col in TEXT_COLUMNS:
         blank = df[col].isna()
-        cleaned = (
+        plain = (
             df[col]
             .astype("object")
             .where(~blank, "Unknown")
             .astype(str)
             .str.strip()
             .str.title()
+        )
+        # Quote marks and doubled spaces split one place into two names,
+        # and every count for it in half.
+        cleaned = (
+            plain.str.replace(_NAME_QUOTES, "", regex=True)
+            .str.replace(r"\s+", " ", regex=True)
+            .str.strip()
             .replace({"": "Unknown", "Nan": "Unknown", "None": "Unknown", "<Na>": "Unknown"})
         )
+        merged = plain.nunique() - cleaned.nunique()
+        if merged > 0:
+            variants = plain[plain != cleaned].drop_duplicates().head(3).tolist()
+            warnings.append(
+                f"Merged {merged} spelling variant(s) of '{col}' names that differed only "
+                f"in quote marks or spacing (e.g. {', '.join(repr(v) for v in variants)})."
+            )
         df[col] = cleaned
         if blank.any():
             warnings.append(

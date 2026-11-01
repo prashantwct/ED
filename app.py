@@ -83,7 +83,7 @@ from core.analytics import (
     severity_distribution,
     window_comparison,
 )
-from core import boundaries, charts, landing, map_select, report_charts, spacetime
+from core import boundaries, brief_insights, charts, landing, map_select, report_charts, spacetime
 from core.exports import download_menu
 from core.config import (
     DEFAULT_CUBE_CELL_KM,
@@ -710,7 +710,12 @@ period_end = pd.Timestamp(date_range[1]) if len(date_range) == 2 else df["Date"]
 
 monthly = monthly_conflict_breakdown(filtered)
 change = window_comparison(filtered, recent_days, as_of=period_end)
-window_note = f"vs prior {recent_days}d"
+# Against the same weeks last year once the data reaches back that far:
+# raiding follows the harvest, so the window before mostly measures the
+# season.
+_base = "year" if pd.notna(change.get("conflicts_year")) else "prior"
+window_note = (f"vs same {recent_days}d last year" if _base == "year"
+               else f"vs prior {recent_days}d")
 
 
 def _spark(column: str):
@@ -726,7 +731,7 @@ c1.metric("Reports", f"{kpis['entries']:,}", chart_data=_spark("Sightings"),
 c2.metric(
     "Conflict events",
     f"{kpis['conflicts']:,}",
-    delta=_change(change["conflicts_recent"], change["conflicts_prior"]),
+    delta=_change(change["conflicts_recent"], change[f"conflicts_{_base}"]),
     delta_color="inverse",
     delta_description=window_note,
     chart_data=_spark("Conflict Events"),
@@ -736,7 +741,7 @@ c2.metric(
 c3.metric(
     "Conflict rate",
     "N/A" if pd.isna(kpis["conflict_rate"]) else f"{kpis['conflict_rate']:.1f}%",
-    delta=_change(change["rate_recent"], change["rate_prior"], unit="pt"),
+    delta=_change(change["rate_recent"], change[f"rate_{_base}"], unit="pt"),
     delta_color="inverse",
     delta_description=window_note,
     chart_data=_spark("Conflict Rate %") if len(monthly) >= 3
@@ -746,7 +751,7 @@ c3.metric(
 c4.metric(
     "Killed / injured",
     f"{int(kpis['human_deaths'])} / {int(kpis['human_injuries'])}",
-    delta=_change(change["casualties_recent"], change["casualties_prior"]),
+    delta=_change(change["casualties_recent"], change[f"casualties_{_base}"]),
     delta_color="inverse",
     delta_description=window_note,
     chart_data=(monthly["Human Deaths"] + monthly["People Injured"]).tolist()
@@ -754,12 +759,17 @@ c4.metric(
     chart_type="bar",
     border=True,
 )
+# Measured on direct sightings with an hour. Signs and damage are night
+# by rule (they are written up the morning after), so counting them would
+# report the rule back as a finding.
 c5.metric(
-    "Night share",
-    "N/A" if pd.isna(kpis["night_pct"]) else f"{kpis['night_pct']:.1f}%",
-    delta=f"of {kpis['night_known']:,} timed reports" if kpis["night_known"] else None,
+    "Seen at night",
+    "N/A" if pd.isna(kpis["sighting_night_pct"]) else f"{kpis['sighting_night_pct']:.0f}%",
+    delta=(f"of {kpis['sightings_timed']:,} timed sightings"
+           if kpis["sightings_timed"] else None),
     delta_color="off",
     border=True,
+    help="Direct sightings 18:00-06:00; signs and damage are left out, their hour is the write-up.",
 )
 
 if filtered.empty:
@@ -922,16 +932,16 @@ with tab_trend:
 
     esc_col, rate_div_col = st.columns(2)
     with esc_col:
+        basis = brief_insights.trend_basis_phrase(brief, recent_days)
         if escalating.empty:
-            st.markdown(f"**Escalating beats** -- last {recent_days} days vs the "
-                        f"{recent_days} before")
-            st.info("No beat shows a materially higher conflict count than the prior window.")
+            st.markdown(f"**Escalating beats** -- {basis}")
+            st.info("No beat rose clearly faster than its baseline.")
         else:
             _figure("Escalating beats", charts.escalation_dumbbell(escalating),
                     "Escalating beats", lambda e=escalating: report_charts.escalation_svg(e),
-                    subtitle=f"last {recent_days} days vs the {recent_days} before",
-                    note=f"Grey is the earlier window, red the recent one; "
-                         f"{len(escalating)} beat(s) escalating.")
+                    subtitle=basis,
+                    note=f"Grey is the baseline, red the recent window; "
+                         f"{brief_insights.plural(len(escalating), 'beat')} escalating.")
     with rate_div_col:
         rates = division_conflict_rate(filtered)
         if rates.empty:

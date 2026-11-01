@@ -365,3 +365,9 @@ def test_boundaries_are_outlines_not_filled_shapes():
         assert spec["filled"] is False, spec["id"]
         assert spec["stroked"] is True, spec["id"]
         assert spec["lineWidthUnits"] == "pixels", spec["id"]
+
+
+def test_normalisation_drops_quote_marks_as_the_loader_does():
+    """The loader tidies "Goraiya 'A'" to "Goraiya A"; the polygon must still match."""
+    assert boundaries.normalise("Goraiya 'A'") == boundaries.normalise("Goraiya A")
+    assert boundaries.normalise("Kallwah 'N' Core") == "kallwah n"

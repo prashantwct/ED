@@ -506,3 +506,62 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# Escalation against the season
+# ---------------------------------------------------------------------------
+def _season(beats, prior_per_beat, recent_per_beat, days=40):
+    """Several beats over two windows, conflict per beat per window."""
+    rows = []
+    for beat, prior_n, recent_n in zip(beats, prior_per_beat, recent_per_beat):
+        for i in range(days):
+            rows += _rows(beat, 1, conflict_n=int(i < prior_n), start=START + pd.Timedelta(days=i))
+        for i in range(days):
+            rows += _rows(beat, 1, conflict_n=int(i < recent_n),
+                          start=START + pd.Timedelta(days=days + i))
+    return _prepare(rows)
+
+
+def test_a_rise_every_beat_shares_is_the_season_not_escalation():
+    """At harvest every beat with crops triples. None of them is escalating."""
+    beats = [f"B{i}" for i in range(6)]
+    table = beat_intelligence(_season(beats, [4] * 6, [12] * 6), recent_days=40)
+    assert (table["Trend"] != "Escalating").all()
+    assert table["Trend Basis"].iloc[0] == "the window before, against the landscape's change"
+
+
+def test_a_beat_rising_well_beyond_the_season_still_escalates():
+    beats = [f"B{i}" for i in range(6)]
+    table = beat_intelligence(_season(beats, [4] * 6, [12] * 5 + [36]), recent_days=40)
+    table = table.set_index("Beat")
+    assert table.loc["B5", "Trend"] == "Escalating"
+    assert (table.drop(index="B5")["Trend"] != "Escalating").all()
+
+
+def test_with_a_year_of_history_the_same_window_last_year_is_the_baseline():
+    """Last year's harvest against this year's: no seasonal confound at all."""
+    rows = []
+    for year_start, n in ((pd.Timestamp("2025-01-01"), 10), (pd.Timestamp("2026-01-01"), 25)):
+        for i in range(40):
+            rows += _rows("Esc", 1, conflict_n=int(i < n), start=year_start + pd.Timedelta(days=i))
+    # A quiet stretch in between, so the window before the recent one is low too.
+    for i in range(0, 300, 10):
+        rows += _rows("Esc", 1, start=pd.Timestamp("2025-03-01") + pd.Timedelta(days=i))
+    table = beat_intelligence(_prepare(rows), recent_days=30).set_index("Beat")
+    assert table.loc["Esc", "Trend Basis"] == "the same window a year earlier"
+    assert table.loc["Esc", "Trend"] == "Escalating"
+
+
+def test_the_trend_window_ends_at_the_selected_period():
+    """A period ending after the last report still ends the recent window
+    there, as the casualty window does."""
+    rows = []
+    for i in range(80):
+        rows += _rows("Late", 1, conflict_n=int(i >= 40), start=START + pd.Timedelta(days=i))
+    df = _prepare(rows)
+    at_data = beat_intelligence(df, recent_days=40).set_index("Beat")
+    later = beat_intelligence(df, recent_days=40, as_of=START + pd.Timedelta(days=100))
+    later = later.set_index("Beat")
+    assert at_data.loc["Late", "Recent Conflicts"] == 40
+    assert later.loc["Late", "Recent Conflicts"] < 40

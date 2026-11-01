@@ -272,7 +272,10 @@ def compute_kpis(df: pd.DataFrame) -> Dict[str, float]:
     """Headline KPIs.
 
     ``night_known`` is the row count behind ``night_pct``: 40% over 12
-    known rows and over 1,200 are very different claims.
+    known rows and over 1,200 are very different claims. ``night_pct``
+    counts every sign and damage report as night by rule, whatever its
+    hour; ``sighting_night_pct`` is the measured figure, over direct
+    sightings with a known hour (``sightings_timed`` of them).
     """
     if df.empty:
         return {
@@ -285,6 +288,8 @@ def compute_kpis(df: pd.DataFrame) -> Dict[str, float]:
             "severity": 0.0,
             "night_pct": float("nan"),
             "night_known": 0,
+            "sighting_night_pct": float("nan"),
+            "sightings_timed": 0,
         }
 
     deaths = human_deaths(df)
@@ -298,6 +303,14 @@ def compute_kpis(df: pd.DataFrame) -> Dict[str, float]:
     else:
         night_pct, night_known = float("nan"), 0
 
+    sighting_night_pct, sightings_timed = float("nan"), 0
+    if "Hour" in df.columns:
+        hours = pd.to_numeric(df.loc[~stale_mask(df), "Hour"], errors="coerce").dropna()
+        if len(hours):
+            sightings_timed = int(len(hours))
+            sighting_night_pct = float(
+                ((hours >= NIGHT_HOUR_START) | (hours < NIGHT_HOUR_END)).mean() * 100)
+
     return {
         "entries": int(len(df)),
         "conflicts": conflicts,
@@ -308,6 +321,8 @@ def compute_kpis(df: pd.DataFrame) -> Dict[str, float]:
         "severity": float(_numeric(df, "Severity Score").sum()),
         "night_pct": night_pct,
         "night_known": night_known,
+        "sighting_night_pct": sighting_night_pct,
+        "sightings_timed": sightings_timed,
     }
 
 
@@ -572,9 +587,14 @@ def window_comparison(
     change matches the period the reader selected. Returns NaN prior
     figures when the data does not reach back a full prior window,
     rather than comparing against a half-empty one.
+
+    Also ``*_year``: the same ``days`` a year earlier, NaN until the data
+    reaches back that far. For an animal whose raiding follows the
+    harvest that is the fair comparison; the window before mostly
+    measures the season.
     """
     keys = ["conflicts", "casualties", "rate"]
-    blank = {f"{k}_{w}": float("nan") for k in keys for w in ("recent", "prior")}
+    blank = {f"{k}_{w}": float("nan") for k in keys for w in ("recent", "prior", "year")}
     if df.empty or "Date" not in df.columns or df["Date"].isna().all():
         return blank
 
@@ -599,4 +619,10 @@ def window_comparison(
     else:
         prior = figures(df[(df["Date"] >= prior_start) & (df["Date"] < recent_start)])
         out.update({f"{k}_prior": v for k, v in prior.items()})
+    a_year = pd.Timedelta(days=365)
+    if df["Date"].min() > recent_start - a_year:
+        out.update({f"{k}_year": float("nan") for k in keys})
+    else:
+        year = figures(df[(df["Date"] >= recent_start - a_year) & (df["Date"] < end - a_year)])
+        out.update({f"{k}_year": v for k, v in year.items()})
     return out

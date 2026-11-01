@@ -33,6 +33,11 @@ from core.analytics import (
     indirect_mask,
     property_damage_mask,
 )
+from core.intelligence import (
+    TREND_BASIS_LANDSCAPE,
+    TREND_BASIS_PREVIOUS,
+    TREND_BASIS_YEAR,
+)
 from core.config import (
     BULL_SHARE_FOR_ALERT,
     MIN_CONFLICTS_FOR_COMPOSITION,
@@ -146,30 +151,59 @@ def _casualty_finding(df, brief, change, recent_days) -> Optional[str]:
 
 
 def _trend_finding(df, brief, change, recent_days) -> Optional[str]:
-    recent, prior = change.get("conflicts_recent"), change.get("conflicts_prior")
-    if recent is None or prior is None or pd.isna(recent) or pd.isna(prior):
+    """The change in conflict, against last year when the data allows.
+
+    Against the window before, a rise is mostly the season -- August to
+    October against May to July rises everywhere crops are grown -- so
+    the sentence says which beats rose faster than the landscape did, or
+    that none did.
+    """
+    recent = change.get("conflicts_recent")
+    if recent is None or pd.isna(recent):
         return None
-    recent, prior = int(recent), int(prior)
-    if recent + prior == 0:
-        return None
-    if prior == 0:
-        line = (f"{plural(recent, 'conflict event')} in the last {recent_days} days, "
-                f"none in the {recent_days} before")
+    recent = int(recent)
+    year, prior = change.get("conflicts_year"), change.get("conflicts_prior")
+    if year is not None and not pd.isna(year):
+        base, against = int(year), f"the same {recent_days} days last year"
+    elif prior is not None and not pd.isna(prior):
+        base, against = int(prior), f"the previous {recent_days} days"
     else:
-        change_pct = (recent - prior) / prior
+        return None
+    if recent + base == 0:
+        return None
+    if base == 0:
+        line = f"{plural(recent, 'conflict event')} in the last {recent_days} days, none in {against}"
+    else:
+        change_pct = (recent - base) / base
         if abs(change_pct) < 0.1:
-            line = (f"Conflict is level with the previous {recent_days} days "
-                    f"({recent:,} events against {prior:,})")
+            line = f"Conflict is level with {against} ({recent:,} events against {base:,})"
         else:
-            line = (f"Conflict is {'up' if recent > prior else 'down'} "
-                    f"{abs(change_pct):.0%} on the previous {recent_days} days "
-                    f"({recent:,} events against {prior:,})")
+            line = (f"Conflict is {'up' if recent > base else 'down'} {abs(change_pct):.0%} on "
+                    f"{against} ({recent:,} events against {base:,})")
+
     beats = brief["beats"]
-    if recent > prior and not beats.empty and "Recent Conflicts" in beats:
+    if beats.empty or "Recent Conflicts" not in beats:
+        return line + "."
+    basis = brief["coverage"].get("trend_basis", TREND_BASIS_PREVIOUS)
+    rising = beats[beats["Trend"] == "Escalating"]
+    rising = rising.assign(_rise=rising["Recent Conflicts"] - rising["Prior Conflicts"]) \
+        .sort_values("_rise", ascending=False)
+    if basis == TREND_BASIS_LANDSCAPE:
+        if len(rising):
+            line += (f"; allowing for the season, {plural(len(rising), 'beat')} rose faster "
+                     f"than the landscape as a whole: {names(rising['Beat'], limit=4)}")
+        else:
+            line += ("; no beat rose faster than the landscape as a whole, which points to "
+                     "the season rather than a change on the ground")
+    elif basis == TREND_BASIS_YEAR:
+        if len(rising):
+            line += f", most of it in {names(rising['Beat'], limit=4)}"
+    elif recent > base:
         rise = (beats["Recent Conflicts"] - beats["Prior Conflicts"]).sort_values(ascending=False)
         drivers = beats.loc[rise[rise > 0].index[:3], "Beat"]
         if len(drivers):
-            line += f", most of the rise in {names(drivers)}"
+            line += (f", most of the rise in {names(drivers)} (too few beats to separate "
+                     "the season from a real change)")
     return line + "."
 
 
@@ -262,6 +296,17 @@ def _refuge_finding(refuges: Optional[Dict[str, object]]) -> Optional[str]:
     return line + "."
 
 
+def trend_basis_phrase(brief: Dict[str, object], recent_days: int) -> str:
+    """``last 90 days vs the same 90 days a year earlier``, and so on."""
+    basis = brief["coverage"].get("trend_basis", TREND_BASIS_PREVIOUS)
+    if basis == TREND_BASIS_YEAR:
+        return f"last {recent_days} days vs the same {recent_days} days a year earlier"
+    if basis == TREND_BASIS_LANDSCAPE:
+        return (f"last {recent_days} days vs the {recent_days} before, rising faster than "
+                "the landscape")
+    return f"last {recent_days} days vs the {recent_days} before"
+
+
 # ---------------------------------------------------------------------------
 # The action plan
 # ---------------------------------------------------------------------------
@@ -342,7 +387,7 @@ def action_plan(
         plan.append(Action(
             "survey", "Re-survey escalating beats and establish what changed",
             names(rising["Beat"]),
-            f"Conflict events, last {recent_days} days vs the {recent_days} before: {counts}",
+            f"Conflict events, {trend_basis_phrase(brief, recent_days)}: {counts}",
             "This month"))
 
     plan.extend(_refuge_actions(refuges))

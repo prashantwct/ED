@@ -32,7 +32,12 @@ mandatory: `Time` or `Hour`, `Total Count`, `Crop Damage`, `Grain Damage`,
 
 Dates are parsed by trying each candidate format against the whole column,
 day-first first. Genuinely ambiguous files (every day ≤ 12) are read day-first
-and flagged. Non-UTF-8 files fall back to cp1252 then Latin-1.
+and flagged. Non-UTF-8 files fall back to cp1252 then Latin-1. A report
+repeated under one `ID` (two overlapping exports, or a listing read while new
+reports shifted its pages) is kept once, with a warning naming the IDs. Division,
+range and beat names lose quote marks and doubled spaces, so "Goraiya 'A'" and
+"Goraiya A" are one beat rather than two halves of one, and the warning says
+which names were merged; boundary polygons are matched the same way.
 
 **Damage and compensation surveys (a separate view).** The Epicollect5
 [herd-crop-damage](https://five.epicollect.net/project/herd-crop-damage) and
@@ -368,6 +373,19 @@ sparklines and their change over the escalation window, where a rise reads red.
 Escalating beats are drawn as prior-to-recent dumbbells rather than a "7 vs 2"
 column, and division conflict rates as ranked bars against the landscape rate.
 
+**Escalation allows for the season.** Raiding follows the harvest, so the
+recent window against the one before mostly measures the season: in October,
+August to October against May to July rises in every beat with crops, and on
+that basis every one read as escalating, which also lifted it a tier. A beat's
+recent conflict is compared instead with the same window a year earlier once
+the register reaches back that far; until then with the window before, but a
+beat escalates only if it rose at least half as fast again as the landscape as
+a whole did (with five or more beats in view to make a landscape; below that,
+the plain comparison stands, and the brief says it cannot separate the season).
+The headline change uses last year too when it can. The panel, the brief and
+the action plan name the baseline used. The trend is anchored at the end of the
+selected period, as the casualty window is.
+
 **Beat priorities.** Every beat gets a decision tier — Critical, High, Watch,
 Routine — with the evidence behind it: reports, conflict events, adjusted
 conflict rate, casualties recent and total, night share, village proximity,
@@ -376,13 +394,15 @@ which animals are causing it, trend, and a recommended action.
 **Timing.** Crop, grain and house damage is found and written down the
 morning after the raid, so a damage report's hour is when it was recorded.
 Every damage report counts as night conflict, in the night shares and in
-each beat's Night Conflict %, whatever hour it was entered at. The
+each beat's Night Conflict %, whatever hour it was entered at. The headline
+card is therefore *Seen at night*: the share of direct sightings with a known
+hour that fall between 18:00 and 06:00, a measurement rather than the rule
+read back. The
 hour-of-day chart and the "when to staff" peak window are built from
 injuries and deaths only, which are reported as they happen; the timing
 panel and brief state how many damage events were counted as night raids.
 
-**Which animals.** Damage rate split by the kind of group seen. Only bulls
-carry tusks in this species, so the male count is the tusker count. In the
+**Which animals.** Damage rate split by the kind of group seen. In the
 export this was built against, a lone bull carried a 28% damage rate and a
 small all-male party 36%, against 3% for a breeding herd with calves. Each
 beat carries the share of its conflict driven by bull-type groups, because the

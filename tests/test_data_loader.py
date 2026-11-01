@@ -172,3 +172,24 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_a_report_repeated_under_one_id_is_kept_once():
+    """Two overlapping exports, or a listing read while new reports pushed
+    rows across page boundaries: one raid counted twice."""
+    text = ("ID,Date,Latitude,Longitude,Division,Range,Beat\n"
+            "7,14/10/2025,23.1,81.1,D,R,B\n7,14/10/2025,23.1,81.1,D,R,B\n"
+            "8,15/10/2025,23.1,81.1,D,R,B\n")
+    df, warnings = load_and_validate_csv(io.StringIO(text))
+    assert list(df["ID"]) == [7, 8]
+    assert any("duplicate" in w and "ID 7" in w for w in warnings)
+
+
+def test_beat_names_differing_only_in_quotes_or_spaces_are_one_beat():
+    text = ("Date,Latitude,Longitude,Division,Range,Beat\n"
+            "14/10/2025,23.1,81.1,Bandhavgarh Tr,Dhamokhar,Goraiya 'A'\n"
+            "15/10/2025,23.1,81.1,Bandhavgarh Tr,Dhamokhar,Goraiya A\n"
+            "16/10/2025,23.1,81.1,Bandhavgarh Tr,Dhamokhar,Goraiya  ‘A’\n")
+    df, warnings = load_and_validate_csv(io.StringIO(text))
+    assert set(df["Beat"]) == {"Goraiya A"}
+    assert any("spelling variant" in w for w in warnings)

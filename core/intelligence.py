@@ -79,6 +79,13 @@ TREND_STABLE = "Stable"
 TREND_EASING = "Easing"
 TREND_UNKNOWN = "Insufficient data"
 
+# What a beat's recent conflict was compared with (see _beat_trends).
+TREND_BASIS_YEAR = "the same window a year earlier"
+TREND_BASIS_LANDSCAPE = "the window before, against the landscape's change"
+TREND_BASIS_PREVIOUS = "the window before"
+# Beats with conflict needed before the landscape's change is a baseline.
+MIN_BEATS_FOR_LANDSCAPE = 5
+
 # --- Confidence labels -----------------------------------------------------
 CONFIDENCE_HIGH = "High"
 CONFIDENCE_MEDIUM = "Medium"
@@ -297,10 +304,11 @@ def beat_intelligence(
         working, key_cols, "Near Village", conflict_only=False
     )
 
-    trend = _beat_trends(working, key_cols, recent_days)
+    trend = _beat_trends(working, key_cols, recent_days, as_of=as_of)
     table = table.merge(trend, on=key_cols, how="left")
     table["Trend"] = table["Trend"].fillna(TREND_UNKNOWN)
     table["Recent vs Prior"] = table["Recent vs Prior"].fillna("n/a")
+    table["Trend Basis"] = table["Trend Basis"].fillna(TREND_BASIS_PREVIOUS)
     for col in ("Recent Conflicts", "Prior Conflicts"):
         table[col] = table[col].fillna(0).astype(int)
 
@@ -361,6 +369,7 @@ def _beat_columns() -> List[str]:
         "Recent vs Prior",
         "Recent Conflicts",
         "Prior Conflicts",
+        "Trend Basis",
         "Recommended Action",
     ]
 
@@ -436,22 +445,39 @@ def _window_casualties(
 
 
 def _beat_trends(
-    df: pd.DataFrame, key_cols: List[str], recent_days: int
+    df: pd.DataFrame, key_cols: List[str], recent_days: int,
+    as_of: Optional[pd.Timestamp] = None,
 ) -> pd.DataFrame:
-    """Compare conflict events in the recent window against the prior one.
+    """Compare each beat's conflict events in the recent window against a baseline.
 
-    Equal-length windows, so the comparison is like-for-like. Short
-    datasets shrink both to half the span; below ``MIN_WINDOW_DAYS`` no
-    trend is claimed.
+    Raiding follows the harvest, so the window before is no baseline on
+    its own: in October, August to October against May to July rises
+    in every beat with crops, and each one read as escalating. The
+    baseline is therefore, in order of preference:
+
+    * the same window a year earlier, when the data reaches back that far
+      -- the like-for-like comparison for a seasonal animal;
+    * the window before, judged against the landscape's own change over
+      the same two windows: a beat escalates only if it rose clearly
+      faster than everywhere else did (needs ``MIN_BEATS_FOR_LANDSCAPE``
+      beats with conflict, or there is no landscape to speak of);
+    * the window before, as it stands, with too few beats for either.
+
+    ``Trend Basis`` names which one was used. Short datasets shrink the
+    windows to half the span; below ``MIN_WINDOW_DAYS`` no trend is
+    claimed. Anchored to ``as_of`` (the end of the selected period) when
+    given, as the casualty window is.
     """
-    empty = pd.DataFrame(
-        columns=key_cols
-        + ["Trend", "Recent vs Prior", "Recent Conflicts", "Prior Conflicts"]
-    )
+    columns = ["Trend", "Recent vs Prior", "Recent Conflicts", "Prior Conflicts",
+               "Trend Basis"]
+    empty = pd.DataFrame(columns=key_cols + columns)
     if "Date" not in df.columns or df["Date"].isna().all():
         return empty
 
     end = df["Date"].max()
+    if as_of is not None and not pd.isna(as_of):
+        end = max(end, pd.Timestamp(as_of).normalize() + pd.Timedelta(days=1)
+                  - pd.Timedelta(seconds=1))
     start = df["Date"].min()
     span_days = int((end - start).days) + 1
     window = min(recent_days, span_days // 2)
@@ -459,43 +485,46 @@ def _beat_trends(
         return empty
 
     recent_start = end - pd.Timedelta(days=window)
-    prior_start = recent_start - pd.Timedelta(days=window)
+    a_year = pd.Timedelta(days=365)
+    if start <= recent_start - a_year:
+        base_start, base_end = recent_start - a_year, end - a_year
+        basis = TREND_BASIS_YEAR
+    else:
+        base_start, base_end = recent_start - pd.Timedelta(days=window), recent_start
+        basis = TREND_BASIS_PREVIOUS
 
-    recent = df[(df["Date"] > recent_start) & (df["Date"] <= end)]
-    prior = df[(df["Date"] > prior_start) & (df["Date"] <= recent_start)]
-
-    recent_counts = recent[recent["_conflict"]].groupby(
-        key_cols, observed=True, dropna=False
-    ).size()
-    prior_counts = prior[prior["_conflict"]].groupby(
-        key_cols, observed=True, dropna=False
-    ).size()
+    conflicts = df[df["_conflict"]]
+    recent = conflicts[(conflicts["Date"] > recent_start) & (conflicts["Date"] <= end)]
+    base = conflicts[(conflicts["Date"] > base_start) & (conflicts["Date"] <= base_end)]
 
     index = df.groupby(key_cols, observed=True, dropna=False).size().index
-    recent_counts = recent_counts.reindex(index, fill_value=0)
-    prior_counts = prior_counts.reindex(index, fill_value=0)
-
     out = pd.DataFrame(index=index)
-    out["_recent"] = recent_counts
-    out["_prior"] = prior_counts
+    out["_recent"] = recent.groupby(key_cols, observed=True, dropna=False).size() \
+        .reindex(index, fill_value=0)
+    out["_prior"] = base.groupby(key_cols, observed=True, dropna=False).size() \
+        .reindex(index, fill_value=0)
 
     total = out["_recent"] + out["_prior"]
     # Continuity correction so 3-vs-0 is expressible without dividing by zero.
     ratio = (out["_recent"] + 0.5) / (out["_prior"] + 0.5)
+    rising, falling = ratio >= ESCALATION_RATIO, ratio <= EASING_RATIO
 
-    trend = np.where(
-        total < MIN_EVENTS_FOR_TREND,
-        TREND_UNKNOWN,
-        np.where(
-            ratio >= ESCALATION_RATIO,
-            TREND_ESCALATING,
-            np.where(ratio <= EASING_RATIO, TREND_EASING, TREND_STABLE),
-        ),
+    active = int(((out["_recent"] + out["_prior"]) > 0).sum())
+    if basis == TREND_BASIS_PREVIOUS and active >= MIN_BEATS_FOR_LANDSCAPE:
+        landscape = (out["_recent"].sum() + 0.5) / (out["_prior"].sum() + 0.5)
+        relative = ratio / landscape
+        rising &= relative >= ESCALATION_RATIO
+        falling &= relative <= EASING_RATIO
+        basis = TREND_BASIS_LANDSCAPE
+
+    out["Trend"] = np.where(
+        total < MIN_EVENTS_FOR_TREND, TREND_UNKNOWN,
+        np.where(rising, TREND_ESCALATING, np.where(falling, TREND_EASING, TREND_STABLE)),
     )
-    out["Trend"] = trend
     out["Recent vs Prior"] = [
         f"{int(r)} vs {int(p)}" for r, p in zip(out["_recent"], out["_prior"])
     ]
+    out["Trend Basis"] = basis
 
     # Kept as numbers as well as the label, so the dashboard can draw
     # the change rather than make the reader parse "7 vs 2".
@@ -964,6 +993,8 @@ def management_brief(
         "divisions": int(df["Division"].nunique()) if "Division" in df.columns else 0,
         "recent_days": recent_days,
         "critical_window_days": critical_window_days,
+        "trend_basis": (str(beats["Trend Basis"].iloc[0]) if len(beats)
+                        and "Trend Basis" in beats else TREND_BASIS_PREVIOUS),
     }
 
     return {
