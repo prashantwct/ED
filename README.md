@@ -783,6 +783,7 @@ tools/export_source.py  The Export button's download, whatever format it is
 tools/               Data preparation and the scraper, not imported by the app
 tests/replica.py     A local stand-in for the Forest Alerts admin site
 tests/               Unit tests, run with `pytest -q`
+docs/UX_STRATEGY.md  UI/UX diagnosis, benchmarks and the phased redesign plan
 ```
 
 All tunables live in `core/config.py`. They encode domain judgement, not fact,
