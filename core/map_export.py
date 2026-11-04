@@ -620,4 +620,11 @@ def filter_summary(filters: Optional[Dict[str, object]]) -> str:
     if severity and severity != "All reports":
         parts.append(f"Filter: {escape(str(severity))}")
 
+    # Settings changed from the standard ones (core.analysis_settings), so a
+    # reader comparing two briefs knows why their tiers or hotspots differ.
+    custom = filters.get("analysis") or []
+    if custom:
+        parts = parts or ["All divisions"]
+        parts.append("Custom analysis: " + "; ".join(escape(str(c)) for c in custom))
+
     return " &nbsp;|&nbsp; ".join(parts) if parts else "All divisions"

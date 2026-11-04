@@ -83,7 +83,10 @@ from core.analytics import (
     severity_distribution,
     window_comparison,
 )
-from core import boundaries, brief_insights, charts, landing, map_select, report_charts, spacetime
+from core import (
+    analysis_settings, boundaries, brief_insights, charts, landing, map_select,
+    report_charts, spacetime,
+)
 from core.exports import download_menu
 from core.config import (
     DEFAULT_CUBE_CELL_KM,
@@ -116,6 +119,7 @@ from core.map_engine import (
     BASEMAP_STYLES,
     DEFAULT_BASEMAP,
     MAP_MODES,
+    basemap_warning,
     render_map,
     render_pattern_map,
     render_village_map,
@@ -359,6 +363,7 @@ if view == REFUGE_VIEW:
     refuge_basemap = st.sidebar.selectbox(
         "Basemap", list(BASEMAP_STYLES),
         index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP), key="refuge_basemap",
+        disabled=basemap_warning() is not None, help=basemap_warning(),
     )
     refuge_view.render(refuge_register, refuge_villages, refuge_basemap)
     st.stop()
@@ -375,6 +380,7 @@ if view == DAMAGE_VIEW:
     damage_basemap = st.sidebar.selectbox(
         "Basemap", list(BASEMAP_STYLES),
         index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP), key="damage_basemap",
+        disabled=basemap_warning() is not None, help=basemap_warning(),
     )
     damage_view.render(damage_df, damage_notes, register_df, damage_basemap)
     st.stop()
@@ -413,15 +419,47 @@ def _map_focus(frame: pd.DataFrame, hotspot_table: pd.DataFrame,
 def _open_damage_view() -> None:
     st.session_state[VIEW_KEY] = DAMAGE_VIEW
 
+
+UPLOAD_KEY = "register_upload"
+
+
+def _day(stamp) -> str:
+    """A date as people write it: 1 Oct 2025."""
+    return f"{stamp.day} {stamp:%b %Y}"
+
+
 # The masthead sits above the uploader but depends on whether a file
 # arrived, which is only known after the widget is created. A container
 # reserves the slot now and is filled once that is settled.
 masthead = st.container()
-uploaded = st.file_uploader(
-    "Upload the Gajrakshak sightings export (CSV)", type="csv"
-)
 fetched = st.session_state.get(FETCHED_KEY)
-
+# Once a register is loaded the uploader moves out of the way, into a
+# "Replace" popover on the source row. A keyed uploader's identity is its
+# key, not where it is drawn, so the move keeps the file; and session
+# state already holds the new value when the run starts, so the layout can
+# be chosen before the widget exists.
+held = st.session_state.get(UPLOAD_KEY) is not None or fetched is not None
+note_slot = notes_slot = None
+if held:
+    note_col, notes_col, replace_col, *clear_col = st.columns(
+        [7, 2, 2, 1] if fetched else [8, 2, 2], vertical_alignment="center")
+    note_slot, notes_slot = note_col.empty(), notes_col.empty()
+    replacing = st.session_state.get(UPLOAD_KEY) is not None
+    with replace_col.popover("Replace file" if replacing else "Upload a file",
+                             icon=":material/upload_file:", width="stretch"):
+        uploaded = st.file_uploader(
+            "Upload a sightings export (CSV)", type="csv", key=UPLOAD_KEY,
+            help="Replaces the register on screen. Nothing is stored.",
+        )
+    if clear_col:
+        with clear_col[0]:
+            if st.button("Clear", help="Discard the fetched register."):
+                del st.session_state[FETCHED_KEY]
+                st.rerun()
+else:
+    uploaded = st.file_uploader(
+        "Upload the Gajrakshak sightings export (CSV)", type="csv", key=UPLOAD_KEY,
+    )
 with masthead:
     if uploaded or fetched:
         landing.header()
@@ -448,31 +486,36 @@ if not uploaded and not fetched:
     st.stop()
 
 # A fetch is the source until it is cleared, and an upload overrides it.
-# The escape hatch is drawn before the load so that a fetch the loader
-# rejects does not strand the session on an error with no way back.
-if fetched:
-    source, clear = st.columns([6, 1])
-    with source:
-        if uploaded:
-            landing.source_note(
-                "Uploaded file",
-                f"Using {uploaded.name}. The register fetched on "
-                f"{fetched.fetched_at} is still held -- remove the upload to "
-                f"go back to it.",
-            )
-        else:
-            # A fetch held from before this field existed has no source.
-            how = ("from the export" if getattr(fetched, "source", "") == "export"
-                   else f"over {fetched.pages} page(s) of the listing")
-            landing.source_note(
-                "Forest Alerts",
-                f"{fetched.rows:,} rows {how}, {fetched.start_date} to "
-                f"{fetched.end_date}, fetched {fetched.fetched_at}.",
-            )
-    with clear:
-        if st.button("Clear", help="Discard the fetched register."):
-            del st.session_state[FETCHED_KEY]
-            st.rerun()
+# The source row, with Replace and Clear, is drawn before the load so that
+# a file the loader rejects does not strand the session on an error with
+# no way back; the note itself is written once the load says what arrived.
+if note_slot is None:  # a source the start of the run did not know about
+    _note_col, _notes_col = st.columns([10, 2], vertical_alignment="center")
+    note_slot, notes_slot = _note_col.empty(), _notes_col.empty()
+
+
+def _source_note(rows: Optional[int] = None, span: str = "") -> None:
+    counted = f", {rows:,} reports" if rows is not None else ""
+    if uploaded:
+        held_too = (f" The register fetched {fetched.fetched_at} is still held; remove "
+                    f"this file to go back to it." if fetched else "")
+        with note_slot.container():
+            landing.source_note("Uploaded file",
+                                f"{uploaded.name}{counted}{span}.{held_too}")
+        return
+    # A fetch held from before this field existed has no source.
+    how = ("from the export" if getattr(fetched, "source", "") == "export"
+           else f"over {fetched.pages} page(s) of the listing")
+    valid = (f"; {rows:,} valid" if rows is not None and rows != fetched.rows else "")
+    with note_slot.container():
+        landing.source_note(
+            "Forest Alerts",
+            f"{fetched.rows:,} rows {how}{valid}, {fetched.start_date} to "
+            f"{fetched.end_date}, fetched {fetched.fetched_at}.",
+        )
+
+
+_source_note()
 
 if uploaded:
     source_bytes, source_name = uploaded.getvalue(), uploaded.name
@@ -485,19 +528,28 @@ except DataValidationError as exc:
     st.error(f"Could not load the file: {exc}")
     st.stop()
 st.session_state[REGISTER_KEY] = (source_bytes, source_name)
+_source_note(len(raw_df),
+             f", {_day(raw_df['Date'].min())} to {_day(raw_df['Date'].max())}")
 
-if load_warnings:
-    with st.expander(f"{len(load_warnings)} data quality note(s)", expanded=False):
-        for warning in load_warnings:
-            st.warning(warning)
-
-st.success(f"Loaded {len(raw_df):,} valid rows.")
+# Anything worth knowing about the data, gathered as it is read and shown
+# behind one button on the source row rather than as banners around it.
+data_notes: list = list(load_warnings)
 
 
 # ---------------------------------------------------------------------------
 # 2. Sidebar: centroids, filters, tuning
 # ---------------------------------------------------------------------------
-with st.sidebar.expander("Village centroids", expanded=False):
+# Sections in the order people reach for them, filled in the order the
+# code can fill them: what to look at, how the map looks, how the analysis
+# is tuned, and the optional data that is added once a season.
+sb_filters = st.sidebar.container()
+sb_map = st.sidebar.container()
+sb_analysis = st.sidebar.container()
+sb_sources = st.sidebar.container()
+
+sb_sources.divider()
+sb_sources.subheader("Optional data")
+with sb_sources.expander("Village centroids", expanded=False):
     st.caption(
         "Shahdol-Anuppur centroids ship with the app and load automatically. "
         "Upload only to override them. Columns: Village, Latitude, Longitude."
@@ -506,7 +558,7 @@ with st.sidebar.expander("Village centroids", expanded=False):
         "Override centroids", type="csv", key="centroids_upload"
     )
 
-with st.sidebar.expander("Early-warning coverage", expanded=False):
+with sb_sources.expander("Early-warning coverage", expanded=False):
     st.caption(
         "Optional. Upload the early-warning villager registry to see which "
         "exposed villages have nobody enrolled, and the app-user list to see "
@@ -532,17 +584,35 @@ try:
         centroid_upload if centroid_upload else None
     )
 except SpatialEnrichmentError as exc:
-    st.sidebar.warning(f"Village centroids not applied: {exc}")
+    # Beside the uploader when it was the user's file; a data note when
+    # the bundled file is what failed.
+    failed = f"Village centroids not applied: {exc}"
+    if centroid_upload:
+        sb_sources.warning(failed)
+    else:
+        data_notes.append(failed)
     villages, centroid_warnings = None, []
 
-for warning in centroid_warnings:
-    st.sidebar.warning(warning)
-
 df, spatial_warnings = attach_nearest_village(raw_df, villages)
-for warning in spatial_warnings:
-    st.warning(warning)
+data_notes += list(centroid_warnings) + list(spatial_warnings)
+data_about = []
 if villages is not None:
-    st.sidebar.success(f"Enriched with {len(villages):,} village centroids.")
+    data_about.append(
+        f"Villages are named against {len(villages):,} "
+        f"{'uploaded' if centroid_upload else 'bundled'} village centroids."
+    )
+
+with notes_slot.container():
+    n_notes = len(data_notes)
+    with st.popover(f"Data notes ({n_notes})" if n_notes else "About the data",
+                    icon=":material/info:", width="stretch",
+                    help="What was found while reading the register."):
+        for note in data_notes:
+            st.markdown(f"- {note}")
+        if not data_notes:
+            st.markdown("Nothing unusual was found while reading the register.")
+        for line in data_about:
+            st.caption(line)
 
 registry = roster = None
 for source, loader, label in (
@@ -554,34 +624,34 @@ for source, loader, label in (
     try:
         loaded, load_notes = loader(source.getvalue(), source.name)
     except DataValidationError as exc:
-        st.sidebar.warning(f"Could not read the {label}: {exc}")
+        sb_sources.warning(f"Could not read the {label}: {exc}")
         continue
     except ImportError:
         # Stale interpreter after a deploy: the entry point has been
         # reloaded from disk but an already-imported module has not.
         logger.exception("Coverage subsystem failed to import")
-        st.sidebar.error(
+        sb_sources.error(
             "Early-warning coverage could not load. If the app was updated "
             "just now, reboot it so the running process picks up the new "
             "modules. Everything else on this page is unaffected."
         )
         break
     for note in load_notes:
-        st.sidebar.caption(note)
+        sb_sources.caption(note)
     if label == "registry":
         registry = loaded
-        st.sidebar.success(f"{len(registry):,} registrations read.")
+        sb_sources.success(f"{len(registry):,} registrations read.")
     else:
         roster = loaded
-        st.sidebar.success(f"{len(roster):,} registered users read.")
+        sb_sources.success(f"{len(roster):,} registered users read.")
 
 df = df.copy()
 df["Severity Score"] = compute_severity(df)
 df["Is_Night"] = compute_is_night(df)
 
-st.sidebar.header("Filters")
+sb_filters.header("Filters")
 
-if st.sidebar.button("Reset filters"):
+if sb_filters.button("Reset filters"):
     # Clearing the widget keys is what resets them; a bare st.rerun()
     # re-runs with every selection still in session state.
     for key in FILTER_KEYS:
@@ -589,7 +659,7 @@ if st.sidebar.button("Reset filters"):
     st.rerun()
 
 min_date, max_date = df["Date"].min().date(), df["Date"].max().date()
-date_range = st.sidebar.date_input(
+date_range = sb_filters.date_input(
     "Date range",
     value=(min_date, max_date),
     min_value=min_date,
@@ -600,7 +670,7 @@ if isinstance(date_range, tuple) and len(date_range) != 2:
     date_range = (min_date, max_date)
 
 division_options = sorted(df["Division"].unique())
-divisions = st.sidebar.multiselect("Division", division_options, key="flt_divisions")
+divisions = sb_filters.multiselect("Division", division_options, key="flt_divisions")
 
 # Prune stale selections before creating the dependent widget. Widening
 # Division back out otherwise leaves Range holding values no longer
@@ -610,74 +680,102 @@ range_options = sorted(range_pool["Range"].unique())
 st.session_state["flt_ranges"] = [
     r for r in st.session_state.get("flt_ranges", []) if r in range_options
 ]
-ranges = st.sidebar.multiselect("Range", range_options, key="flt_ranges")
+ranges = sb_filters.multiselect("Range", range_options, key="flt_ranges")
 
 beat_pool = range_pool[range_pool["Range"].isin(ranges)] if ranges else range_pool
 beat_options = sorted(beat_pool["Beat"].unique())
 st.session_state["flt_beats"] = [
     b for b in st.session_state.get("flt_beats", []) if b in beat_options
 ]
-beats = st.sidebar.multiselect("Beat", beat_options, key="flt_beats")
+beats = sb_filters.multiselect("Beat", beat_options, key="flt_beats")
 
-severity_choice = st.sidebar.selectbox(
-    "Minimum incident type",
+severity_choice = sb_filters.selectbox(
+    "Incident type",
     list(SEVERITY_FILTERS),
     key="flt_severity",
-    help="Filters on the severity score behind each report.",
+    help="Show only reports at least this serious.",
 )
 
-st.sidebar.divider()
-st.sidebar.subheader("Analysis settings")
-recent_days = st.sidebar.slider(
-    "Escalation window (days)",
-    min_value=30, max_value=180, value=DEFAULT_RECENT_DAYS, step=30,
-    help="Compares the recent N days against the N before. Critical uses a "
-    f"fixed {CRITICAL_CASUALTY_WINDOW_DAYS}-day window.",
-)
-eps_km = st.sidebar.slider(
-    "Hotspot neighbour distance (km)",
-    min_value=0.5, max_value=3.0, value=DEFAULT_EPS_KM, step=0.25,
-    help="Larger values merge nearby activity into one region.",
-)
-min_samples = st.sidebar.slider(
-    "Minimum sightings per hotspot",
-    min_value=5, max_value=40, value=DEFAULT_MIN_SAMPLES, step=5,
-)
-village_radius = st.sidebar.slider(
-    "Village exposure radius (km)",
-    min_value=1.0, max_value=10.0, value=DEFAULT_VILLAGE_RADIUS_KM, step=0.5,
-    help="Incidents within this distance of a village count towards its risk.",
-)
-with st.sidebar.expander("Space-time trend"):
+# Model parameters, behind one collapsed section: the standard values are
+# what every officer should see, and anything changed is named on the page
+# and in the brief (core.analysis_settings).
+custom_analysis = analysis_settings.non_standard(st.session_state)
+sb_analysis.divider()
+with sb_analysis.expander(
+    "Advanced analysis" + (" (changed)" if custom_analysis else ""),
+    icon=":material/tune:",
+):
+    st.caption("For analysts. The standard settings suit most reviews; anything "
+               "changed here is named at the top of the page and in the brief.")
+    recent_days = st.slider(
+        "Compare the last ... days",
+        min_value=30, max_value=180, value=analysis_settings.RECENT_DAYS.default, step=30,
+        key=analysis_settings.RECENT_DAYS.key,
+        help="Trends compare these days with the same days a year earlier. Critical "
+        f"always uses {CRITICAL_CASUALTY_WINDOW_DAYS} days.",
+    )
+    village_radius = st.slider(
+        "Count incidents within ... km of a village",
+        min_value=1.0, max_value=10.0, value=analysis_settings.VILLAGE_RADIUS.default,
+        step=0.5, key=analysis_settings.VILLAGE_RADIUS.key,
+        help="Incidents this close to a village count towards its risk (the village "
+        "exposure radius).",
+    )
+    eps_km = st.slider(
+        "Merge activity closer than ... km",
+        min_value=0.5, max_value=3.0, value=analysis_settings.EPS_KM.default, step=0.25,
+        key=analysis_settings.EPS_KM.key,
+        help="Reports this close together join one hotspot (the DBSCAN neighbour distance).",
+    )
+    min_samples = st.slider(
+        "Smallest hotspot (reports)",
+        min_value=5, max_value=40, value=analysis_settings.MIN_SAMPLES.default, step=5,
+        key=analysis_settings.MIN_SAMPLES.key,
+        help="A cluster needs at least this many reports to count as a hotspot.",
+    )
+    st.markdown("**New or growing places**")
     cube_step = st.selectbox(
-        "Time step", list(spacetime.STEPS), index=list(spacetime.STEPS).index(DEFAULT_CUBE_STEP),
+        "Time step", list(spacetime.STEPS),
+        index=list(spacetime.STEPS).index(analysis_settings.CUBE_STEP.default),
+        key=analysis_settings.CUBE_STEP.key,
         help="Shorter steps react faster but need more reports per place.",
     )
     cube_cell_km = st.slider(
-        "Cell size (km)", min_value=1.0, max_value=5.0, value=DEFAULT_CUBE_CELL_KM, step=0.5,
+        "Hexagon size (km)", min_value=1.0, max_value=5.0,
+        value=analysis_settings.CUBE_CELL_KM.default, step=0.5,
+        key=analysis_settings.CUBE_CELL_KM.key,
         help="Distance between neighbouring hexagon centres.",
     )
     cube_metric = st.radio(
-        "Count", spacetime.METRICS, horizontal=True,
+        "Count", spacetime.METRICS, horizontal=True, key=analysis_settings.CUBE_METRIC.key,
         help="All reports adds plain sightings, which mostly track where people report.",
     )
     cube_fdr = st.checkbox(
-        "Correct for multiple testing", value=True,
-        help="False discovery rate correction. Off finds more, some of them by chance.",
+        "Strict test (fewer false alarms)", value=analysis_settings.CUBE_FDR.default,
+        key=analysis_settings.CUBE_FDR.key,
+        help="Corrects for testing many places at once (false discovery rate). Off "
+        "finds more, some of them by chance.",
     )
+    if st.button("Reset to standard", disabled=not custom_analysis, width="stretch"):
+        for key in analysis_settings.KEYS:
+            st.session_state.pop(key, None)
+        st.rerun()
 
-st.sidebar.divider()
-st.sidebar.subheader("Map")
-basemap = st.sidebar.selectbox(
+sb_map.divider()
+sb_map.subheader("Map")
+basemap_unavailable = basemap_warning()
+basemap = sb_map.selectbox(
     "Basemap",
     list(BASEMAP_STYLES),
     index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP),
-    help="Terrain and imagery read better than street cartography here.",
+    disabled=basemap_unavailable is not None,
+    help=basemap_unavailable or "Terrain and imagery read better than street "
+    "cartography here.",
 )
 
 if boundaries.available():
-    layer_boundaries = st.sidebar.checkbox("Layer: forest boundaries", value=True)
-    boundary_choice = st.sidebar.selectbox(
+    layer_boundaries = sb_map.checkbox("Forest boundaries", value=True)
+    boundary_choice = sb_map.selectbox(
         "Boundary level",
         ["Auto (by zoom)"] + [boundaries.LEVEL_LABELS[k] for k in boundaries.LEVELS],
         help="Auto picks the level from the view your filters produce. "
@@ -688,6 +786,11 @@ if boundaries.available():
     }[boundary_choice]
 else:
     layer_boundaries, boundary_level = False, None
+
+if custom_analysis:
+    st.badge("Custom analysis: " + "; ".join(custom_analysis), icon=":material/tune:",
+             color="orange",
+             help="Set under Advanced analysis in the sidebar. Reset to standard there.")
 
 filtered = filter_dataframe(
     df,
@@ -714,8 +817,11 @@ change = window_comparison(filtered, recent_days, as_of=period_end)
 # raiding follows the harvest, so the window before mostly measures the
 # season.
 _base = "year" if pd.notna(change.get("conflicts_year")) else "prior"
-window_note = (f"vs same {recent_days}d last year" if _base == "year"
-               else f"vs prior {recent_days}d")
+# Short enough to fit the card at desktop width; the help says the rest.
+window_note = "vs last yr" if _base == "year" else f"vs prior {recent_days}d"
+window_help = (f"Change over the last {recent_days} days against "
+               + (f"the same {recent_days} days a year earlier."
+                  if _base == "year" else f"the {recent_days} days before them."))
 
 
 def _spark(column: str):
@@ -734,6 +840,7 @@ c2.metric(
     delta=_change(change["conflicts_recent"], change[f"conflicts_{_base}"]),
     delta_color="inverse",
     delta_description=window_note,
+    help=window_help,
     chart_data=_spark("Conflict Events"),
     chart_type="area",
     border=True,
@@ -744,6 +851,7 @@ c3.metric(
     delta=_change(change["rate_recent"], change[f"rate_{_base}"], unit="pt"),
     delta_color="inverse",
     delta_description=window_note,
+    help="Share of reports with damage or harm. " + window_help,
     chart_data=_spark("Conflict Rate %") if len(monthly) >= 3
     and monthly["Conflict Rate %"].notna().all() else None,
     border=True,
@@ -754,6 +862,7 @@ c4.metric(
     delta=_change(change["casualties_recent"], change[f"casualties_{_base}"]),
     delta_color="inverse",
     delta_description=window_note,
+    help="People killed and injured. " + window_help,
     chart_data=(monthly["Human Deaths"] + monthly["People Injured"]).tolist()
     if len(monthly) >= 3 else None,
     chart_type="bar",
@@ -765,7 +874,7 @@ c4.metric(
 c5.metric(
     "Seen at night",
     "N/A" if pd.isna(kpis["sighting_night_pct"]) else f"{kpis['sighting_night_pct']:.0f}%",
-    delta=(f"of {kpis['sightings_timed']:,} timed sightings"
+    delta=(f"of {kpis['sightings_timed']:,} timed"
            if kpis["sightings_timed"] else None),
     delta_color="off",
     border=True,
@@ -845,6 +954,7 @@ with brief_col:
                     "ranges": ranges,
                     "beats": beats,
                     "severity": severity_choice,
+                    "analysis": custom_analysis,
                 },
                 basemap_style_name=basemap,
                 coverage=coverage_table,
@@ -867,11 +977,13 @@ with brief_col:
 # ---------------------------------------------------------------------------
 # 5. One tab per question a manager asks
 # ---------------------------------------------------------------------------
-tab_trend, tab_where, tab_emerging, tab_villages, tab_when, tab_data = st.tabs([
-    ":material/trending_up: Is it getting worse?",
+# Where to act first: it is the question the page exists to answer, and
+# the first tab is the one that opens. Whom to warn next, then the trends.
+tab_where, tab_villages, tab_trend, tab_emerging, tab_when, tab_data = st.tabs([
     ":material/map: Where to act",
-    ":material/timeline: New or growing?",
     ":material/home: Villages at risk",
+    ":material/trending_up: Is it getting worse?",
+    ":material/timeline: New or growing?",
     ":material/schedule: When",
     ":material/table_chart: Data",
 ])
@@ -892,8 +1004,8 @@ with tab_trend:
             "Conflict events per month by type",
             lambda m=monthly, d=recent_days, e=period_end:
             report_charts.conflict_type_trend_svg(m, d, e),
-            note="Darkest at the base is the most severe; the shaded band is the "
-                 "escalation window set in the sidebar.",
+            note=f"Darkest at the base is the most severe; the shaded band is the last "
+                 f"{recent_days} days (Advanced analysis, in the sidebar).",
         )
 
         rate_col, casualty_col = st.columns(2)
@@ -1062,8 +1174,8 @@ with tab_where:
 
         elif picker == "Hotspots":
             if hotspots.empty:
-                st.info("No hotspots at these settings. Try a larger neighbour distance or "
-                        "fewer minimum sightings in the sidebar.")
+                st.info("No hotspots at these settings. Under Advanced analysis in the "
+                        "sidebar, try a larger merge distance or a smaller minimum hotspot.")
             else:
                 hotspot_cols = [c for c in [
                     "Hotspot", "Tier", "Beats", "Sightings", "Conflict Events",
@@ -1122,7 +1234,8 @@ with tab_where:
                 _map_pick(village_pick, "village_table", "village", village_risk["Village"],
                           "Village")
                 st.caption(f"A picked village shows the sightings within "
-                           f"{village_radius:g} km of it, the exposure radius in the sidebar.")
+                           f"{village_radius:g} km of it (the village radius under Advanced "
+                           f"analysis).")
 
         else:
             if composition.empty or composition["Conflict Events"].sum() == 0:
@@ -1196,7 +1309,7 @@ with tab_emerging:
     st.caption(
         f"Reports binned into {cube_cell_km:g} km hexagons by {cube_step.lower()}, then each "
         "place tested for whether it is a hotspot at each step and whether that is "
-        "changing. Settings are under Space-time trend in the sidebar."
+        "changing. Settings are under Advanced analysis in the sidebar."
     )
     counts = spacetime.pattern_counts(emerging)
     if emerging.empty:
@@ -1353,23 +1466,42 @@ with tab_villages:
     else:
         table_col, map_col = st.columns([1, 1])
         with table_col:
-            village_cols = [c for c in [
-                "Village", "Tier", "Conflict Events", "Human Deaths", "People Injured",
-                "House Damage Events", "Crop Damage Events", "Nearest Hotspot",
-            ] if c in village_risk.columns]
+            # The columns a warning decision needs, in half the page's width
+            # without a scrollbar; house and crop counts are in the CSV and
+            # on the map. Hotspot shows only when there are hotspots to name,
+            # with the distance, since "nearest" alone may be far away.
+            shown = village_risk.copy()
+            village_cols = ["Village", "Tier", "Conflict Events", "Human Deaths",
+                            "People Injured"]
+            if (shown.get("Nearest Hotspot", pd.Series(dtype=object)) != "N/A").any() \
+                    and "Distance to Hotspot (km)" in shown.columns:
+                shown["Hotspot"] = [
+                    f"inside {h}" if inside else f"{h}, {d:g} km"
+                    for h, d, inside in zip(shown["Nearest Hotspot"],
+                                            shown["Distance to Hotspot (km)"],
+                                            shown.get("Inside Hotspot",
+                                                      pd.Series(False, index=shown.index)))
+                ]
+                village_cols.append("Hotspot")
             st.dataframe(
-                village_risk[village_cols],
+                shown[[c for c in village_cols if c in shown.columns]],
                 width="stretch",
                 height=520,
                 hide_index=True,
                 column_config={
                     "Tier": st.column_config.TextColumn(width="small"),
-                    "Conflict Events": st.column_config.NumberColumn("Conflicts"),
-                    "Human Deaths": st.column_config.NumberColumn("Killed"),
+                    "Conflict Events": st.column_config.NumberColumn(
+                        "Incidents",
+                        help=f"Conflict within {village_radius:g} km. Neighbouring villages "
+                        "share incidents, so the column does not add up to the register."),
+                    "Human Deaths": st.column_config.NumberColumn(
+                        "Killed",
+                        help=f"Deaths within {village_radius:g} km. One death counts for "
+                        "every village near it, so a row means exposure, not loss."),
                     "People Injured": st.column_config.NumberColumn("Injured"),
-                    "House Damage Events": st.column_config.NumberColumn("House"),
-                    "Crop Damage Events": st.column_config.NumberColumn("Crop"),
-                    "Nearest Hotspot": st.column_config.TextColumn("Hotspot"),
+                    "Hotspot": st.column_config.TextColumn(
+                        "Nearest hotspot", help="The hotspot the village sits in, or the "
+                        "nearest one and its distance."),
                 },
             )
             st.download_button(
@@ -1389,7 +1521,8 @@ with tab_villages:
                 village_risk, hotspots, style_name=basemap,
                 show_boundaries=layer_boundaries, boundary_level=boundary_level,
             )
-        for note in village_caveats(village_risk, filtered, village_radius):
+        # The overlap caveat is on the Incidents and Killed headers instead.
+        for note in village_caveats(village_risk, filtered, village_radius, overlap=False):
             st.caption(note)
 
     if not coverage_table.empty:

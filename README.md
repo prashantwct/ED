@@ -286,7 +286,8 @@ locally, or under Manage app → Settings → Secrets on Streamlit Cloud. See
 `.streamlit/secrets.toml.example`. Without it both the on-screen maps and the
 brief's embedded maps fall back to the keyless Carto basemap, so the choice of
 terrain, satellite or topographic styling is what the key buys — not whether
-there is a basemap at all.
+there is a basemap at all. Without it the basemap selector is disabled and its
+help bubble says why, once, rather than a note under every map.
 
 The key is fetched by the browser to load tiles, so it is visible to anyone
 using the app and cannot be kept secret. Restrict it by origin in the MapTiler
@@ -335,24 +336,27 @@ it is picked up automatically; the same applies to any partner added to
 
 ## What it produces
 
-**How the page reads.** The headline numbers and the assessment stay at the
-top, with the Generate brief button beside them. Everything else sits in five
-tabs, one per question a manager asks, so no question pushes another off the
-screen:
+**How the page reads.** Once a register is loaded, one line says where it came
+from, how many reports it holds and the dates they span, with the uploader
+moved behind *Replace file* and anything noticed while reading it behind *Data
+notes*. The headline numbers and the assessment stay at the top, with the
+Generate brief button beside them. Everything else sits in tabs, one per
+question a manager asks, so no question pushes another off the screen. *Where
+to act* comes first, because it is the question the page exists to answer:
 
-* *Is it getting worse?* -- monthly conflict by type, conflict rate,
-  casualties, the seasonal grid, divisions over time, escalating beats and
-  the conflict rate by division.
 * *Where to act* -- the beat tier counts, the layer filters, then a table
   (beats, hotspots, villages, animals) beside the spatial view. One tick on a
   row shows only that place on the map.
+* *Villages at risk* -- the village ranking beside its map, and early-warning
+  coverage when a registry is loaded.
+* *Is it getting worse?* -- monthly conflict by type, conflict rate,
+  casualties, the seasonal grid, divisions over time, escalating beats and
+  the conflict rate by division.
 * *New or growing?* -- each place's emerging hotspot pattern (new,
   intensifying, persistent, consecutive, sporadic, diminishing, historical) as
   counts, a table, a hexagon map (flat, raised into columns by events, or
   stacked by time into the cube on the basemap), a place-by-time heatmap, and
   the space-time cube itself in 3D.
-* *Villages at risk* -- the village ranking beside its map, and early-warning
-  coverage when a registry is loaded.
 * *When* -- the casualty peak window, how many reports count as night raids,
   the seasonal peak, the hour-of-day and night/day charts.
 * *Data* -- monthly sightings, severity, division and escalation tables, the
@@ -361,6 +365,17 @@ screen:
 Each chart's download sits as an icon in its title row rather than a button
 under it, and wide tables show the columns a decision needs, with every
 column in their CSV.
+
+**The sidebar** runs in the order people reach for it: filters, then map
+styling, then *Advanced analysis* (collapsed), then optional data. Advanced
+analysis holds every model setting -- the comparison window, village radius,
+hotspot merge distance and minimum size, and the space-time step, hexagon,
+count and strict test -- under plain names, with the technical name in each
+help bubble. Their standard values are what every officer should see, so a
+setting moved off its standard is named in a badge at the top of the page and
+in the brief's scope line (`core/analysis_settings.py`), and *Reset to
+standard* puts them all back. Changing one is a choice an analyst makes on
+purpose, not something two officers can differ on without knowing.
 
 **Conflict trends.** First on the trends tab, before any ranking: monthly
 conflict stacked by type (fatality darkest, at the base, so a growing dark band
@@ -423,7 +438,7 @@ cold spot in counts this sparse is just a quiet place. Two guards keep it
 honest: a cell counts as hot only if it had a report itself, so Gi* does not
 paint empty neighbours; and a trailing step less than half covered by the data
 is dropped, not read as everything cooling at once. Fewer than six steps gives
-no labels. Settings sit under *Space-time trend* in the sidebar; the brief
+no labels. Settings sit under *Advanced analysis* in the sidebar; the brief
 gets a table and the assessment a one-line headline.
 
 The 3D cube puts the ground on two axes (kilometres, at true ratio) and time on
@@ -761,6 +776,7 @@ core/refuge_view.py  The day refuges view
 core/refuge_report.py Day refuges map and brief section
 core/refuge_dashboard.py The vendored atlas plate, filled with a run
 core/analytics.py    Severity, conflict classification, KPIs, filters, trends
+core/analysis_settings.py Standard values for the tunables, and naming any changed
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief
 core/brief_insights.py Findings, action plan and ecology for the brief
@@ -783,6 +799,7 @@ tools/export_source.py  The Export button's download, whatever format it is
 tools/               Data preparation and the scraper, not imported by the app
 tests/replica.py     A local stand-in for the Forest Alerts admin site
 tests/               Unit tests, run with `pytest -q`
+docs/UX_STRATEGY.md  UI/UX diagnosis, benchmarks and the phased redesign plan
 ```
 
 All tunables live in `core/config.py`. They encode domain judgement, not fact,

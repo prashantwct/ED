@@ -396,6 +396,20 @@ def test_filter_summary_truncates_long_selections():
     assert "+5 more" in summary
 
 
+def test_filter_summary_names_custom_analysis_settings():
+    """Two briefs from the same export can disagree on tiers and hotspots
+    when someone changed a setting; the brief has to say which."""
+    summary = filter_summary({"divisions": [], "analysis": [
+        "Hotspot merge distance 1.5 km (standard 1)"]})
+    assert summary.startswith("All divisions")
+    assert "Custom analysis: Hotspot merge distance 1.5 km (standard 1)" in summary
+
+
+def test_filter_summary_escapes_custom_analysis_text():
+    summary = filter_summary({"analysis": ["<b>x</b>"]})
+    assert "<b>" not in summary
+
+
 def test_filter_summary_defaults_to_all_divisions():
     assert filter_summary(None) == "All divisions"
     assert filter_summary({"divisions": [], "ranges": [], "beats": []}) == "All divisions"
