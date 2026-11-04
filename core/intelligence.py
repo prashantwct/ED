@@ -726,6 +726,16 @@ def _recommended_actions(table: pd.DataFrame, max_actions: int = 3) -> pd.Series
     return pd.Series(actions, index=table.index)
 
 
+def recommended_actions(table: pd.DataFrame, max_actions: int = 3) -> pd.Series:
+    """The interventions for each beat row, most important first.
+
+    The beat table carries up to three; a card with room for one asks
+    for ``max_actions=1`` rather than cutting the joined text, whose
+    items carry semicolons of their own.
+    """
+    return _recommended_actions(table, max_actions=max_actions)
+
+
 # ---------------------------------------------------------------------------
 # Temporal risk windows
 # ---------------------------------------------------------------------------

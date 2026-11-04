@@ -287,10 +287,10 @@ One row under the navigation, the same on every page:
 * **Area** is a popover (`st.popover`) with the cascading Division ▸ Range ▸
   Beat pickers. The bar shows only the resulting label.
 * **Period** is a segmented control with presets. *Custom* opens the date
-  picker. **The target default is "Last 90 days"**, which matches the
-  Critical-tier window. It can only become the default once the period stops
-  being the analysis frame: tiers and escalation need the history before it
-  (see phase 0, item 0.11).
+  picker. **The default is "Last 90 days"**, which matches the Critical-tier
+  window. That is safe only because the period is no longer the analysis
+  frame: tiers and escalation use the history before it (phase 0, item 0.11;
+  done in phase 1).
 * **Incident type** is a plain-language select: *All reports / Damage or
   worse / Injury or death*.
 * **Share** copies a URL carrying the page and the scope (`st.query_params`).
@@ -554,7 +554,7 @@ strings).
 
 ## 10. Phased plan
 
-### Phase 0: quick wins (1–3 days, no restructuring) — done except 0.11
+### Phase 0: quick wins (1–3 days, no restructuring) — done (0.11 in phase 1)
 
 | # | Change | Status |
 |---|---|---|
@@ -568,7 +568,7 @@ strings).
 | 0.8 | Shorten KPI delta labels so they do not truncate ("vs last yr") | Done. The full comparison is in each card's help |
 | 0.9 | Show the MAPTILER note only once and only in the sidebar's map section, not under every map | Done. The basemap selector is disabled and its help says why |
 | 0.10 | Plain-language land-cover error with details folded | Done (`core/refuge_view.py`) |
-| 0.11 | Default period preset "Last 90 days", with "Whole register" one click away | **Not done; moved to phase 1** (see below) |
+| 0.11 | Default period preset "Last 90 days", with "Whole register" one click away | **Moved to phase 1, and done there** (see below) |
 | 0.12 | Drop trailing low-value columns from the villages table at desktop width | Done. Village, tier, incidents, killed, injured, plus nearest hotspot with distance when there are hotspots. The overlap caveat moved to the column headers |
 
 **Why 0.11 moved.** The date filter is not only a display filter. Tiers,
@@ -588,20 +588,45 @@ down (it was about 1,480 px, behind a tab click). The top of *Where to act*
 is still below the first screen. That needs phase 1's Overview, which
 replaces the ten-bullet assessment.
 
-### Phase 1: structure (1–2 weeks)
+### Phase 1: structure (1–2 weeks) — done
 
-* Split `app.py` into one module per page under `pages/` and switch to
-  `st.navigation(position="top")`. Shared loading and derived tables go in one
-  cached function keyed on (data hash, scope, parameters), so pages do not
-  recompute.
-* Build the **scope bar** (§7.2) and sync it to `st.query_params`. Split the
-  period into a focus window and an analysis history, so that a short default
-  (0.11) does not change tiers or escalation.
-* Build the **Overview** page (§8.2) from existing outputs: `management_brief`,
-  `brief_insights`, `villages_at_risk`, `spacetime.headline`.
-* Create **Data & brief** and **⚙ Analyst** and move content into them.
+| Item | Status |
+|---|---|
+| Top navigation, one module per page | Done. `st.navigation(position="top")` with eight pages: Overview, Where to act, Villages, Patterns, Day refuges, Damage, Data & brief, Analyst. The page modules live in `app_pages/`; a folder named `pages/` would trigger Streamlit's older automatic multipage mode |
+| Shared, cached analysis | Done. `app.py` builds one context per run, and the slow steps (beat ranking, village ranking, hotspots, cube) are cached on the frames they read (`app_pages/common.py`). Moving between pages reuses them |
+| Scope bar synced to the URL | Done. Area popover, period presets (30 days, 90 days, 12 months, all, custom), incident type, Reset, and a Share popover showing the link. The scope is written to the query string on every run and read from it when a register first loads (`core/scope.py`) |
+| Focus window vs analysis history | Done, and with it **0.11: the default period is now the last 90 days**. Tiers, escalation, hotspots, villages, trends and the brief use the register up to the period's end; the period's start only sets what is counted and drawn. A test holds that a 90-day view ranks beats exactly as the whole register does |
+| Overview | Done. Headline sentence, four numbers, *Act now* (beats or actions) beside the map, *Warn first*, and *What changed* in the last 30 days (`core/overview.py`) |
+| Data & brief, Analyst | Done. Data & brief holds the brief, the full assessment, "About these numbers", data notes and the tables. Analyst holds every setting, the 3D cube, and diagnostics |
 
-**Exit check:** usability tasks T1–T3 (§12) pass on desktop.
+Implementation notes and deviations:
+
+* **Links, not `st.switch_page`.** In a real browser, navigating from inside
+  a run with `st.switch_page` dropped the uploaded file, and the next page
+  fell back to the landing screen. The Overview's links are real page links
+  (`st.page_link`) that carry the scope, plus `focus=beat:<name>` when they
+  should open the map on a beat. The entry point applies the focus once and
+  drops it from the address.
+* **State across pages.** Streamlit forgets a widget's value on any run that
+  does not draw it. The scope bar and source line are drawn on every page.
+  Settings and map styling are written back to session state at the top of
+  every run, so they survive pages that do not draw them.
+* **Optional uploads stay in the sidebar,** not on the Analyst page. A file
+  uploader cannot be written back to session state, and moving the
+  registry's bytes there would break the rule that personal data never
+  reaches session state. In the sidebar they are drawn on every conflict
+  page and keep their files.
+* **Day refuges and Damage** keep their own controls until phase 3. They
+  show the source line, so the register survives a visit to them, which it
+  did not before.
+* **Tests** name a page with `tests/pages.py` (`open_page`). AppTest's own
+  `switch_page` takes only file paths, and it does not carry an
+  `st.switch_page` over to the next run the way a browser's address bar does.
+
+**Exit check, measured** (1440×900, synthetic register): the headline
+sentence, the four numbers, *Act now* and its first beat card, with its
+*Map* link, are on the first screen. The usability sessions (T1–T3) have
+not been run; they need people, not code.
 
 ### Phase 2: map-first and drill-down (2–3 weeks)
 

@@ -14,6 +14,7 @@ from core import damage, damage_charts
 from damage_fixtures import (
     INSIDE, NOWHERE, crop_entry, export_csv, export_zip, house_entry,
 )
+from pages import open_page
 
 
 def _load(*files):
@@ -209,7 +210,7 @@ def test_damage_view_waits_for_an_export(monkeypatch):
     from streamlit.testing.v1 import AppTest
 
     at = AppTest.from_file(APP, default_timeout=120)
-    at.session_state["view"] = "Damage & compensation"
+    open_page(at, "damage")
     at.run()
     assert not at.exception, at.exception
     assert any("Upload a herd-crop-damage" in i.value for i in at.info)
@@ -273,7 +274,7 @@ def test_view_offers_html_and_pdf_downloads(surveys, monkeypatch):
     frame, notes = surveys
     monkeypatch.setattr(damage_view, "sources", lambda: (frame, notes))
     at = AppTest.from_file(APP, default_timeout=180)
-    at.session_state["view"] = "Damage & compensation"
+    open_page(at, "damage")
     at.run()
     at = next(b for b in at.button if b.label == "Prepare HTML and PDF").click().run()
     assert not at.exception, at.exception
