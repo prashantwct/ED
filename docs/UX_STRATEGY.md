@@ -287,8 +287,10 @@ One row under the navigation, the same on every page:
 * **Area** is a popover (`st.popover`) with the cascading Division ▸ Range ▸
   Beat pickers. The bar shows only the resulting label.
 * **Period** is a segmented control with presets. *Custom* opens the date
-  picker. **The default is "Last 90 days"**, which matches the Critical-tier
-  window, instead of the whole register.
+  picker. **The target default is "Last 90 days"**, which matches the
+  Critical-tier window. It can only become the default once the period stops
+  being the analysis frame: tiers and escalation need the history before it
+  (see phase 0, item 0.11).
 * **Incident type** is a plain-language select: *All reports / Damage or
   worse / Injury or death*.
 * **Share** copies a URL carrying the page and the scope (`st.query_params`).
@@ -552,26 +554,39 @@ strings).
 
 ## 10. Phased plan
 
-### Phase 0: quick wins (1–3 days, no restructuring)
+### Phase 0: quick wins (1–3 days, no restructuring) — done except 0.11
 
-| # | Change | Where |
+| # | Change | Status |
 |---|---|---|
-| 0.1 | Hide Streamlit's Deploy/dev toolbar: `[client] toolbarMode = "viewer"` | `.streamlit/config.toml` |
-| 0.2 | Remove the "Loaded N valid rows" banner. Show rows and dates in the source note | `app.py:497` |
-| 0.3 | Collapse the uploader once a file is loaded (show the file name and "Replace") | `app.py:420` |
-| 0.4 | Move the centroid duplicate warning and "Enriched with…" out of the sidebar into a "Data notes (n)" expander | `app.py:539–545` |
-| 0.5 | Reorder tabs: **Where to act** first | `app.py:870` |
-| 0.6 | Put *Analysis settings* and *Space-time trend* in one collapsed "Advanced analysis" expander, with the labels from §9.1 | `app.py:629–667` |
-| 0.7 | Show a "Custom analysis settings" badge when any parameter is off its default, and stamp it into the brief | `app.py`, `core/report.py` |
-| 0.8 | Shorten KPI delta labels so they do not truncate ("vs last yr") | `app.py:715–719` |
-| 0.9 | Show the MAPTILER note only once and only in the sidebar's map section, not under every map | `core/map_engine.py:301` |
-| 0.10 | Plain-language land-cover error with details folded | `core/refuge_view.py:468` |
-| 0.11 | Default period preset "Last 90 days", with "Whole register" one click away | `app.py:592` |
-| 0.12 | Drop trailing low-value columns from the villages table at desktop width | `app.py` villages tab |
+| 0.1 | Hide Streamlit's Deploy/dev toolbar: `[client] toolbarMode = "viewer"` | Done (`.streamlit/config.toml`) |
+| 0.2 | Remove the "Loaded N valid rows" banner. Show rows and dates in the source note | Done. The source line reads "sightings.csv, 1,580 reports, 1 Oct 2024 to 31 Oct 2026" |
+| 0.3 | Collapse the uploader once a file is loaded (show the file name and "Replace") | Done. The keyed uploader moves into a *Replace file* popover and keeps its file |
+| 0.4 | Move the centroid duplicate warning and "Enriched with…" out of the sidebar into a "Data notes (n)" expander | Done. Load, centroid and spatial notes sit behind one *Data notes (n)* popover on the source line. Registry and roster feedback stays beside their uploaders |
+| 0.5 | Reorder tabs: **Where to act** first | Done. Order: Where to act, Villages at risk, Is it getting worse?, New or growing?, When, Data |
+| 0.6 | Put *Analysis settings* and *Space-time trend* in one collapsed "Advanced analysis" expander, with the labels from §9.1 | Done. The sidebar order is now Filters, Map, Advanced analysis, Optional data. *Reset to standard* is inside |
+| 0.7 | Show a "Custom analysis settings" badge when any parameter is off its default, and stamp it into the brief | Done (`core/analysis_settings.py`). The badge sits above the headline numbers and the brief's scope line names each change |
+| 0.8 | Shorten KPI delta labels so they do not truncate ("vs last yr") | Done. The full comparison is in each card's help |
+| 0.9 | Show the MAPTILER note only once and only in the sidebar's map section, not under every map | Done. The basemap selector is disabled and its help says why |
+| 0.10 | Plain-language land-cover error with details folded | Done (`core/refuge_view.py`) |
+| 0.11 | Default period preset "Last 90 days", with "Whole register" one click away | **Not done; moved to phase 1** (see below) |
+| 0.12 | Drop trailing low-value columns from the villages table at desktop width | Done. Village, tier, incidents, killed, injured, plus nearest hotspot with distance when there are hotspots. The overlap caveat moved to the column headers |
 
-**Exit check:** at 1440×900 the first screen shows the scope, the four
-headline numbers and the top of *Where to act*, and shows no confirmation or
-developer messages.
+**Why 0.11 moved.** The date filter is not only a display filter. Tiers,
+escalation and the headline comparisons are all worked out *within* the
+selected period. On the synthetic register, "last 90 days" removed the KPI
+comparisons (no earlier data in the frame), cut escalating beats from 4 to 1,
+and dropped High-tier beats from 22 to 3. That is an analysis change, not a
+quick win. Phase 1 has to separate the **focus window** (what the page shows)
+from the **analysis history** (the baselines tiers and trends compare
+against) before a short default period is safe.
+
+**Exit check, measured after phase 0** (1440×900, synthetic register): the
+first screen shows the source line, five headline numbers and the start of
+the assessment, with no confirmation banners and no developer chrome. *Where
+to act* now opens first without a click, and its map starts about 1,350 px
+down (it was about 1,480 px, behind a tab click). The top of *Where to act*
+is still below the first screen. That needs phase 1's Overview, which
+replaces the ten-bullet assessment.
 
 ### Phase 1: structure (1–2 weeks)
 
@@ -579,7 +594,9 @@ developer messages.
   `st.navigation(position="top")`. Shared loading and derived tables go in one
   cached function keyed on (data hash, scope, parameters), so pages do not
   recompute.
-* Build the **scope bar** (§7.2) and sync it to `st.query_params`.
+* Build the **scope bar** (§7.2) and sync it to `st.query_params`. Split the
+  period into a focus window and an analysis history, so that a short default
+  (0.11) does not change tiers or escalation.
 * Build the **Overview** page (§8.2) from existing outputs: `management_brief`,
   `brief_insights`, `villages_at_risk`, `spacetime.headline`.
 * Create **Data & brief** and **⚙ Analyst** and move content into them.

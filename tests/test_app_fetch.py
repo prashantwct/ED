@@ -94,8 +94,16 @@ def test_the_form_asks_for_dates_from_the_register_start_to_today(app):
 def test_signing_in_loads_the_dashboard(app):
     at = _sign_in(app.run())
     assert not at.exception
-    assert any(f"Loaded {TOTAL_ROWS:,} valid rows" in s.value for s in at.success), \
-        [s.value for s in at.success]
+    assert "Conflict events" in [m.label for m in at.metric]
+
+
+def test_a_successful_load_is_said_in_the_source_line_not_a_banner(app):
+    """Confirmations that nothing is wrong teach people to skip the boxes
+    that matter; what arrived belongs on the line that says where from."""
+    at = _sign_in(app.run())
+    assert not at.success, [s.value for s in at.success]
+    markdown = " ".join(m.value for m in at.markdown)
+    assert f"{TOTAL_ROWS:,} rows from the export" in markdown
 
 
 def test_the_loaded_page_says_where_the_data_came_from(app):

@@ -297,10 +297,11 @@ def basemap_warning() -> Optional[str]:
     """Message shown when the selected basemap is unavailable."""
     if maptiler_key():
         return None
+    # Said once, on the disabled basemap selector, rather than under every
+    # map: a viewer cannot act on it, and whoever runs the app reads it there.
     return (
-        "No MAPTILER_KEY set, so the basemap selector is inactive and a plain "
-        "fallback map is shown. Add the key under Streamlit secrets for terrain "
-        "and satellite."
+        "Terrain and satellite need a MapTiler key (MAPTILER_KEY in secrets); a "
+        "plain basemap is shown until then."
     )
 
 
@@ -413,7 +414,6 @@ def render_map(
         category_legend(plot_df["_category"].value_counts().to_dict())
     if show_villages and villages is not None and not villages.empty:
         map_legend("Villages by tier", TIER_STYLE)
-    _basemap_note()
 
 
 @_never_breaks_the_page
@@ -445,7 +445,6 @@ def render_village_map(
         "worst few villages are labelled to keep names legible - hover for the "
         "rest."
     )
-    _basemap_note()
 
 
 def _boundary_note(view_state: pdk.ViewState, level: Optional[str]) -> None:
@@ -456,12 +455,6 @@ def _boundary_note(view_state: pdk.ViewState, level: Optional[str]) -> None:
     if chosen == boundaries.BEAT:
         note += " " + boundaries.BEAT_COVERAGE_NOTE
     st.caption(note)
-
-
-def _basemap_note() -> None:
-    warning = basemap_warning()
-    if warning:
-        st.caption(warning)
 
 
 def _compact(deck: pdk.Deck) -> pdk.Deck:
@@ -1217,7 +1210,6 @@ def render_pattern_map(
         font_weight=600,
     ))
     _render_deck(layers, view_state, style_name)
-    _basemap_note()
 
 
 _MATERIAL = {"ambient": 0.55, "diffuse": 0.6, "shininess": 24}
@@ -1357,4 +1349,3 @@ def render_damage_map(
             pickable=True,
         ))
     _render_deck(layers, view_state, style_name)
-    _basemap_note()

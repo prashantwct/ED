@@ -267,6 +267,18 @@ def test_village_casualty_columns_are_flagged_as_non_additive():
     assert any("do not sum" in n for n in notes)
 
 
+def test_the_overlap_caveat_can_move_to_the_table_headers():
+    """The app's village table says it on the column headers, so the page
+    does not need the sentence about deaths not adding up as well."""
+    df = _prepare(_blob(LAT, LON, 30, deaths=1, conflicts=20, seed=30))
+    villages = _villages(
+        A=(LAT, LON), B=(LAT + 0.005, LON), C=(LAT, LON + 0.005)
+    )
+    out = villages_at_risk(df, villages, None, radius_km=3.0)
+    notes = village_caveats(out, df, 3.0, overlap=False)
+    assert not any("do not sum" in n for n in notes)
+
+
 def test_critical_villages_outside_hotspots_are_called_out():
     """Fatalities are not confined to where movement concentrates, so
     hotspot patrols alone would miss these."""

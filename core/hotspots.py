@@ -537,11 +537,13 @@ def village_caveats(
     village_risk: pd.DataFrame,
     df: pd.DataFrame,
     radius_km: float = DEFAULT_VILLAGE_RADIUS_KM,
+    overlap: bool = True,
 ) -> List[str]:
     """Limits a reader needs before acting on the village ranking.
 
     Chiefly that the casualty columns do not add up: overlapping radii
-    credit one fatality to every village near it.
+    credit one fatality to every village near it. ``overlap=False`` leaves
+    that one out, for a table that says it in its column headers instead.
     """
     notes: List[str] = []
     if village_risk.empty:
@@ -549,7 +551,7 @@ def village_caveats(
 
     actual_deaths = float(human_deaths(df).sum())
     counted = float(village_risk["Human Deaths"].sum())
-    if counted > actual_deaths:
+    if overlap and counted > actual_deaths:
         notes.append(
             f"Casualty columns do not sum: the {radius_km:g} km radii overlap, so "
             f"one incident counts for every village near it. These rows total "

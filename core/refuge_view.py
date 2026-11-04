@@ -464,9 +464,21 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
     st.caption(f"Land cover: {result['land_cover']}.")
     for note in result["land_cover_notes"]:
         st.info(note)
-    for failure in result["land_cover_failures"][:3]:
-        st.warning(f"Land cover could not be read: {failure}. Upload the tile from Esri's "
-                   "Land Cover Explorer instead.")
+    # What happened and what to do, in words; the server's own error is
+    # folded away for whoever has to fix the connection.
+    failures = result["land_cover_failures"]
+    if failures:
+        tiles = "one tile" if len(failures) == 1 else f"{len(failures)} tiles"
+        st.warning(
+            f"Land cover could not be downloaded for {tiles} of this area, so the cover "
+            "type around refuges there is missing. To fill it in, choose *Upload Esri "
+            "GeoTIFF* under Land cover in the sidebar and add the tile from Esri's Land "
+            "Cover Explorer.",
+            icon=":material/cloud_off:",
+        )
+        with st.expander("Details", expanded=False):
+            for failure in failures:
+                st.caption(failure)
 
     note = dict(delta_color="off", delta_arrow="off", border=True)
     c1, c2, c3, c4 = st.columns(4)

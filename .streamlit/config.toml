@@ -9,6 +9,12 @@ enableXsrfProtection = true
 [browser]
 gatherUsageStats = false
 
+[client]
+# Viewers never need Deploy, Rerun or Clear cache, and "auto" shows them to
+# anyone on localhost -- a training laptop, an office machine. Developers
+# get them back with `streamlit run app.py --client.toolbarMode developer`.
+toolbarMode = "viewer"
+
 [theme]
 base = "light"
 primaryColor = "#1f5f3f"
