@@ -15,6 +15,7 @@ import pytest
 from PIL import Image
 
 from core import exports, report_charts
+from pages import open_page
 
 APP = str(Path(__file__).resolve().parent.parent / "app.py")
 
@@ -123,14 +124,17 @@ def test_conflict_view_offers_a_download_under_every_figure(monkeypatch):
     at.session_state["fetched_register"] = FetchResult(
         data=data, name="register.csv", rows=600, pages=1, columns=[],
         start_date="2025-01-01", end_date="2026-02-05", fetched_at="2026-02-05")
-    at.run()
-    assert not at.exception, at.exception
     # Trends (5), escalation, hour, spatial map, monthly trend, division
     # rates, severity, night/day; the village map needs centroids, which
-    # ship with the repo, so it is there too.
-    assert len(_menus(at)) >= 12
-    assert {b.label for b in at.get("download_button")} >= {
-        "SVG (vector)", "PNG (4x resolution)", "PDF (vector)"}
+    # ship with the repo, so it is there too. They now sit on four pages.
+    menus, labels = 0, set()
+    for page in ("where", "villages", "patterns", "data"):
+        open_page(at, page).run()
+        assert not at.exception, (page, at.exception)
+        menus += len(_menus(at))
+        labels |= {b.label for b in at.get("download_button")}
+    assert menus >= 12
+    assert labels >= {"SVG (vector)", "PNG (4x resolution)", "PDF (vector)"}
 
 
 def test_damage_view_offers_a_download_under_every_figure(monkeypatch):
@@ -145,7 +149,7 @@ def test_damage_view_offers_a_download_under_every_figure(monkeypatch):
     ])
     monkeypatch.setattr(damage_view, "sources", lambda: (frame, notes))
     at = AppTest.from_file(APP, default_timeout=240)
-    at.session_state["view"] = "Damage & compensation"
+    open_page(at, "damage")
     at.run()
     assert not at.exception, at.exception
     # 12 charts and the map.

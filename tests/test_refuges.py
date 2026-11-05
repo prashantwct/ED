@@ -17,6 +17,7 @@ import pytest
 import refuge_fixtures as fx
 from core import esri_landcover as lc
 from core import refuges as rf
+from pages import open_page
 
 
 @pytest.fixture(scope="module")
@@ -310,7 +311,7 @@ def test_view_reads_the_conflict_views_register(tmp_path):
     app = str(Path(__file__).resolve().parent.parent / "app.py")
     at = AppTest.from_file(app, default_timeout=240)
     at.session_state["loaded_register"] = (data, "register.csv")
-    at.session_state["view"] = "Day refuges"
+    open_page(at, "refuges")
     at.session_state["refuge_lc_source"] = "None"
     # The synthetic register lies outside the vendored forest boundaries.
     at.session_state["refuge_forest"] = "No forest test"
@@ -326,10 +327,10 @@ def test_view_without_a_register_says_where_to_load_it():
 
     app = str(Path(__file__).resolve().parent.parent / "app.py")
     at = AppTest.from_file(app, default_timeout=120)
-    at.session_state["view"] = "Day refuges"
+    open_page(at, "refuges")
     at.run()
     assert not at.exception, at.exception
-    assert any("Conflict dashboard view first" in i.value for i in at.info)
+    assert any("on the Overview page" in i.value for i in at.info)
 
 
 def test_generate_brief_in_the_app_includes_refuges():
@@ -406,7 +407,7 @@ def test_a_beat_picked_in_the_table_is_shown_on_the_map():
         data=df.to_csv(index=False).encode(), name="register.csv", rows=len(df), pages=1,
         start_date="01/01/2026", end_date="01/03/2026", fetched_at="today")
     at.session_state["map_focus"] = ("beat", "Test")
-    at.run()
+    open_page(at, "where").run()
     assert not at.exception, at.exception
     assert any("Showing Beat Test" in i.value for i in at.info)
     next(b for b in at.button if b.label == "Show everything").click().run()

@@ -449,8 +449,8 @@ def render(register: Optional[pd.DataFrame], villages: Optional[pd.DataFrame],
     section("hotspot", "Day refuges",
             "Where elephants lie up by day, the raids each refuge feeds, and who to warn.")
     if register is None or register.empty:
-        st.info("Load the Gaj Rakshak register in the Conflict dashboard view first; this "
-                "view reads the same data.")
+        st.info("Load the Gaj Rakshak register first -- upload it or sign in on the "
+                "Overview page; this page reads the same data.")
         return
     source = land_cover_source()
     params = settings()

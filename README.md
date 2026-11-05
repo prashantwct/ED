@@ -44,8 +44,8 @@ which names were merged; boundary polygons are matched the same way.
 [herd-house-damage](https://five.epicollect.net/project/herd-house-damage)
 projects are household surveys, not sightings: what each household lost, its
 estimated rupee value, where its compensation claim stands, and how long the
-survey came after the damage. They get their own view (sidebar -> View, or the
-button on the landing page) rather than being folded into the sighting
+survey came after the damage. They get their own page (*Damage* along the top,
+or the button on the landing page) rather than being folded into the sighting
 statistics, and it answers different questions:
 
 - *Compensation* -- cases and loss by claim status, and a follow-up queue of
@@ -336,48 +336,82 @@ it is picked up automatically; the same applies to any partner added to
 
 ## What it produces
 
-**How the page reads.** Once a register is loaded, one line says where it came
-from, how many reports it holds and the dates they span, with the uploader
-moved behind *Replace file* and anything noticed while reading it behind *Data
-notes*. The headline numbers and the assessment stay at the top, with the
-Generate brief button beside them. Everything else sits in tabs, one per
-question a manager asks, so no question pushes another off the screen. *Where
-to act* comes first, because it is the question the page exists to answer:
+**How the app reads.** Pages along the top, one per question, so no
+question pushes another off the screen:
 
+* *Overview* (opens first) -- one sentence on what changed, four numbers
+  (conflict events and people killed or injured in the period, each against
+  the same days a year earlier; beats Critical / High; villages to warn), the
+  beats to act on first beside a map of the period's conflict, and what
+  changed in the last 30 days: beats newly Critical, the fastest-rising
+  beats, new hotspot places. *Act now* lists the worst Critical and High
+  beats with their first action, or switches to the brief's action plan
+  grouped by what to do. Each beat's *Map* link opens *Where to act* focused
+  on it.
 * *Where to act* -- the beat tier counts, the layer filters, then a table
   (beats, hotspots, villages, animals) beside the spatial view. One tick on a
   row shows only that place on the map.
-* *Villages at risk* -- the village ranking beside its map, and early-warning
+* *Villages* -- the village ranking beside its map, and early-warning
   coverage when a registry is loaded.
-* *Is it getting worse?* -- monthly conflict by type, conflict rate,
-  casualties, the seasonal grid, divisions over time, escalating beats and
-  the conflict rate by division.
-* *New or growing?* -- each place's emerging hotspot pattern (new,
-  intensifying, persistent, consecutive, sporadic, diminishing, historical) as
-  counts, a table, a hexagon map (flat, raised into columns by events, or
-  stacked by time into the cube on the basemap), a place-by-time heatmap, and
-  the space-time cube itself in 3D.
-* *When* -- the casualty peak window, how many reports count as night raids,
-  the seasonal peak, the hour-of-day and night/day charts.
-* *Data* -- monthly sightings, severity, division and escalation tables, the
-  filtered rows and their download.
+* *Patterns* -- three sections. *Is it getting worse?*: monthly conflict by
+  type, conflict rate, casualties, the seasonal grid, divisions over time,
+  escalating beats and the conflict rate by division. *When?*: the casualty
+  peak window, night raids, the seasonal peak, night sightings, the
+  hour-of-day and night/day charts. *New or growing?*: each place's emerging
+  hotspot pattern (new, intensifying, persistent, consecutive, sporadic,
+  diminishing, historical) as counts, a table, a hexagon map (flat, raised
+  into columns by events, or stacked by time into the cube on the basemap)
+  and a place-by-time heatmap.
+* *Day refuges* and *Damage* -- the two views of their own, as before.
+* *Data & brief* -- Generate brief, the full assessment as the brief states
+  it, what the numbers mean, the data notes, then monthly sightings,
+  severity, division and escalation tables, and the period's rows with their
+  download.
+* *Analyst* -- every model setting, the space-time cube in 3D, and what the
+  app could and could not reach.
 
 Each chart's download sits as an icon in its title row rather than a button
 under it, and wide tables show the columns a decision needs, with every
 column in their CSV.
 
-**The sidebar** runs in the order people reach for it: filters, then map
-styling, then *Advanced analysis* (collapsed), then optional data. Advanced
-analysis holds every model setting -- the comparison window, village radius,
-hotspot merge distance and minimum size, and the space-time step, hexagon,
-count and strict test -- under plain names, with the technical name in each
-help bubble. Their standard values are what every officer should see, so a
-setting moved off its standard is named in a badge at the top of the page and
-in the brief's scope line (`core/analysis_settings.py`), and *Reset to
-standard* puts them all back. Changing one is a choice an analyst makes on
-purpose, not something two officers can differ on without knowing.
+**Above every page.** One line says which register is loaded -- where it
+came from, how many reports, the dates they span -- with the uploader behind
+*Replace file* and anything noticed while reading it behind *Data notes*. On
+the conflict pages, the scope bar under it sets the area (division, range,
+beat), the period (30 days, 90 days, 12 months, all, or custom) and the
+incident type, with *Reset* and *Share*. The scope is the same on every page
+and is written into the address, so *Share* gives a link that opens this
+page with this area and period; the link carries no data, and whoever opens
+it loads the register themselves (`core/scope.py`).
 
-**Conflict trends.** First on the trends tab, before any ranking: monthly
+**The period sets what is counted, not what is ranked.** It was one date
+range doing two jobs: cutting the analysis to the last 90 days removed the
+headline comparisons and moved beats between tiers (escalating beats 4 to 1,
+High beats 22 to 3 on a test register). So the period is split. Its *focus
+window* is what the headline numbers count, the maps draw and the download
+holds. Tiers, escalation, hotspots, the village ranking, the trends and the
+brief use the *analysis history*: the register from its first report up to
+the period's end, for the same area and incident type. The period's end is
+the date the analysis is "as of"; its start only decides what is counted on
+screen. A focus window shorter than the register compares itself with the
+same days a year earlier, so a number and its change are about the same
+days. The default is the last 90 days, the same window as the Critical tier.
+
+**The sidebar** holds map styling and the optional uploads (village
+centroids, villager registry, user list). Every model setting -- the
+comparison window, village radius, hotspot merge distance and minimum size,
+and the space-time step, hexagon, count and strict test -- is on the
+*Analyst* page under a plain name, with the technical name in each help
+bubble. Their standard values are what every officer should see, so a
+setting moved off its standard is named in a badge on every page and in the
+brief's scope line (`core/analysis_settings.py`), and *Reset to standard*
+puts them all back. Changing one is a choice an analyst makes on purpose,
+not something two officers can differ on without knowing. Settings, scope
+and map styling survive moving between pages; Streamlit forgets a widget's
+value on a run that does not draw it, so the entry point writes each back to
+itself on every run.
+
+**Conflict trends.** First on the Patterns page, before any ranking: monthly
 conflict stacked by type (fatality darkest, at the base, so a growing dark band
 reads before a growing total) with a three-month average and the escalation
 window shaded; the monthly conflict rate against the period average, so more
@@ -438,7 +472,7 @@ cold spot in counts this sparse is just a quiet place. Two guards keep it
 honest: a cell counts as hot only if it had a report itself, so Gi* does not
 paint empty neighbours; and a trailing step less than half covered by the data
 is dropped, not read as everything cooling at once. Fewer than six steps gives
-no labels. Settings sit under *Advanced analysis* in the sidebar; the brief
+no labels. Settings sit on the *Analyst* page; the brief
 gets a table and the assessment a one-line headline.
 
 The 3D cube puts the ground on two axes (kilometres, at true ratio) and time on
@@ -505,8 +539,8 @@ the view is tight enough to read them. Streamlit's map reports clicks but not
 viewport changes, so that follows the view the filters produce rather than live
 pinch-zoom; the sidebar can pin a level instead.
 
-**Two maps.** The spatial view's layers are chosen in the *Where to act*
-tab, not the sidebar. *Events* (what happened) and *Animals* (lone bull,
+**Two maps.** The spatial view's layers are chosen on the *Where to act*
+page, not the sidebar. *Events* (what happened) and *Animals* (lone bull,
 bull party, family herd, ...) combine, so "crop or grain loss" with "lone
 bull" maps exactly those sightings. *Villages by tier* switches each tier on
 or off (Routine starts off), and hotspot footprints have their own toggle.
@@ -759,7 +793,10 @@ channel.
 ## Layout
 
 ```
-app.py               Streamlit entry point: layout and widgets only
+app.py               Streamlit entry point: navigation, source line, scope bar,
+                     sidebar, and the analysis every page shares
+app_pages/           One module per page (home, where, villages, patterns,
+                     data, analyst) and what they share (common, brief)
 core/config.py       Every tunable parameter
 core/csv_io.py       Encoding-tolerant CSV reading
 core/data_loader.py  Schema validation, date/time parsing, data-quality warnings
@@ -777,6 +814,8 @@ core/refuge_report.py Day refuges map and brief section
 core/refuge_dashboard.py The vendored atlas plate, filled with a run
 core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/analysis_settings.py Standard values for the tunables, and naming any changed
+core/scope.py        Area, period and incident type; focus window vs history
+core/overview.py     The Overview's sentence, Act now and What changed
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief
 core/brief_insights.py Findings, action plan and ecology for the brief

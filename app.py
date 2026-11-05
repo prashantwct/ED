@@ -1,30 +1,34 @@
 """Elephant Conflict Intelligence -- Streamlit entry point.
 
-All data logic lives in core/; this file handles layout, widgets and
-wiring only. The headline numbers and assessment sit on top; the rest is
-one tab per question a manager asks: is it getting worse, where to act,
-which villages, when, and the data behind it.
+All data logic lives in core/ and each page's layout in app_pages/; this
+file is the frame around them. It runs on every page: the masthead, the
+line saying which register is loaded, the scope bar (area, period,
+incident type), the sidebar, and the analysis every page shares, worked
+out once per scope. Then it runs the page the reader is on.
+
+The pages, along the top: Overview (what changed, where to act, whom to
+warn), Where to act, Villages, Patterns, Day refuges, Damage, Data &
+brief, and Analyst.
 """
 
 from __future__ import annotations
 
-import hashlib
 import io
 import logging
 import os
 import sys
 import time
+from types import SimpleNamespace
 from typing import Optional
 
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 
 # Set on each of the app's modules when this process first sees it loaded.
 _LOADED_AT = "_ed_loaded_at"
-# The app's own packages: core/ for the page, tools/ for the Forest
-# Alerts client the fetch imports from.
-_OUR_PACKAGES = ("core", "tools")
+# The app's own packages: core/ for the analysis, app_pages/ for the
+# pages, tools/ for the Forest Alerts client the fetch imports from.
+_OUR_PACKAGES = ("core", "app_pages", "tools")
 
 
 def _is_core(name: str) -> bool:
@@ -69,73 +73,22 @@ def _stamp_core_modules() -> None:
 
 _reloaded_core = _forget_stale_core_modules()
 
-from core.analytics import (
+from core import analysis_settings, boundaries, charts, landing, scope  # noqa: E402
+from core.analytics import (  # noqa: E402
     compute_is_night,
     compute_kpis,
     compute_severity,
-    division_conflict_rate,
-    division_monthly_conflict,
-    filter_dataframe,
     monthly_conflict_breakdown,
-    monthly_trend,
-    night_day_comparison,
-    seasonal_matrix,
-    severity_distribution,
     window_comparison,
 )
-from core import (
-    analysis_settings, boundaries, brief_insights, charts, landing, map_select,
-    report_charts, spacetime,
-)
-from core.exports import download_menu
-from core.config import (
-    DEFAULT_CUBE_CELL_KM,
-    DEFAULT_CUBE_STEP,
-    LOG_PATH,
-    NIGHT_HOUR_END,
-    NIGHT_HOUR_START,
-)
-from core.data_loader import load_and_validate_csv
-from core.exceptions import DataValidationError, SpatialEnrichmentError
-from core.hotspots import (
-    DEFAULT_EPS_KM,
-    DEFAULT_MIN_SAMPLES,
-    DEFAULT_VILLAGE_RADIUS_KM,
-    detect_hotspots,
-    hotspot_caveats,
-    village_caveats,
-    villages_at_risk,
-)
-from core.intelligence import (
-    CRITICAL_CASUALTY_WINDOW_DAYS,
-    DEFAULT_RECENT_DAYS,
-    TIER_CRITICAL,
-    TIER_HIGH,
-    TIER_ORDER,
-    format_window,
-    management_brief,
-)
-from core.map_engine import (
-    BASEMAP_STYLES,
-    DEFAULT_BASEMAP,
-    MAP_MODES,
-    basemap_warning,
-    render_map,
-    render_pattern_map,
-    render_village_map,
-)
-from core.map_export import sightings_map_svg, village_map_svg
-from core.report import generate_html_report
-from core.spatial import attach_nearest_village, load_village_centroids
-from core.ui import (
-    CATEGORY_STYLE,
-    TIER_STYLE,
-    findings,
-    inject_theme,
-    map_legend,
-    section,
-    tier_summary,
-)
+from core.config import LOG_PATH  # noqa: E402
+from core.data_loader import load_and_validate_csv  # noqa: E402
+from core.exceptions import DataValidationError, SpatialEnrichmentError  # noqa: E402
+from core.map_engine import BASEMAP_STYLES, DEFAULT_BASEMAP, basemap_warning  # noqa: E402
+from core.spatial import attach_nearest_village, load_village_centroids  # noqa: E402
+from core.ui import inject_theme  # noqa: E402
+
+from app_pages import common  # noqa: E402
 
 _stamp_core_modules()
 
@@ -158,104 +111,25 @@ st.set_page_config(
 )
 inject_theme()
 
-# A raw 0-300 severity slider is unusable once fatalities weigh 100.
-SEVERITY_FILTERS = {
-    "All reports": 0.0,
-    "Conflict only (damage or worse)": 1.0,
-    "Property damage or worse": 5.0,
-    "Human harm only (injury or death)": 25.0,
-    "Fatalities only": 100.0,
-}
 
-FILTER_KEYS = ["flt_dates", "flt_divisions", "flt_ranges", "flt_beats", "flt_severity"]
-
-# Plot colours drawn from the shared tokens so charts, map and report agree.
-BRAND = "#1f5f3f"
-BRAND_ALT = "#C2570C"
-
-# Hover stays, the toolbar goes: field staff never use it and it covers
-# the legend on a narrow screen.
-CHART_CONFIG = {"displayModeBar": False}
-# The 3D cube is the exception, with two buttons: once rotated there is
-# no other way back to the preset, and a rotated view is the one worth
-# saving for a report.
-CUBE_CONFIG = {
-    "displaylogo": False,
-    "modeBarButtons": [["resetCameraDefault3d", "toImage"]],
-    "toImageButtonOptions": {"format": "png", "scale": 2, "filename": "space_time_cube"},
-}
-
-
-def _plot(fig) -> None:
-    st.plotly_chart(fig, width="stretch", config=CHART_CONFIG)
-
-
-def _change(recent: float, prior: float, unit: str = "") -> str | None:
-    """Signed change for a metric delta, or None when there is no prior."""
-    if prior != prior or recent != recent:
-        return None
-    diff = recent - prior
-    if unit == "pt":
-        return f"{diff:+.1f} pts"
-    if prior > 0:
-        return f"{diff:+,.0f} ({diff / prior:+.0%})"
-    return f"{diff:+,.0f}"
-
-
-def _frame_key(frame: pd.DataFrame) -> str:
-    """Cheap, stable cache key for a DataFrame.
-
-    Hashing the coordinates and row count is enough to identify the
-    filtered selection, and avoids pickling the whole frame on every
-    rerun just to build a key.
-    """
-    coords = frame[["Latitude", "Longitude"]].to_numpy().tobytes()
-    return hashlib.blake2b(coords, digest_size=16).hexdigest() + f":{len(frame)}"
-
-
+# ---------------------------------------------------------------------------
+# Loading
+# ---------------------------------------------------------------------------
 @st.cache_data(show_spinner="Loading and validating the export...")
 def _load(file_bytes: bytes, filename: str):
     """Parse an uploaded CSV. Cached on content, so filters don't re-parse."""
     return load_and_validate_csv(io.BytesIO(file_bytes))
 
 
-def _ews():
-    """The early-warning coverage subsystem, imported on first use.
-
-    Nothing in it runs until a registry is uploaded and most sessions
-    never upload one, so it is not a top-level import. A dashboard that
-    cannot rank beats because an optional module failed to load is worse
-    than one without the optional module.
-    """
-    from core import coverage
-
-    return coverage
-
-
 @st.cache_data(show_spinner="Reading the early-warning registry...")
 def _registry(file_bytes: bytes, filename: str):
     """De-identify the registry once per upload, not once per rerun."""
-    return _ews().load_ews_registry(io.BytesIO(file_bytes))
+    return common._ews().load_ews_registry(io.BytesIO(file_bytes))
 
 
 @st.cache_data(show_spinner="Reading the registered user list...")
 def _roster(file_bytes: bytes, filename: str):
-    return _ews().load_staff_roster(io.BytesIO(file_bytes))
-
-
-@st.cache_data(show_spinner="Finding movement hotspots...", hash_funcs={pd.DataFrame: _frame_key})
-def _hotspots(frame: pd.DataFrame, eps_km: float, min_samples: int, as_of):
-    """Cached hotspot detection -- the slowest step on a rerun."""
-    return detect_hotspots(frame, eps_km=eps_km, min_samples=min_samples, as_of=as_of)
-
-
-@st.cache_data(show_spinner="Building the space-time cube...",
-               hash_funcs={pd.DataFrame: _frame_key})
-def _emerging(frame: pd.DataFrame, cell_km: float, step: str, metric: str, fdr: bool,
-              as_of, centroids: Optional[pd.DataFrame]):
-    """Cached cube and emerging hotspot labels for the current filters."""
-    cube = spacetime.build_cube(frame, cell_km=cell_km, step=step, metric=metric, as_of=as_of)
-    return cube, spacetime.emerging_hotspots(cube, fdr=fdr, villages=centroids)
+    return common._ews().load_staff_roster(io.BytesIO(file_bytes))
 
 
 def _fetch(request: landing.FetchRequest):
@@ -315,131 +189,98 @@ def _setting(name: str) -> Optional[str]:
     return os.getenv(name) or None
 
 
-# ---------------------------------------------------------------------------
-# 1. Upload, or fetch, & load
-# ---------------------------------------------------------------------------
-# A fetch survives reruns under this key; nothing else about it does.
-FETCHED_KEY = "fetched_register"
-# The last register that loaded, so the damage view can cross-check
-# against it without the upload widget being on its page.
-REGISTER_KEY = "loaded_register"
-
-# Two views over two kinds of record. The conflict dashboard reads the
-# Gaj Rakshak sighting register; the damage view reads the household
-# damage surveys. Different questions, so different pages.
-VIEW_KEY = "view"
-CONFLICT_VIEW, DAMAGE_VIEW = "Conflict dashboard", "Damage & compensation"
-REFUGE_VIEW = "Day refuges"
-view = st.sidebar.radio("View", [CONFLICT_VIEW, REFUGE_VIEW, DAMAGE_VIEW], key=VIEW_KEY)
-
-
-def _stashed_register() -> Optional[pd.DataFrame]:
-    """The register last loaded in the conflict view, if any."""
-    stash = st.session_state.get(REGISTER_KEY)
-    if stash is None:
-        return None
-    try:
-        return _load(*stash)[0]
-    except DataValidationError:
-        return None
-
-
-if view == REFUGE_VIEW:
-    from core import refuge_view
-
-    landing.header()
-    refuge_register = _stashed_register()
-    try:
-        refuge_villages, _ = load_village_centroids(None)
-    except SpatialEnrichmentError:
-        refuge_villages = None
-    if refuge_register is not None:
-        refuge_register, _ = attach_nearest_village(refuge_register, refuge_villages)
-        chosen = st.sidebar.multiselect(
-            "Division", sorted(refuge_register["Division"].unique()), key="refuge_divisions",
-            help="Leave empty for the whole register.")
-        if chosen:
-            refuge_register = refuge_register[refuge_register["Division"].isin(chosen)]
-    refuge_basemap = st.sidebar.selectbox(
-        "Basemap", list(BASEMAP_STYLES),
-        index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP), key="refuge_basemap",
-        disabled=basemap_warning() is not None, help=basemap_warning(),
-    )
-    refuge_view.render(refuge_register, refuge_villages, refuge_basemap)
-    st.stop()
-
-if view == DAMAGE_VIEW:
-    from core import damage_view
-
-    landing.header()
-    damage_df, damage_notes = damage_view.sources()
-    if damage_df is None:
-        st.info("Upload a herd-crop-damage or herd-house-damage export to begin.")
-        st.stop()
-    register_df = _stashed_register()
-    damage_basemap = st.sidebar.selectbox(
-        "Basemap", list(BASEMAP_STYLES),
-        index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP), key="damage_basemap",
-        disabled=basemap_warning() is not None, help=basemap_warning(),
-    )
-    damage_view.render(damage_df, damage_notes, register_df, damage_basemap)
-    st.stop()
-
-
-MAP_FOCUS_KEY = "map_focus"
-
-
-def _map_pick(event, key: str, kind: str, values: pd.Series, noun: str) -> None:
-    """Send the row picked in a table to the spatial view.
-
-    The latest pick in any table wins; clearing a table's pick clears the
-    map focus only if that table set it.
-    """
-    rows = event.selection.rows if event is not None else []
-    picked = values.iloc[rows[0]] if rows else None
-    previous = st.session_state.get(f"_pick_{key}")
-    if picked != previous:
-        st.session_state[f"_pick_{key}"] = picked
-        if picked is not None:
-            st.session_state[MAP_FOCUS_KEY] = (kind, picked)
-        elif st.session_state.get(MAP_FOCUS_KEY, (None, None))[0] == kind:
-            st.session_state.pop(MAP_FOCUS_KEY, None)
-
-
-def _map_focus(frame: pd.DataFrame, hotspot_table: pd.DataFrame,
-               village_table: pd.DataFrame, village_km: float) -> Optional[dict]:
-    """The focus the spatial view should draw, from the latest table pick."""
-    picked = st.session_state.get(MAP_FOCUS_KEY)
-    if not picked:
-        return None
-    return map_select.focus_for(picked[0], picked[1], frame, hotspot_table,
-                                village_table, village_km)
-
-
-def _open_damage_view() -> None:
-    st.session_state[VIEW_KEY] = DAMAGE_VIEW
-
-
-UPLOAD_KEY = "register_upload"
-
-
 def _day(stamp) -> str:
     """A date as people write it: 1 Oct 2025."""
     return f"{stamp.day} {stamp:%b %Y}"
 
 
-# The masthead sits above the uploader but depends on whether a file
-# arrived, which is only known after the widget is created. A container
-# reserves the slot now and is filled once that is settled.
+# A fetch survives reruns under this key; nothing else about it does.
+FETCHED_KEY = "fetched_register"
+# The last register that loaded, so the refuge and damage pages can read
+# it even in a session that never drew the uploader.
+REGISTER_KEY = "loaded_register"
+UPLOAD_KEY = "register_upload"
+
+# The scope bar's widgets.
+SCOPE_KEYS = ("flt_divisions", "flt_ranges", "flt_beats", "flt_period", "flt_dates",
+              "flt_severity")
+MAP_KEYS = ("map_basemap", "map_boundaries", "map_boundary_level")
+BOUNDARY_AUTO = "Auto (by zoom)"
+
+
+# ---------------------------------------------------------------------------
+# 0. Keep settings alive across pages
+# ---------------------------------------------------------------------------
+# Streamlit forgets a widget's value on any run that does not draw it, so
+# a setting made on the Analyst page would be gone after one visit to the
+# Overview. Writing each value back to itself at the top of every run
+# keeps it; the widgets are then created without a default of their own.
+for _key in SCOPE_KEYS + MAP_KEYS + analysis_settings.KEYS:
+    if _key in st.session_state:
+        st.session_state[_key] = st.session_state[_key]
+for _setting_ in analysis_settings.SETTINGS:
+    st.session_state.setdefault(_setting_.key, _setting_.default)
+st.session_state.setdefault("map_basemap", DEFAULT_BASEMAP)
+st.session_state.setdefault("map_boundaries", True)
+st.session_state.setdefault("map_boundary_level", BOUNDARY_AUTO)
+
+
+# ---------------------------------------------------------------------------
+# 1. Pages
+# ---------------------------------------------------------------------------
+# Pages are functions that read one shared context, built below once the
+# scope is known. They are defined here and run last.
+ctx = SimpleNamespace()
+
+
+def _page(module: str):
+    def run() -> None:
+        import importlib
+
+        importlib.import_module(f"app_pages.{module}").render(ctx)
+
+    run.__name__ = module
+    return run
+
+
+PAGES = {
+    "": st.Page(_page("home"), title="Overview", icon=":material/dashboard:",
+                url_path="overview", default=True),
+    "where": st.Page(_page("where"), title="Where to act", icon=":material/map:",
+                     url_path="where"),
+    "villages": st.Page(_page("villages"), title="Villages", icon=":material/home:",
+                        url_path="villages"),
+    "patterns": st.Page(_page("patterns"), title="Patterns",
+                        icon=":material/trending_up:", url_path="patterns"),
+    "refuges": st.Page(lambda: _refuge_page(), title="Day refuges",
+                       icon=":material/forest:", url_path="refuges"),
+    "damage": st.Page(lambda: _damage_page(), title="Damage",
+                      icon=":material/agriculture:", url_path="damage"),
+    "data": st.Page(_page("data"), title="Data & brief", icon=":material/description:",
+                    url_path="data"),
+    "analyst": st.Page(_page("analyst"), title="Analyst", icon=":material/tune:",
+                       url_path="analyst"),
+}
+ctx.pages = PAGES
+CONFLICT_PAGES = {"", "where", "villages", "patterns", "data", "analyst"}
+
+nav = st.navigation(list(PAGES.values()), position="top")
+current = next(k for k, p in PAGES.items() if p.url_path == nav.url_path)
+
+
+# ---------------------------------------------------------------------------
+# 2. The register: upload or fetch, and the line that says what loaded
+# ---------------------------------------------------------------------------
 masthead = st.container()
 fetched = st.session_state.get(FETCHED_KEY)
-# Once a register is loaded the uploader moves out of the way, into a
-# "Replace" popover on the source row. A keyed uploader's identity is its
-# key, not where it is drawn, so the move keeps the file; and session
-# state already holds the new value when the run starts, so the layout can
-# be chosen before the widget exists.
+# Once a register is loaded the uploader moves into a "Replace" popover on
+# the source line, drawn on every page so the file survives moving between
+# them. A keyed uploader's identity is its key, not where it is drawn, and
+# session state already holds the new value when the run starts, so the
+# layout can be chosen before the widget exists.
 held = st.session_state.get(UPLOAD_KEY) is not None or fetched is not None
 note_slot = notes_slot = None
+uploaded = None
 if held:
     note_col, notes_col, replace_col, *clear_col = st.columns(
         [7, 2, 2, 1] if fetched else [8, 2, 2], vertical_alignment="center")
@@ -456,17 +297,115 @@ if held:
             if st.button("Clear", help="Discard the fetched register."):
                 del st.session_state[FETCHED_KEY]
                 st.rerun()
-else:
+elif current in CONFLICT_PAGES:
     uploaded = st.file_uploader(
         "Upload the Gajrakshak sightings export (CSV)", type="csv", key=UPLOAD_KEY,
     )
+
 with masthead:
-    if uploaded or fetched:
+    if uploaded or fetched or current not in CONFLICT_PAGES:
         landing.header()
     else:
         landing.hero()
 
+
+def _stashed_register() -> Optional[pd.DataFrame]:
+    """The register last loaded in this session, if any."""
+    stash = st.session_state.get(REGISTER_KEY)
+    if stash is None:
+        return None
+    try:
+        return _load(*stash)[0]
+    except DataValidationError:
+        return None
+
+
+def _optional_data() -> SimpleNamespace:
+    """The sidebar's optional uploads: centroid override, registry, user list.
+
+    Drawn on every page that holds a register, so a file added once stays
+    while the reader moves around.
+    """
+    out = SimpleNamespace(centroid_upload=None, registry_upload=None, roster_upload=None,
+                          panel=st.sidebar.container())
+    out.panel.divider()
+    out.panel.subheader("Optional data")
+    with out.panel.expander("Village centroids", expanded=False):
+        st.caption(
+            "Shahdol-Anuppur centroids ship with the app and load automatically. "
+            "Upload only to override them. Columns: Village, Latitude, Longitude."
+        )
+        out.centroid_upload = st.file_uploader(
+            "Override centroids", type="csv", key="centroids_upload"
+        )
+    with out.panel.expander("Early-warning coverage", expanded=False):
+        st.caption(
+            "Optional. Upload the early-warning villager registry to see which "
+            "exposed villages have nobody enrolled, and the app-user list to see "
+            "reporting effort against registered staff."
+        )
+        out.registry_upload = st.file_uploader(
+            "Villager registry (CSV)", type="csv", key="registry_upload",
+            help="Columns: Latitude, Longitude, and ideally Village and Division.",
+        )
+        out.roster_upload = st.file_uploader(
+            "Registered app users (CSV)", type="csv", key="roster_upload",
+            help="Columns: Division, and ideally Latitude and Longitude.",
+        )
+        st.caption(
+            "Both files carry personal data. Names, mobile numbers and email "
+            "addresses are discarded as the file is read and coordinates are "
+            "rounded to about 100 m, so only per-village counts reach the page or "
+            "any download. Neither file is stored."
+        )
+    return out
+
+
+def _refuge_page() -> None:
+    from core import refuge_view
+
+    register = _stashed_register()
+    try:
+        refuge_villages, _ = load_village_centroids(None)
+    except SpatialEnrichmentError:
+        refuge_villages = None
+    if register is not None:
+        register, _ = attach_nearest_village(register, refuge_villages)
+        chosen = st.sidebar.multiselect(
+            "Division", sorted(register["Division"].unique()), key="refuge_divisions",
+            help="Leave empty for the whole register.")
+        if chosen:
+            register = register[register["Division"].isin(chosen)]
+    basemap_note = basemap_warning()
+    refuge_basemap = st.sidebar.selectbox(
+        "Basemap", list(BASEMAP_STYLES),
+        index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP), key="refuge_basemap",
+        disabled=basemap_note is not None, help=basemap_note,
+    )
+    refuge_view.render(register, refuge_villages, refuge_basemap)
+
+
+def _damage_page() -> None:
+    from core import damage_view
+
+    damage_df, damage_notes = damage_view.sources()
+    if damage_df is None:
+        st.info("Upload a herd-crop-damage or herd-house-damage export to begin.")
+        return
+    basemap_note = basemap_warning()
+    damage_basemap = st.sidebar.selectbox(
+        "Basemap", list(BASEMAP_STYLES),
+        index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP), key="damage_basemap",
+        disabled=basemap_note is not None, help=basemap_note,
+    )
+    damage_view.render(damage_df, damage_notes, _stashed_register(), damage_basemap)
+
+
+# Nothing loaded yet: the conflict pages show the landing page.
 if not uploaded and not fetched:
+    if current not in CONFLICT_PAGES:
+        nav.run()
+        st.stop()
     request = landing.fetch_panel()
     if request is not None:
         refusal = request.is_usable()
@@ -477,18 +416,14 @@ if not uploaded and not fetched:
             if result is not None:
                 st.session_state[FETCHED_KEY] = result
                 st.rerun()
-    st.button(
+    if st.button(
         "Crop and house damage surveys (Epicollect5)",
         help="Losses, compensation and the Gaj Rakshak gap, from the damage surveys.",
-        on_click=_open_damage_view,
-    )
+    ):
+        st.switch_page(PAGES["damage"])
     landing.details()
     st.stop()
 
-# A fetch is the source until it is cleared, and an upload overrides it.
-# The source row, with Replace and Clear, is drawn before the load so that
-# a file the loader rejects does not strand the session on an error with
-# no way back; the note itself is written once the load says what arrived.
 if note_slot is None:  # a source the start of the run did not know about
     _note_col, _notes_col = st.columns([10, 2], vertical_alignment="center")
     note_slot, notes_slot = _note_col.empty(), _notes_col.empty()
@@ -515,6 +450,8 @@ def _source_note(rows: Optional[int] = None, span: str = "") -> None:
         )
 
 
+# The source line is drawn before the load, so a file the loader rejects
+# does not strand the session on an error with no way back.
 _source_note()
 
 if uploaded:
@@ -532,63 +469,43 @@ _source_note(len(raw_df),
              f", {_day(raw_df['Date'].min())} to {_day(raw_df['Date'].max())}")
 
 # Anything worth knowing about the data, gathered as it is read and shown
-# behind one button on the source row rather than as banners around it.
+# behind one button on the source line rather than as banners around it.
 data_notes: list = list(load_warnings)
 
 
-# ---------------------------------------------------------------------------
-# 2. Sidebar: centroids, filters, tuning
-# ---------------------------------------------------------------------------
-# Sections in the order people reach for them, filled in the order the
-# code can fill them: what to look at, how the map looks, how the analysis
-# is tuned, and the optional data that is added once a season.
-sb_filters = st.sidebar.container()
-sb_map = st.sidebar.container()
-sb_analysis = st.sidebar.container()
-sb_sources = st.sidebar.container()
+def _notes_popover(notes: list, about: list) -> None:
+    with notes_slot.container():
+        with st.popover(f"Data notes ({len(notes)})" if notes else "About the data",
+                        icon=":material/info:", width="stretch",
+                        help="What was found while reading the register."):
+            for note in notes:
+                st.markdown(f"- {note}")
+            if not notes:
+                st.markdown("Nothing unusual was found while reading the register.")
+            for line in about:
+                st.caption(line)
 
-sb_sources.divider()
-sb_sources.subheader("Optional data")
-with sb_sources.expander("Village centroids", expanded=False):
-    st.caption(
-        "Shahdol-Anuppur centroids ship with the app and load automatically. "
-        "Upload only to override them. Columns: Village, Latitude, Longitude."
-    )
-    centroid_upload = st.file_uploader(
-        "Override centroids", type="csv", key="centroids_upload"
-    )
 
-with sb_sources.expander("Early-warning coverage", expanded=False):
-    st.caption(
-        "Optional. Upload the early-warning villager registry to see which "
-        "exposed villages have nobody enrolled, and the app-user list to see "
-        "reporting effort against registered staff."
-    )
-    registry_upload = st.file_uploader(
-        "Villager registry (CSV)", type="csv", key="registry_upload",
-        help="Columns: Latitude, Longitude, and ideally Village and Division.",
-    )
-    roster_upload = st.file_uploader(
-        "Registered app users (CSV)", type="csv", key="roster_upload",
-        help="Columns: Division, and ideally Latitude and Longitude.",
-    )
-    st.caption(
-        "Both files carry personal data. Names, mobile numbers and email "
-        "addresses are discarded as the file is read and coordinates are "
-        "rounded to about 100 m, so only per-village counts reach the page or "
-        "any download. Neither file is stored."
-    )
+# The refuge and damage pages read the register on their own terms.
+if current not in CONFLICT_PAGES:
+    _notes_popover(data_notes, [])
+    nav.run()
+    st.stop()
+
+# Map styling first in the sidebar, then the optional uploads below it.
+sidebar_map = st.sidebar.container()
+optional = _optional_data()
 
 try:
     villages, centroid_warnings = load_village_centroids(
-        centroid_upload if centroid_upload else None
+        optional.centroid_upload if optional.centroid_upload else None
     )
 except SpatialEnrichmentError as exc:
     # Beside the uploader when it was the user's file; a data note when
     # the bundled file is what failed.
     failed = f"Village centroids not applied: {exc}"
-    if centroid_upload:
-        sb_sources.warning(failed)
+    if optional.centroid_upload:
+        optional.panel.warning(failed)
     else:
         data_notes.append(failed)
     villages, centroid_warnings = None, []
@@ -599,1180 +516,262 @@ data_about = []
 if villages is not None:
     data_about.append(
         f"Villages are named against {len(villages):,} "
-        f"{'uploaded' if centroid_upload else 'bundled'} village centroids."
+        f"{'uploaded' if optional.centroid_upload else 'bundled'} village centroids."
     )
 
-with notes_slot.container():
-    n_notes = len(data_notes)
-    with st.popover(f"Data notes ({n_notes})" if n_notes else "About the data",
-                    icon=":material/info:", width="stretch",
-                    help="What was found while reading the register."):
-        for note in data_notes:
-            st.markdown(f"- {note}")
-        if not data_notes:
-            st.markdown("Nothing unusual was found while reading the register.")
-        for line in data_about:
-            st.caption(line)
+_notes_popover(data_notes, data_about)
 
 registry = roster = None
 for source, loader, label in (
-    (registry_upload, _registry, "registry"),
-    (roster_upload, _roster, "user list"),
+    (optional.registry_upload, _registry, "registry"),
+    (optional.roster_upload, _roster, "user list"),
 ):
     if source is None:
         continue
     try:
         loaded, load_notes = loader(source.getvalue(), source.name)
     except DataValidationError as exc:
-        sb_sources.warning(f"Could not read the {label}: {exc}")
+        optional.panel.warning(f"Could not read the {label}: {exc}")
         continue
     except ImportError:
         # Stale interpreter after a deploy: the entry point has been
         # reloaded from disk but an already-imported module has not.
         logger.exception("Coverage subsystem failed to import")
-        sb_sources.error(
+        optional.panel.error(
             "Early-warning coverage could not load. If the app was updated "
             "just now, reboot it so the running process picks up the new "
             "modules. Everything else on this page is unaffected."
         )
         break
     for note in load_notes:
-        sb_sources.caption(note)
+        optional.panel.caption(note)
     if label == "registry":
         registry = loaded
-        sb_sources.success(f"{len(registry):,} registrations read.")
+        optional.panel.success(f"{len(registry):,} registrations read.")
     else:
         roster = loaded
-        sb_sources.success(f"{len(roster):,} registered users read.")
+        optional.panel.success(f"{len(roster):,} registered users read.")
 
 df = df.copy()
 df["Severity Score"] = compute_severity(df)
 df["Is_Night"] = compute_is_night(df)
 
-sb_filters.header("Filters")
 
-if sb_filters.button("Reset filters"):
-    # Clearing the widget keys is what resets them; a bare st.rerun()
-    # re-runs with every selection still in session state.
-    for key in FILTER_KEYS:
-        st.session_state.pop(key, None)
-    st.rerun()
-
+# ---------------------------------------------------------------------------
+# 3. The scope bar: area, period, incident type -- on every conflict page
+# ---------------------------------------------------------------------------
 min_date, max_date = df["Date"].min().date(), df["Date"].max().date()
-date_range = sb_filters.date_input(
-    "Date range",
-    value=(min_date, max_date),
-    min_value=min_date,
-    max_value=max_date,
-    key="flt_dates",
-)
-if isinstance(date_range, tuple) and len(date_range) != 2:
-    date_range = (min_date, max_date)
-
 division_options = sorted(df["Division"].unique())
-divisions = sb_filters.multiselect("Division", division_options, key="flt_divisions")
+incident_options = list(common.SEVERITY_FILTERS)
 
-# Prune stale selections before creating the dependent widget. Widening
+# First run with this register: start from the link, if it carries a scope.
+if "flt_period" not in st.session_state:
+    shared = scope.from_query(
+        {k: st.query_params.get_all(k) for k in st.query_params},
+        division_options, sorted(df["Range"].unique()), sorted(df["Beat"].unique()),
+        incident_options)
+    st.session_state["flt_divisions"] = shared["divisions"]
+    st.session_state["flt_ranges"] = shared["ranges"]
+    st.session_state["flt_beats"] = shared["beats"]
+    st.session_state["flt_period"] = shared["period"]
+    st.session_state["flt_severity"] = shared["incident"]
+    if shared["custom"]:
+        st.session_state["flt_dates"] = shared["custom"]
+
+
+def _reset_scope() -> None:
+    for key in ("flt_divisions", "flt_ranges", "flt_beats"):
+        st.session_state[key] = []
+    st.session_state["flt_period"] = scope.DEFAULT_PERIOD
+    st.session_state["flt_severity"] = incident_options[0]
+    st.session_state.pop("flt_dates", None)
+
+
+def _keep_a_period() -> None:
+    # A segmented control can be clicked off; a page always has a period.
+    if not st.session_state.get("flt_period"):
+        st.session_state["flt_period"] = scope.DEFAULT_PERIOD
+
+
+# Prune stale selections before creating the dependent widgets. Widening
 # Division back out otherwise leaves Range holding values no longer
 # offered, silently excluding rows while the UI looks reset.
+st.session_state["flt_divisions"] = [
+    d for d in st.session_state.get("flt_divisions", []) if d in division_options]
+divisions = st.session_state["flt_divisions"]
 range_pool = df[df["Division"].isin(divisions)] if divisions else df
 range_options = sorted(range_pool["Range"].unique())
 st.session_state["flt_ranges"] = [
-    r for r in st.session_state.get("flt_ranges", []) if r in range_options
-]
-ranges = sb_filters.multiselect("Range", range_options, key="flt_ranges")
-
+    r for r in st.session_state.get("flt_ranges", []) if r in range_options]
+ranges = st.session_state["flt_ranges"]
 beat_pool = range_pool[range_pool["Range"].isin(ranges)] if ranges else range_pool
 beat_options = sorted(beat_pool["Beat"].unique())
 st.session_state["flt_beats"] = [
-    b for b in st.session_state.get("flt_beats", []) if b in beat_options
-]
-beats = sb_filters.multiselect("Beat", beat_options, key="flt_beats")
+    b for b in st.session_state.get("flt_beats", []) if b in beat_options]
+if st.session_state.get("flt_severity") not in incident_options:
+    st.session_state["flt_severity"] = incident_options[0]
+if st.session_state.get("flt_period") not in scope.PERIODS:
+    st.session_state["flt_period"] = scope.DEFAULT_PERIOD
 
-severity_choice = sb_filters.selectbox(
-    "Incident type",
-    list(SEVERITY_FILTERS),
-    key="flt_severity",
-    help="Show only reports at least this serious.",
+area_col, period_col, type_col, act_col = st.columns([2.4, 5.4, 2.4, 3.2],
+                                                    vertical_alignment="bottom")
+with area_col.popover(
+        scope.area_label(divisions, ranges, st.session_state["flt_beats"]),
+        icon=":material/location_on:", width="stretch",
+        help="Division, range and beat. Leave empty for the whole register."):
+    divisions = st.multiselect("Division", division_options, key="flt_divisions")
+    ranges = st.multiselect("Range", range_options, key="flt_ranges")
+    beats = st.multiselect("Beat", beat_options, key="flt_beats")
+with period_col:
+    period = st.segmented_control(
+        "Period", list(scope.PERIODS), key="flt_period", on_change=_keep_a_period,
+        format_func=lambda p: scope.SHORT_LABELS.get(p, p),
+        help="What the headline numbers count and the map draws. Rankings use the "
+        "register up to its end.",
+    ) or scope.DEFAULT_PERIOD
+    custom = None
+    if period == scope.CUSTOM:
+        st.session_state.setdefault("flt_dates", (min_date, max_date))
+        custom = st.date_input("Custom period", min_value=min_date, max_value=max_date,
+                               key="flt_dates", format="DD/MM/YYYY")
+severity_choice = type_col.selectbox(
+    "Incident type", incident_options, key="flt_severity",
+    help="Show only reports at least this serious.")
+actions = act_col.container(horizontal=True, horizontal_alignment="right")
+actions.button("Reset", icon=":material/restart_alt:", help="Back to all divisions, "
+               "the last 90 days and all reports.", on_click=_reset_scope)
+
+window = scope.focus_window(period, min_date, max_date, custom)
+query = scope.to_query(divisions, ranges, beats, period, custom, severity_choice,
+                       incident_options)
+# A link from the Overview names the place to focus the map on. Apply it
+# once, then leave it out of the address so a reload does not re-apply it.
+_kind, _, _value = (st.query_params.get(common.FOCUS_PARAM) or "").partition(":")
+if _kind in common.FOCUS_KINDS and _value:
+    common.focus_map_on(_kind, _value)
+st.query_params.from_dict(query)
+
+
+def _share_link() -> str:
+    """This page and scope as a link. The register is never in it."""
+    from urllib.parse import urlencode, urlsplit
+
+    page = PAGES[current].url_path
+    page = "" if current == "" else page
+    try:
+        parts = urlsplit(st.context.url or "")
+    except Exception:  # noqa: BLE001 - no browser context, e.g. under test
+        parts = None
+    base = f"{parts.scheme}://{parts.netloc}" if parts and parts.netloc else ""
+    root = (st.get_option("server.baseUrlPath") or "").strip("/")
+    path = "/".join(p for p in (root, page) if p)
+    tail = ("?" + urlencode(query, doseq=True)) if query else ""
+    return f"{base}/{path}{tail}"
+
+
+with actions.popover("Share", icon=":material/link:",
+                     help="A link to this page with this area and period."):
+    st.markdown("**Share this view**")
+    st.code(_share_link(), language=None, wrap_lines=True)
+    st.caption("The link opens this page with the same area, period and incident "
+               "type. It carries no data: whoever opens it loads the register "
+               "themselves, under their own sign-in.")
+
+history = scope.history(df, window, divisions, ranges, beats,
+                        common.SEVERITY_FILTERS[severity_choice])
+focus = scope.focus(history, window)
+period_end = pd.Timestamp(window.end)
+st.caption(
+    f"Showing {window.label()} ({window.days:,} days, {len(focus):,} reports). "
+    + ("" if scope.covers_register(window, min_date) else
+       f"Rankings and trends use the register from {_day(min_date)} to "
+       f"{_day(window.end)}.")
 )
 
-# Model parameters, behind one collapsed section: the standard values are
-# what every officer should see, and anything changed is named on the page
-# and in the brief (core.analysis_settings).
-custom_analysis = analysis_settings.non_standard(st.session_state)
-sb_analysis.divider()
-with sb_analysis.expander(
-    "Advanced analysis" + (" (changed)" if custom_analysis else ""),
-    icon=":material/tune:",
-):
-    st.caption("For analysts. The standard settings suit most reviews; anything "
-               "changed here is named at the top of the page and in the brief.")
-    recent_days = st.slider(
-        "Compare the last ... days",
-        min_value=30, max_value=180, value=analysis_settings.RECENT_DAYS.default, step=30,
-        key=analysis_settings.RECENT_DAYS.key,
-        help="Trends compare these days with the same days a year earlier. Critical "
-        f"always uses {CRITICAL_CASUALTY_WINDOW_DAYS} days.",
-    )
-    village_radius = st.slider(
-        "Count incidents within ... km of a village",
-        min_value=1.0, max_value=10.0, value=analysis_settings.VILLAGE_RADIUS.default,
-        step=0.5, key=analysis_settings.VILLAGE_RADIUS.key,
-        help="Incidents this close to a village count towards its risk (the village "
-        "exposure radius).",
-    )
-    eps_km = st.slider(
-        "Merge activity closer than ... km",
-        min_value=0.5, max_value=3.0, value=analysis_settings.EPS_KM.default, step=0.25,
-        key=analysis_settings.EPS_KM.key,
-        help="Reports this close together join one hotspot (the DBSCAN neighbour distance).",
-    )
-    min_samples = st.slider(
-        "Smallest hotspot (reports)",
-        min_value=5, max_value=40, value=analysis_settings.MIN_SAMPLES.default, step=5,
-        key=analysis_settings.MIN_SAMPLES.key,
-        help="A cluster needs at least this many reports to count as a hotspot.",
-    )
-    st.markdown("**New or growing places**")
-    cube_step = st.selectbox(
-        "Time step", list(spacetime.STEPS),
-        index=list(spacetime.STEPS).index(analysis_settings.CUBE_STEP.default),
-        key=analysis_settings.CUBE_STEP.key,
-        help="Shorter steps react faster but need more reports per place.",
-    )
-    cube_cell_km = st.slider(
-        "Hexagon size (km)", min_value=1.0, max_value=5.0,
-        value=analysis_settings.CUBE_CELL_KM.default, step=0.5,
-        key=analysis_settings.CUBE_CELL_KM.key,
-        help="Distance between neighbouring hexagon centres.",
-    )
-    cube_metric = st.radio(
-        "Count", spacetime.METRICS, horizontal=True, key=analysis_settings.CUBE_METRIC.key,
-        help="All reports adds plain sightings, which mostly track where people report.",
-    )
-    cube_fdr = st.checkbox(
-        "Strict test (fewer false alarms)", value=analysis_settings.CUBE_FDR.default,
-        key=analysis_settings.CUBE_FDR.key,
-        help="Corrects for testing many places at once (false discovery rate). Off "
-        "finds more, some of them by chance.",
-    )
-    if st.button("Reset to standard", disabled=not custom_analysis, width="stretch"):
-        for key in analysis_settings.KEYS:
-            st.session_state.pop(key, None)
-        st.rerun()
 
-sb_map.divider()
-sb_map.subheader("Map")
+# ---------------------------------------------------------------------------
+# 4. Sidebar: map styling
+# ---------------------------------------------------------------------------
+map_panel = sidebar_map
+map_panel.subheader("Map")
 basemap_unavailable = basemap_warning()
-basemap = sb_map.selectbox(
-    "Basemap",
-    list(BASEMAP_STYLES),
-    index=list(BASEMAP_STYLES).index(DEFAULT_BASEMAP),
+basemap = map_panel.selectbox(
+    "Basemap", list(BASEMAP_STYLES), key="map_basemap",
     disabled=basemap_unavailable is not None,
     help=basemap_unavailable or "Terrain and imagery read better than street "
     "cartography here.",
 )
-
 if boundaries.available():
-    layer_boundaries = sb_map.checkbox("Forest boundaries", value=True)
-    boundary_choice = sb_map.selectbox(
+    layer_boundaries = map_panel.checkbox("Forest boundaries", key="map_boundaries")
+    boundary_choice = map_panel.selectbox(
         "Boundary level",
-        ["Auto (by zoom)"] + [boundaries.LEVEL_LABELS[k] for k in boundaries.LEVELS],
+        [BOUNDARY_AUTO] + [boundaries.LEVEL_LABELS[k] for k in boundaries.LEVELS],
+        key="map_boundary_level",
         help="Auto picks the level from the view your filters produce. "
         "Pin one to override it.",
     )
-    boundary_level = None if boundary_choice.startswith("Auto") else {
+    boundary_level = None if boundary_choice == BOUNDARY_AUTO else {
         boundaries.LEVEL_LABELS[k]: k for k in boundaries.LEVELS
     }[boundary_choice]
 else:
     layer_boundaries, boundary_level = False, None
 
+
+# ---------------------------------------------------------------------------
+# 5. The shared analysis, worked out once per scope and cached
+# ---------------------------------------------------------------------------
+settings = {s.key: st.session_state[s.key] for s in analysis_settings.SETTINGS}
+recent_days = int(settings[analysis_settings.RECENT_DAYS.key])
+eps_km = float(settings[analysis_settings.EPS_KM.key])
+min_samples = int(settings[analysis_settings.MIN_SAMPLES.key])
+village_radius = float(settings[analysis_settings.VILLAGE_RADIUS.key])
+cube_step = settings[analysis_settings.CUBE_STEP.key]
+cube_cell_km = float(settings[analysis_settings.CUBE_CELL_KM.key])
+cube_metric = settings[analysis_settings.CUBE_METRIC.key]
+cube_fdr = bool(settings[analysis_settings.CUBE_FDR.key])
+custom_analysis = analysis_settings.non_standard(settings)
+
 if custom_analysis:
     st.badge("Custom analysis: " + "; ".join(custom_analysis), icon=":material/tune:",
              color="orange",
-             help="Set under Advanced analysis in the sidebar. Reset to standard there.")
+             help="Set on the Analyst page. Reset to standard there.")
 
-filtered = filter_dataframe(
-    df,
-    date_range=date_range,
-    divisions=divisions,
-    ranges=ranges,
-    beats=beats,
-    min_severity=SEVERITY_FILTERS[severity_choice],
-)
-
-
-# ---------------------------------------------------------------------------
-# 3. Headline numbers
-# ---------------------------------------------------------------------------
-kpis = compute_kpis(filtered)
-
-# Anchor casualty recency to the selected period's end, not to whatever
-# the current Division/Beat selection happens to end at.
-period_end = pd.Timestamp(date_range[1]) if len(date_range) == 2 else df["Date"].max()
-
-monthly = monthly_conflict_breakdown(filtered)
-change = window_comparison(filtered, recent_days, as_of=period_end)
-# Against the same weeks last year once the data reaches back that far:
-# raiding follows the harvest, so the window before mostly measures the
-# season.
-_base = "year" if pd.notna(change.get("conflicts_year")) else "prior"
-# Short enough to fit the card at desktop width; the help says the rest.
-window_note = "vs last yr" if _base == "year" else f"vs prior {recent_days}d"
-window_help = (f"Change over the last {recent_days} days against "
-               + (f"the same {recent_days} days a year earlier."
-                  if _base == "year" else f"the {recent_days} days before them."))
-
-
-def _spark(column: str):
-    """Monthly series behind a headline number, when there is a trend to show."""
-    return monthly[column].tolist() if len(monthly) >= 3 else None
-
-
-# Each headline carries its monthly sparkline and the change over the
-# escalation window. Rises in conflict are bad news, so they read red.
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Reports", f"{kpis['entries']:,}", chart_data=_spark("Sightings"),
-          chart_type="bar", border=True)
-c2.metric(
-    "Conflict events",
-    f"{kpis['conflicts']:,}",
-    delta=_change(change["conflicts_recent"], change[f"conflicts_{_base}"]),
-    delta_color="inverse",
-    delta_description=window_note,
-    help=window_help,
-    chart_data=_spark("Conflict Events"),
-    chart_type="area",
-    border=True,
-)
-c3.metric(
-    "Conflict rate",
-    "N/A" if pd.isna(kpis["conflict_rate"]) else f"{kpis['conflict_rate']:.1f}%",
-    delta=_change(change["rate_recent"], change[f"rate_{_base}"], unit="pt"),
-    delta_color="inverse",
-    delta_description=window_note,
-    help="Share of reports with damage or harm. " + window_help,
-    chart_data=_spark("Conflict Rate %") if len(monthly) >= 3
-    and monthly["Conflict Rate %"].notna().all() else None,
-    border=True,
-)
-c4.metric(
-    "Killed / injured",
-    f"{int(kpis['human_deaths'])} / {int(kpis['human_injuries'])}",
-    delta=_change(change["casualties_recent"], change[f"casualties_{_base}"]),
-    delta_color="inverse",
-    delta_description=window_note,
-    help="People killed and injured. " + window_help,
-    chart_data=(monthly["Human Deaths"] + monthly["People Injured"]).tolist()
-    if len(monthly) >= 3 else None,
-    chart_type="bar",
-    border=True,
-)
-# Measured on direct sightings with an hour. Signs and damage are night
-# by rule (they are written up the morning after), so counting them would
-# report the rule back as a finding.
-c5.metric(
-    "Seen at night",
-    "N/A" if pd.isna(kpis["sighting_night_pct"]) else f"{kpis['sighting_night_pct']:.0f}%",
-    delta=(f"of {kpis['sightings_timed']:,} timed"
-           if kpis["sightings_timed"] else None),
-    delta_color="off",
-    border=True,
-    help="Direct sightings 18:00-06:00; signs and damage are left out, their hour is the write-up.",
-)
-
-if filtered.empty:
-    st.warning("No rows match the current filters. Adjust the filters in the sidebar.")
+if history.empty:
+    st.warning("No reports match this area and incident type. Widen the area or reset "
+               "the scope.")
     st.stop()
 
-brief = management_brief(filtered, recent_days=recent_days, as_of=period_end)
-
-# Everything the tabs share is worked out once, before any tab draws.
-hotspots = _hotspots(filtered, eps_km, min_samples, period_end)
-village_risk = villages_at_risk(
-    filtered, villages, hotspots, radius_km=village_radius, as_of=period_end
-)
+compare_days = scope.comparison_days(window, min_date, recent_days)
+brief = common.brief_for(history, recent_days, period_end)
+hotspots = common._hotspots(history, eps_km, min_samples, period_end)
+village_risk = common.villages_for(history, villages, hotspots, village_radius, period_end)
 coverage_table = pd.DataFrame()
 coverage_stats: dict = {}
 if registry is not None:
-    coverage_table, coverage_stats = _ews().village_coverage(
-        village_risk, villages, registry
-    )
-cube, emerging = _emerging(filtered, cube_cell_km, cube_step, cube_metric, cube_fdr,
-                           period_end, villages)
-beats_table = brief["beats"]
-composition = brief["composition"]
-escalating = brief["escalating"]
-temporal = brief["temporal"]
-division_palette = charts.division_colors(df["Division"].unique())
+    coverage_table, coverage_stats = common._ews().village_coverage(
+        village_risk, villages, registry)
+cube, emerging = common._emerging(history, cube_cell_km, cube_step, cube_metric,
+                                  cube_fdr, period_end, villages)
 
+ctx.__dict__.update(
+    query=query, df=df, history=history, focus=focus, window=window, period_end=period_end,
+    register_start=min_date, register_end=max_date,
+    villages=villages, registry=registry, roster=roster,
+    coverage_table=coverage_table, coverage_stats=coverage_stats,
+    kpis=compute_kpis(focus), kpis_history=compute_kpis(history),
+    monthly=monthly_conflict_breakdown(history),
+    change=window_comparison(history, compare_days, as_of=period_end),
+    compare_days=compare_days, brief=brief, beats_table=brief["beats"],
+    composition=brief["composition"], escalating=brief["escalating"],
+    temporal=brief["temporal"], hotspots=hotspots, village_risk=village_risk,
+    cube=cube, emerging=emerging,
+    division_palette=charts.division_colors(df["Division"].unique()),
+    recent_days=recent_days, eps_km=eps_km, min_samples=min_samples,
+    village_radius=village_radius, cube_step=cube_step, cube_cell_km=cube_cell_km,
+    cube_metric=cube_metric, cube_fdr=cube_fdr, custom_analysis=custom_analysis,
+    basemap=basemap, layer_boundaries=layer_boundaries, boundary_level=boundary_level,
+    divisions=divisions, ranges=ranges, beats=beats, severity_choice=severity_choice,
+    data_notes=data_notes, data_about=data_about, load_warnings=load_warnings,
+)
 
-def _figure(title: str, fig, download_name: str, make_svg, note: Optional[str] = None,
-            subtitle: str = "") -> None:
-    """A chart under one header row: its title, and its Download menu at the right."""
-    head, menu = st.columns([14, 1], vertical_alignment="bottom")
-    head.markdown(f"**{title}**" + (f" -- {subtitle}" if subtitle else ""))
-    with menu:
-        download_menu(download_name, make_svg, compact=True)
-    _plot(fig)
-    if note:
-        st.caption(note)
-
-
-# ---------------------------------------------------------------------------
-# 4. Assessment, and the brief beside it
-# ---------------------------------------------------------------------------
-section("assessment", "Assessment", f"{len(filtered):,} reports in the selected period")
-emerging_line = spacetime.headline(emerging)
-findings(brief["headlines"] + ([emerging_line] if emerging_line else []))
-
-how_col, brief_col = st.columns([3, 1], vertical_alignment="top")
-with how_col:
-    with st.expander("How to read this", expanded=False):
-        for caveat in brief["caveats"]:
-            st.markdown(f"- {caveat}")
-with brief_col:
-    if st.button("Generate brief", type="primary", width="stretch",
-                 help="Self-contained HTML with the maps embedded, for printing or email."):
-        from core import refuge_view
-
-        try:
-            try:
-                brief_refuges = refuge_view.for_brief(filtered, villages)
-            except Exception:  # noqa: BLE001 - the brief goes out without the section
-                logger.exception("Day refuges for the brief failed")
-                brief_refuges = None
-            html = generate_html_report(
-                filtered,
-                filtered["Date"].min(),
-                filtered["Date"].max(),
-                recent_days=recent_days,
-                hotspots=hotspots,
-                village_risk=village_risk,
-                filters={
-                    "divisions": divisions,
-                    "ranges": ranges,
-                    "beats": beats,
-                    "severity": severity_choice,
-                    "analysis": custom_analysis,
-                },
-                basemap_style_name=basemap,
-                coverage=coverage_table,
-                coverage_stats=coverage_stats,
-                refuges=brief_refuges,
-                emerging=emerging,
-                emerging_step=cube_step,
-            )
-        except Exception as exc:  # noqa: BLE001 - report generation must never 500
-            logger.exception("Report generation failed")
-            st.error(f"Could not generate the brief: {exc}")
-        else:
-            st.download_button(
-                "Download brief (HTML)", html, "Elephant_Conflict_Brief.html",
-                mime="text/html", width="stretch",
-            )
-            st.success("Brief ready: download it above.")
-
-
-# ---------------------------------------------------------------------------
-# 5. One tab per question a manager asks
-# ---------------------------------------------------------------------------
-# Where to act first: it is the question the page exists to answer, and
-# the first tab is the one that opens. Whom to warn next, then the trends.
-tab_where, tab_villages, tab_trend, tab_emerging, tab_when, tab_data = st.tabs([
-    ":material/map: Where to act",
-    ":material/home: Villages at risk",
-    ":material/trending_up: Is it getting worse?",
-    ":material/timeline: New or growing?",
-    ":material/schedule: When",
-    ":material/table_chart: Data",
-])
-
-
-# ---- Trends ---------------------------------------------------------------
-with tab_trend:
-    if len(monthly) < 2:
-        st.info("The selected period covers less than two months, so there is no trend "
-                "to draw.")
-    else:
-        # Each figure downloads from its SVG twin. Values are bound as
-        # default arguments: the callable runs on click, after this script
-        # has moved on and reassigned names like ``monthly``.
-        _figure(
-            "Conflict events per month, by type",
-            charts.conflict_type_trend(monthly, recent_days=recent_days, as_of=period_end),
-            "Conflict events per month by type",
-            lambda m=monthly, d=recent_days, e=period_end:
-            report_charts.conflict_type_trend_svg(m, d, e),
-            note=f"Darkest at the base is the most severe; the shaded band is the last "
-                 f"{recent_days} days (Advanced analysis, in the sidebar).",
-        )
-
-        rate_col, casualty_col = st.columns(2)
-        with rate_col:
-            _figure("Conflict rate", charts.conflict_rate_trend(monthly, kpis["conflict_rate"]),
-                    "Conflict rate per month",
-                    lambda m=monthly, r=kpis["conflict_rate"]:
-                    report_charts.conflict_rate_svg(m, r),
-                    subtitle="share of reports that were conflict")
-        with casualty_col:
-            if float((monthly["Human Deaths"] + monthly["People Injured"]).sum()) == 0:
-                st.markdown("**People killed and injured**")
-                st.success("No casualties recorded in the selected period.")
-            else:
-                _figure("People killed and injured", charts.casualty_trend(monthly),
-                        "People killed and injured per month",
-                        lambda m=monthly: report_charts.casualty_svg(m))
-
-        season_col, division_col = st.columns(2)
-        with season_col:
-            _figure("Seasonal pattern", charts.seasonal_heatmap(seasonal_matrix(filtered)),
-                    "Seasonal pattern",
-                    lambda f=filtered: report_charts.seasonal_heatmap_svg(seasonal_matrix(f)),
-                    note="Read down a column to compare the same month across years.")
-        with division_col:
-            division_long = division_monthly_conflict(filtered)
-            if division_long["Division"].nunique() < 2:
-                st.markdown("**By division**")
-                st.info("One division selected. Widen the Division filter to compare.")
-            else:
-                _figure("By division", charts.division_trend(division_long, division_palette),
-                        "Conflict events per month by division",
-                        lambda d=division_long, c=division_palette:
-                        report_charts.division_trend_svg(d, c),
-                        subtitle="three-month average")
-
-    esc_col, rate_div_col = st.columns(2)
-    with esc_col:
-        basis = brief_insights.trend_basis_phrase(brief, recent_days)
-        if escalating.empty:
-            st.markdown(f"**Escalating beats** -- {basis}")
-            st.info("No beat rose clearly faster than its baseline.")
-        else:
-            _figure("Escalating beats", charts.escalation_dumbbell(escalating),
-                    "Escalating beats", lambda e=escalating: report_charts.escalation_svg(e),
-                    subtitle=basis,
-                    note=f"Grey is the baseline, red the recent window; "
-                         f"{brief_insights.plural(len(escalating), 'beat')} escalating.")
-    with rate_div_col:
-        rates = division_conflict_rate(filtered)
-        if rates.empty:
-            st.markdown("**Conflict rate by division**")
-            st.info("No division data for the current filters.")
-        else:
-            _figure("Conflict rate by division",
-                    charts.division_rate_bars(rates, kpis["conflict_rate"], division_palette),
-                    "Conflict rate by division",
-                    lambda r=rates, k=kpis["conflict_rate"], c=division_palette:
-                    report_charts.division_rate_svg(r, k, c),
-                    note="Rate, not raw volume: sighting counts mostly track reporting "
-                         "effort.")
-
-
-# ---- Where to act -------------------------------------------------------------
-with tab_where:
-    if not beats_table.empty:
-        tier_summary(beats_table["Priority Tier"].value_counts().to_dict())
-
-    # Layer filters: what happened, by which animals, and which villages.
-    # They cut the data before anything is drawn, so "crop damage by lone
-    # bulls" is a map of exactly those sightings and the places near them.
-    event_counts, group_counts = map_select.class_counts(filtered)
-    ev_col, grp_col, vil_col = st.columns([5, 5, 4])
-    with ev_col:
-        events = st.pills(
-            "Events", [k for k in map_select.EVENT_CLASSES if event_counts.get(k)],
-            selection_mode="multi", key="layer_events",
-            default=[k for k in map_select.EVENT_CLASSES if event_counts.get(k)],
-            format_func=lambda k, c=event_counts:
-            f"{CATEGORY_STYLE[k]['label']} ({c.get(k, 0):,})",
-            help="Untick a class to drop it from the map. None ticked hides sightings.",
-        ) or []
-    with grp_col:
-        groups = st.pills(
-            "Animals", [g for g in map_select.GROUP_CLASSES if group_counts.get(g)],
-            selection_mode="multi", key="layer_groups",
-            default=[g for g in map_select.GROUP_CLASSES if group_counts.get(g)],
-            format_func=lambda g, c=group_counts: f"{g} ({c.get(g, 0):,})",
-            help="Combine with Events: e.g. Human injury + Lone bull alone.",
-        ) or []
-    with vil_col:
-        tier_options = [t for t in TIER_STYLE
-                        if not village_risk.empty and (village_risk["Tier"] == t).any()]
-        tiers = st.pills(
-            "Villages by tier", tier_options, selection_mode="multi", key="layer_tiers",
-            default=[t for t in tier_options if t != "Routine"],
-            help="Village layer. Routine villages start off to keep the map readable.",
-        ) or []
-        show_hotspots = st.toggle("Hotspot footprints", value=True, key="layer_hotspots")
-
-    table_col, map_col = st.columns([1, 1], gap="medium")
-
-    # The table draws first, so a ticked row reaches the map in the same
-    # run: one click, not two.
-    with table_col:
-        table_options = ["Beats", "Hotspots", "Villages", "Animals"]
-        picker = st.segmented_control(
-            "Tick a row to show only that on the map", table_options,
-            default="Beats", key="where_table",
-        ) or "Beats"
-
-        if picker == "Beats":
-            if beats_table.empty:
-                st.info("Not enough data to rank beats.")
-            else:
-                display_cols = [
-                    "Beat", "Range", "Priority Tier", "Priority Score",
-                    "Conflict Events", "Recent Deaths", "Recent Injuries",
-                    "Bull-Type Conflict %", "Trend", "Recommended Action",
-                ]
-                beat_pick = st.dataframe(
-                    beats_table[display_cols],
-                    width="stretch",
-                    height=520,
-                    hide_index=True,
-                    on_select="rerun",
-                    selection_mode="single-row",
-                    key="beat_table",
-                    column_config={
-                        "Priority Tier": st.column_config.TextColumn("Tier", width="small"),
-                        "Priority Score": st.column_config.ProgressColumn(
-                            "Score", min_value=0, max_value=100, format="%.0f",
-                            help="Orders beats within a tier only. Moves when filters "
-                            "change.",
-                        ),
-                        "Conflict Events": st.column_config.NumberColumn("Conflicts"),
-                        "Recent Deaths": st.column_config.NumberColumn(
-                            "Killed", format="%.0f",
-                            help=f"In the last {CRITICAL_CASUALTY_WINDOW_DAYS} days. Drives "
-                            "the Critical tier.",
-                        ),
-                        "Recent Injuries": st.column_config.NumberColumn(
-                            "Injured", format="%.0f",
-                            help=f"In the last {CRITICAL_CASUALTY_WINDOW_DAYS} days.",
-                        ),
-                        "Bull-Type Conflict %": st.column_config.NumberColumn(
-                            "Bull-driven", format="%.0f%%",
-                            help="Share of this beat's conflict from lone bulls or small "
-                            "all-male parties.",
-                        ),
-                        "Recommended Action": st.column_config.TextColumn(width="large"),
-                    },
-                )
-                _map_pick(beat_pick, "beat_table", "beat", beats_table["Beat"], "Beat")
-                st.caption(f"Critical = a person killed or injured in the last "
-                           f"{CRITICAL_CASUALTY_WINDOW_DAYS} days. Tiers compare across "
-                           "periods; the score only orders beats within a tier.")
-                st.download_button(
-                    "Download all beat figures (CSV)",
-                    beats_table.to_csv(index=False).encode("utf-8"),
-                    "beat_priorities.csv",
-                    mime="text/csv",
-                    help="Every column, including period casualties, confidence, rates, "
-                    "night and village shares.",
-                )
-
-        elif picker == "Hotspots":
-            if hotspots.empty:
-                st.info("No hotspots at these settings. Under Advanced analysis in the "
-                        "sidebar, try a larger merge distance or a smaller minimum hotspot.")
-            else:
-                hotspot_cols = [c for c in [
-                    "Hotspot", "Tier", "Beats", "Sightings", "Conflict Events",
-                    "Conflict Share %", "Human Deaths", "People Injured", "Night Share %",
-                    "Radius (km)",
-                ] if c in hotspots.columns]
-                hotspot_pick = st.dataframe(
-                    hotspots[hotspot_cols], width="stretch", height=520, hide_index=True,
-                    on_select="rerun", selection_mode="single-row", key="hotspot_table",
-                    column_config={
-                        "Tier": st.column_config.TextColumn(width="small"),
-                        "Conflict Share %": st.column_config.NumberColumn(
-                            "Conflict share", format="%.0f%%"),
-                        "Night Share %": st.column_config.NumberColumn("Night",
-                                                                       format="%.0f%%"),
-                        "Human Deaths": st.column_config.NumberColumn("Killed", format="%.0f"),
-                        "People Injured": st.column_config.NumberColumn("Injured",
-                                                                        format="%.0f"),
-                        "Radius (km)": st.column_config.NumberColumn("Radius",
-                                                                     format="%.1f km"),
-                    },
-                )
-                _map_pick(hotspot_pick, "hotspot_table", "hotspot", hotspots["Hotspot"],
-                          "Hotspot")
-                st.download_button(
-                    "Download hotspots (CSV)",
-                    hotspots.to_csv(index=False).encode("utf-8"),
-                    "hotspots.csv",
-                    mime="text/csv",
-                )
-            for note in hotspot_caveats(hotspots, filtered, villages):
-                st.caption(note)
-
-        elif picker == "Villages":
-            if village_risk.empty:
-                st.info("No village ranking: load a village centroids file in the sidebar.")
-            else:
-                village_cols = [c for c in [
-                    "Village", "Tier", "Conflict Events", "Human Deaths", "People Injured",
-                    "House Damage Events", "Crop Damage Events", "Nearest Hotspot",
-                ] if c in village_risk.columns]
-                village_pick = st.dataframe(
-                    village_risk[village_cols], width="stretch", height=520,
-                    hide_index=True, on_select="rerun", selection_mode="single-row",
-                    key="village_table",
-                    column_config={
-                        "Tier": st.column_config.TextColumn(width="small"),
-                        "Conflict Events": st.column_config.NumberColumn("Conflicts"),
-                        "Human Deaths": st.column_config.NumberColumn("Killed"),
-                        "People Injured": st.column_config.NumberColumn("Injured"),
-                        "House Damage Events": st.column_config.NumberColumn("House"),
-                        "Crop Damage Events": st.column_config.NumberColumn("Crop"),
-                        "Nearest Hotspot": st.column_config.TextColumn("Hotspot"),
-                    },
-                )
-                _map_pick(village_pick, "village_table", "village", village_risk["Village"],
-                          "Village")
-                st.caption(f"A picked village shows the sightings within "
-                           f"{village_radius:g} km of it (the village radius under Advanced "
-                           f"analysis).")
-
-        else:
-            if composition.empty or composition["Conflict Events"].sum() == 0:
-                st.info("No group composition recorded for the current filters.")
-            else:
-                st.dataframe(
-                    composition,
-                    width="stretch",
-                    hide_index=True,
-                    column_config={
-                        "Damage Rate %": st.column_config.NumberColumn(
-                            "Damage rate", format="%.1f%%",
-                            help="Share of that group's sightings involving damage, "
-                            "injury or death.",
-                        ),
-                        "Human Deaths": st.column_config.NumberColumn("Killed", format="%.0f"),
-                    },
-                )
-                st.caption(
-                    "Map a group with the Animals filter above. Only bulls carry tusks, so "
-                    "Male Count is the tusker count. A lone bull or small all-male party "
-                    "raids and is tracked and deterred; a breeding herd with calves is "
-                    "given passage and not driven. Unrecorded groups are kept apart "
-                    "rather than guessed."
-                )
-
-    map_focus = _map_focus(filtered, hotspots, village_risk, village_radius)
-    shown, shown_hotspots, shown_villages = map_select.select(
-        filtered, hotspots, village_risk, events=events, groups=groups, tiers=tiers,
-        focus=map_focus, village_km=village_radius,
-    )
-
-    with map_col:
-        head, menu = st.columns([10, 1], vertical_alignment="bottom")
-        head.markdown(f"**Spatial view** -- {len(shown):,} of {len(filtered):,} sightings")
-        with menu:
-            download_menu(
-                "Spatial view",
-                lambda f=shown, h=shown_hotspots if show_hotspots else None, b=basemap:
-                sightings_map_svg(f, h, b),
-                compact=True,
-            )
-        if map_focus:
-            focus_col, clear_col = st.columns([3, 1], vertical_alignment="center")
-            focus_col.info(f"Showing {map_focus['label']} only. Untick the row to show "
-                           "everything again.")
-            if clear_col.button("Show everything", key="clear_map_focus", width="stretch"):
-                st.session_state.pop(MAP_FOCUS_KEY, None)
-                st.rerun()
-        if shown.empty:
-            st.caption("No sightings match the Events and Animals filters"
-                    + (f" in {map_focus['label']}." if map_focus else "."))
-        render_map(
-            shown,
-            frame_df=filtered[map_focus["mask"]] if map_focus else filtered,
-            focus=map_focus,
-            hotspots=shown_hotspots,
-            villages=shown_villages,
-            style_name=basemap,
-            show_sightings=not shown.empty,
-            show_hotspots=show_hotspots,
-            show_villages=not shown_villages.empty,
-            show_boundaries=layer_boundaries,
-            boundary_level=boundary_level,
-            beat_stats=beats_table,
-        )
-
-
-# ---- Emerging hotspots ------------------------------------------------------
-with tab_emerging:
-    st.caption(
-        f"Reports binned into {cube_cell_km:g} km hexagons by {cube_step.lower()}, then each "
-        "place tested for whether it is a hotspot at each step and whether that is "
-        "changing. Settings are under Advanced analysis in the sidebar."
-    )
-    counts = spacetime.pattern_counts(emerging)
-    if emerging.empty:
-        for note in spacetime.pattern_caveats(cube, emerging, cube_fdr):
-            st.info(note)
-    else:
-        shown_patterns = [p for p in spacetime.PATTERN_ORDER[:-1] if counts.get(p)]
-        if shown_patterns:
-            for col, pattern in zip(st.columns(len(shown_patterns)), shown_patterns):
-                col.metric(pattern, f"{counts[pattern]:,}", border=True,
-                           help=spacetime.PATTERN_MEANING[pattern])
-        map_legend("Pattern", {p: {"accent": spacetime.PATTERN_COLORS[p], "glyph": "",
-                                   "label": p} for p in shown_patterns})
-
-        named = emerging[emerging["Place"] != ""]
-        cube_hot = spacetime.hot_bins(cube, fdr=cube_fdr)
-        table_col, map_col = st.columns([1, 1], gap="medium")
-        with table_col:
-            if named.empty:
-                st.info("No place is a significant hotspot in any step. Try a larger cell, "
-                        "a longer step, or switch the correction off.")
-            else:
-                date_fmt = "MMM YYYY" if cube_step == "Month" else "D MMM YYYY"
-                st.dataframe(
-                    named.drop(columns=["Cell", "Centre Latitude", "Centre Longitude"]),
-                    width="stretch", height=min(520, 38 + 35 * len(named)), hide_index=True,
-                    column_config={
-                        "Recent Events": st.column_config.NumberColumn(
-                            "Recent", help="Events in the last three steps."),
-                        "Hot Steps": st.column_config.NumberColumn(
-                            "Hot steps", help=f"{cube_step}s in which this place was a "
-                                              "significant hotspot."),
-                        "First Hot": st.column_config.DateColumn("First hot", format=date_fmt),
-                        "Last Hot": st.column_config.DateColumn("Last hot", format=date_fmt),
-                    },
-                )
-                st.download_button(
-                    "Download emerging hotspots (CSV)",
-                    named.to_csv(index=False).encode("utf-8"),
-                    "emerging_hotspots.csv", mime="text/csv",
-                )
-        with map_col:
-            mode_col, height_col = st.columns([3, 2], vertical_alignment="bottom")
-            map_mode = mode_col.segmented_control(
-                "Map", MAP_MODES, default=MAP_MODES[0], key="emerging_map_mode",
-                help="Columns raise each place by its events; Stacked builds the cube on the map.",
-            ) or MAP_MODES[0]
-            height_by = "Events"
-            if map_mode == MAP_MODES[1]:
-                height_by = height_col.segmented_control(
-                    "Height", ["Events", "Recent Events"], default="Events",
-                    key="emerging_height",
-                    format_func=lambda h: "All events" if h == "Events"
-                    else "Last 3 steps",
-                ) or "Events"
-            render_pattern_map(emerging, cube.cell_km, cube.reference_lat, cube.step,
-                               style_name=basemap, show_boundaries=layer_boundaries,
-                               boundary_level=boundary_level, mode=map_mode,
-                               height_by=height_by, counts=cube.counts,
-                               hot=cube_hot)
-            if map_mode == MAP_MODES[1]:
-                st.caption("Colour is the pattern, height the events. Ctrl-drag (or two "
-                           "fingers) to rotate.")
-            elif map_mode == MAP_MODES[2]:
-                st.caption("Each tower is a place's history, oldest step at the ground and "
-                           "latest on top: coloured slabs were hotspot steps, grey ones not. "
-                           "Ctrl-drag to rotate.")
-
-        matrix = spacetime.location_time_matrix(cube, emerging)
-        if not matrix.empty:
-            st.markdown(f"**When each place lit up** -- {cube_metric.lower()} per "
-                        f"{cube_step.lower()}, worst places first")
-            _plot(charts.place_time_heatmap(matrix, cube_step))
-            st.caption("Read along a row to see whether a place is new, steady or fading; "
-                       "down a column to see which places were active together.")
-
-        if not named.empty:
-            st.markdown("**The space-time cube** -- the ground on two axes, time rising "
-                        "on the third")
-            view_col, focus_col = st.columns([3, 2], vertical_alignment="bottom")
-            camera = view_col.segmented_control(
-                "View", list(charts.CUBE_CAMERAS), default="Oblique", key="cube_camera",
-            ) or "Oblique"
-            focus_names = {
-                row["Place"]: f"{row['Place']} {row['Pattern']}"
-                + (f" - {str(row['Nearest Village']).split(' (')[0]}"
-                   if row["Nearest Village"] else "")
-                for row in named.to_dict("records")
-            }
-            # A string, not None, for "all": Streamlit reads a None option as
-            # nothing selected and shows an empty box.
-            all_places = "All places"
-            picked_focus = focus_col.selectbox(
-                "Focus", [all_places, *focus_names], key="cube_focus",
-                format_func=lambda p, n=focus_names: n.get(p, p),
-                help="Zoom the cube onto one place and its neighbours.",
-            )
-            focus = None if picked_focus == all_places else picked_focus
-            step_col, ctx_col = st.columns([6, 1], vertical_alignment="bottom")
-            step_fmt = "%b %Y" if cube.step == "Month" else "%d %b %Y"
-            slice_labels = ["None"] + [f"{s:{step_fmt}}" for s in cube.steps]
-            picked_slice = step_col.select_slider(
-                "Highlight a step", slice_labels, value="None", key="cube_slice",
-            )
-            show_context = ctx_col.toggle("Others", value=True, key="cube_context",
-                                          help="Faint dots for places with no pattern.")
-            highlight = (None if picked_slice == "None"
-                         else cube.steps[slice_labels.index(picked_slice) - 1])
-            # Like the maps, a cube that fails to draw says so in its own
-            # place: an exception here would stop the script and take the
-            # Villages, When and Data tabs down with it.
-            try:
-                cube_figure = charts.space_time_cube(
-                    cube, emerging, cube_hot, villages,
-                    camera=camera, highlight_step=highlight, context=show_context,
-                    floor_boundaries=layer_boundaries, focus=focus,
-                )
-            except Exception as exc:  # noqa: BLE001 - the page must survive
-                logger.exception("Space-time cube failed")
-                st.error(
-                    f"The space-time cube could not be drawn: {type(exc).__name__}. "
-                    "Everything else on this page is unaffected."
-                )
-            else:
-                st.plotly_chart(cube_figure, width="stretch", config=CUBE_CONFIG,
-                                key="cube_chart")
-            st.caption(
-                "Each column is a place; each hexagon, a step with events, its area "
-                "following the count. Coloured hexagons are steps the place was a "
-                "significant hotspot, grey ones steps it was not, so a New place is grey "
-                "with a coloured top and a Diminishing one the reverse. The floor carries "
-                "the forest boundaries. Drag to rotate, scroll to zoom, click a legend "
-                "entry to hide it; the buttons at the top right reset the view and save "
-                "it as an image."
-            )
-
-        with st.expander("How to read this", expanded=False):
-            for pattern in spacetime.PATTERN_ORDER:
-                st.markdown(f"- **{pattern}**: {spacetime.PATTERN_MEANING[pattern]}")
-            for note in spacetime.pattern_caveats(cube, emerging, cube_fdr):
-                st.markdown(f"- {note}")
-
-
-# ---- Villages --------------------------------------------------------------
-with tab_villages:
-    st.caption(f"Conflict within {village_radius:g} km of each village, so a settlement "
-               "between two hotspots counts both.")
-    if village_risk.empty:
-        st.info(
-            "No village ranking. Sighting exports carry no village field, so this "
-            "needs a centroids file (Village, Latitude, Longitude) -- the Census "
-            "village directory, a forest department layer, or OpenStreetMap places."
-        )
-    else:
-        table_col, map_col = st.columns([1, 1])
-        with table_col:
-            # The columns a warning decision needs, in half the page's width
-            # without a scrollbar; house and crop counts are in the CSV and
-            # on the map. Hotspot shows only when there are hotspots to name,
-            # with the distance, since "nearest" alone may be far away.
-            shown = village_risk.copy()
-            village_cols = ["Village", "Tier", "Conflict Events", "Human Deaths",
-                            "People Injured"]
-            if (shown.get("Nearest Hotspot", pd.Series(dtype=object)) != "N/A").any() \
-                    and "Distance to Hotspot (km)" in shown.columns:
-                shown["Hotspot"] = [
-                    f"inside {h}" if inside else f"{h}, {d:g} km"
-                    for h, d, inside in zip(shown["Nearest Hotspot"],
-                                            shown["Distance to Hotspot (km)"],
-                                            shown.get("Inside Hotspot",
-                                                      pd.Series(False, index=shown.index)))
-                ]
-                village_cols.append("Hotspot")
-            st.dataframe(
-                shown[[c for c in village_cols if c in shown.columns]],
-                width="stretch",
-                height=520,
-                hide_index=True,
-                column_config={
-                    "Tier": st.column_config.TextColumn(width="small"),
-                    "Conflict Events": st.column_config.NumberColumn(
-                        "Incidents",
-                        help=f"Conflict within {village_radius:g} km. Neighbouring villages "
-                        "share incidents, so the column does not add up to the register."),
-                    "Human Deaths": st.column_config.NumberColumn(
-                        "Killed",
-                        help=f"Deaths within {village_radius:g} km. One death counts for "
-                        "every village near it, so a row means exposure, not loss."),
-                    "People Injured": st.column_config.NumberColumn("Injured"),
-                    "Hotspot": st.column_config.TextColumn(
-                        "Nearest hotspot", help="The hotspot the village sits in, or the "
-                        "nearest one and its distance."),
-                },
-            )
-            st.download_button(
-                "Download all village figures (CSV)",
-                village_risk.to_csv(index=False).encode("utf-8"),
-                "villages_at_risk.csv",
-                mime="text/csv",
-            )
-        with map_col:
-            head, menu = st.columns([8, 1], vertical_alignment="bottom")
-            head.markdown("**Village risk map**")
-            with menu:
-                download_menu("Village risk map",
-                              lambda v=village_risk, h=hotspots, b=basemap:
-                              village_map_svg(v, h, b), compact=True)
-            render_village_map(
-                village_risk, hotspots, style_name=basemap,
-                show_boundaries=layer_boundaries, boundary_level=boundary_level,
-            )
-        # The overlap caveat is on the Incidents and Killed headers instead.
-        for note in village_caveats(village_risk, filtered, village_radius, overlap=False):
-            st.caption(note)
-
-    if not coverage_table.empty:
-        section(
-            "broadcast",
-            "Early-warning coverage",
-            "The villages the ranking says are exposed, against the people "
-            "registered to be warned there.",
-        )
-        ews = _ews()
-        min_contacts = int(coverage_stats["min_contacts"])
-        findings(ews.coverage_headlines(coverage_table, coverage_stats))
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Registrations placed", f"{coverage_stats['matched']:,}")
-        m2.metric("Villages reached", f"{coverage_stats['villages_reached']:,}")
-        m3.metric(
-            "Exposed, no contact",
-            f"{coverage_stats['no_contact']:,}",
-            delta=f"of {coverage_stats['exposed']:,} exposed villages",
-            delta_color="off",
-        )
-        m4.metric(
-            "Critical / High short of contacts",
-            f"{coverage_stats['urgent']:,}",
-            delta=f"of {coverage_stats['at_risk']:,} in those tiers",
-            delta_color="off",
-        )
-
-        gaps = ews.coverage_gaps(coverage_table)
-        gap_cols = [
-            "Village", "Tier", "Registered Contacts", "Coverage", "Conflict Events",
-            "Human Deaths", "People Injured", "Nearest Hotspot",
-        ]
-        coverage_config = {
-            "Tier": st.column_config.TextColumn(width="small"),
-            "Registered Contacts": st.column_config.NumberColumn(
-                "Registered", format="%d",
-                help="People enrolled for early warning within "
-                f"{coverage_stats['radius_km']:g} km of the village centroid.",
-            ),
-            "Coverage": st.column_config.TextColumn(
-                width="small",
-                help=f"Fewer than {min_contacts} registrations counts as thin.",
-            ),
-        }
-
-        if gaps.empty:
-            st.success(
-                "Every Critical and High village has at least "
-                f"{min_contacts} registered contacts."
-            )
-        else:
-            st.markdown("**Enrolment queue** -- worst tier and thinnest cover first")
-            st.dataframe(
-                gaps[[c for c in gap_cols if c in gaps.columns]],
-                width="stretch", hide_index=True, column_config=coverage_config,
-            )
-            st.download_button(
-                "Download enrolment queue (CSV)",
-                gaps.to_csv(index=False).encode("utf-8"),
-                "ews_enrolment_queue.csv",
-                mime="text/csv",
-            )
-
-        with st.expander(
-            f"All {len(coverage_table)} exposed villages with their coverage",
-            expanded=False,
-        ):
-            st.dataframe(
-                coverage_table[[c for c in gap_cols if c in coverage_table.columns]],
-                width="stretch", hide_index=True, column_config=coverage_config,
-            )
-
-        enrol_col, staff_col = st.columns(2)
-        labels = ews.division_labels(filtered)
-
-        with enrol_col:
-            st.markdown("**Enrolment by division**")
-            enrolment = ews.enrolment_by_division(registry, labels)
-            st.dataframe(enrolment, width="stretch", hide_index=True)
-            st.caption(
-                "Whole registry, not the filtered period -- enrolment is a standing "
-                "figure, and the divisions it is thinnest in are the ones to work on."
-            )
-
-        with staff_col:
-            st.markdown("**Reporting against registered users**")
-            if roster is None:
-                st.info(
-                    "Upload the registered app-user list in the sidebar to compare "
-                    "reporting volume against the staff enrolled in each division."
-                )
-            else:
-                staffing = ews.division_staffing(filtered, roster)
-                st.dataframe(
-                    staffing,
-                    width="stretch",
-                    hide_index=True,
-                    column_config={
-                        "Reports per User": st.column_config.NumberColumn(
-                            "Reports / user", format="%.1f",
-                            help="Blank where reports arrived from a division with "
-                            "no registered user.",
-                        ),
-                    },
-                )
-                st.caption(
-                    "Division only: Range was a placeholder for almost every user "
-                    "in this export, and Beat for all of them. A low figure is as "
-                    "likely to mean accounts created and unused as a quiet division."
-                )
-
-        for note in ews.coverage_caveats(coverage_stats):
-            st.caption(note)
-
-    elif registry is not None and not village_risk.empty:
-        st.info(
-            "The registry loaded but nobody could be placed against the exposed "
-            "villages. Check that its coordinates cover the same landscape as the "
-            "centroids file."
-        )
-    elif registry is None:
-        st.caption("Upload the early-warning villager registry in the sidebar to see which "
-                   "exposed villages have nobody enrolled to be warned.")
-
-
-# ---- When ------------------------------------------------------------------
-with tab_when:
-    months = temporal["peak_months"]
-    w1, w2, w3 = st.columns(3)
-    w1.metric("Injuries and deaths peak",
-              format_window(temporal["peak_window"]).split(" (")[0]
-              if temporal["peak_window"] else "Not enough timed casualties",
-              border=True)
-    w2.metric("Counted as night raids", f"{temporal.get('night_damage', 0):,}",
-              delta="damage and indirect reports", delta_color="off", border=True)
-    w3.metric("Seasonal peak", ", ".join(months) if months else "Spread through the year",
-              border=True)
-    st.caption(
-        f"Damage and indirect signs are recorded after the night, so they count as night "
-        f"raids ({NIGHT_HOUR_START:02d}:00-{NIGHT_HOUR_END:02d}:00) whatever hour they were "
-        "entered; only direct sightings are timed. "
-        + (f"Peak window detail: {format_window(temporal['peak_window'])}."
-           if temporal["peak_window"] else "")
-    )
-
-    hour_col, nd_col = st.columns(2)
-    with hour_col:
-        hourly = temporal["hourly"]
-        if float(hourly.sum()) > 0:
-            _figure("Injuries and deaths by hour",
-                    charts.hourly_profile(hourly, NIGHT_HOUR_START, NIGHT_HOUR_END),
-                    "Injuries and deaths by hour",
-                    lambda h=hourly: report_charts.hourly_svg(h, NIGHT_HOUR_START,
-                                                              NIGHT_HOUR_END))
-        else:
-            st.markdown("**Injuries and deaths by hour**")
-            st.info("No timed injuries or deaths, so no hour-of-day risk window can be "
-                    "identified. Damage is counted as night conflict.")
-    with nd_col:
-        nd = night_day_comparison(filtered)
-        if nd.empty:
-            st.markdown("**Night and day**")
-            st.info("Night/day classification unavailable (no Hour/Time column).")
-        else:
-            fig = px.bar(nd, x="Period", y="Entries", text="Entries")
-            fig.update_traces(marker_color=BRAND)
-            fig.update_layout(
-                height=320, margin=dict(t=10, b=10), showlegend=False,
-                xaxis_title="", yaxis_title="Reports",
-                yaxis_gridcolor="rgba(128,128,128,0.2)",
-            )
-            _figure("Night and day", fig, "Night and day",
-                    lambda n=nd: report_charts.bars_svg(
-                        n["Period"].tolist(), n["Entries"].tolist(), "Night and day"),
-                    subtitle="all reports, stale ones counted as night")
-
-
-# ---- Data ------------------------------------------------------------------
-with tab_data:
-    trend_col, sev_col = st.columns(2)
-    with trend_col:
-        trend = monthly_trend(filtered)
-        if trend.empty:
-            st.markdown("**Monthly sightings and conflict events**")
-            st.info("Not enough data to chart a monthly trend.")
-        else:
-            fig = px.line(
-                trend.reset_index(), x="Month", y=["Sightings", "Conflict Events"],
-                markers=True, color_discrete_sequence=[BRAND, BRAND_ALT],
-            )
-            fig.update_layout(
-                height=320, margin=dict(t=10, b=10), legend_title_text="",
-                yaxis_title="Reports", xaxis_title="Month",
-                yaxis_gridcolor="rgba(128,128,128,0.2)",
-            )
-            _figure("Monthly sightings and conflict events", fig,
-                    "Monthly sightings and conflict events",
-                    lambda t=trend: report_charts.sightings_vs_conflict_svg(t),
-                    note="Sightings mostly track reporting effort; read the conflict "
-                         "line, or the rate on the first tab.")
-    with sev_col:
-        bands = severity_distribution(filtered)
-        if bands.empty or int(bands["Count"].sum()) == 0:
-            st.markdown("**Severity distribution**")
-            st.info("No severity data to chart.")
-        else:
-            fig = px.bar(bands, x="Band", y="Count")
-            fig.update_traces(marker_color=BRAND)
-            fig.update_layout(
-                height=320, margin=dict(t=10, b=10), showlegend=False,
-                xaxis_title="", yaxis_title="Reports",
-                yaxis_gridcolor="rgba(128,128,128,0.2)",
-            )
-            _figure("Severity distribution", fig, "Severity distribution",
-                    lambda b=bands: report_charts.bars_svg(
-                        b["Band"].tolist(), b["Count"].tolist(), "Severity distribution"))
-
-    rates = division_conflict_rate(filtered)
-    if not rates.empty:
-        with st.expander("Division figures as a table", expanded=False):
-            st.dataframe(rates, width="stretch")
-    if not escalating.empty:
-        with st.expander("Escalating beats as a table", expanded=False):
-            st.dataframe(
-                escalating[["Beat", "Division", "Recent vs Prior", "Human Deaths",
-                            "People Injured"]],
-                width="stretch", hide_index=True,
-            )
-
-    st.markdown(f"**Filtered reports** -- {len(filtered):,} rows after filters")
-    preview_cols = [
-        c
-        for c in [
-            "Date", "Division", "Range", "Beat", "Latitude", "Longitude",
-            "Severity Score", "Is_Night", "Nearest Village", "Distance to Village (km)",
-            "Crop Damage", "Grain Damage", "House Damage", "Injury", "Death",
-        ]
-        if c in filtered.columns
-    ]
-    st.dataframe(filtered[preview_cols].head(500), width="stretch", height=360)
-    st.caption(f"Showing up to 500 of {len(filtered):,} filtered rows.")
-    st.download_button(
-        "Download filtered data (CSV)",
-        filtered.to_csv(index=False).encode("utf-8"),
-        "filtered_elephant_data.csv",
-        mime="text/csv",
-    )
-    st.warning(
-        "Field exports carry victim and reporter names, often in the free-text "
-        "description. This app has no access control -- check before sharing."
-    )
+nav.run()

@@ -174,6 +174,11 @@ _THEME_CSS = """
   font-feature-settings: "tnum" 1;
 }
 
+.ci-headline {
+  font-size: 1.12rem; font-weight: 600; line-height: 1.45; color: var(--ci-text);
+  margin: var(--ci-space-2) 0;
+}
+
 .ci-section {
   display: flex; align-items: center; gap: var(--ci-space-3);
   margin: var(--ci-space-5) 0 var(--ci-space-2) 0; color: var(--ci-text);
