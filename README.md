@@ -351,6 +351,10 @@ question pushes another off the screen:
 * *Where to act* -- the beat tier counts, the layer filters, then a table
   (beats, hotspots, villages, animals) beside the spatial view. One tick on a
   row shows only that place on the map.
+* *Next moves* -- where each group reported in the last three days may be
+  in the next 24 hours, 2 days or 3 days: its likely zone on the map, the
+  villages in it, and how often the forecast has been right on this
+  register (below).
 * *Villages* -- the village ranking beside its map, and early-warning
   coverage when a registry is loaded.
 * *Patterns* -- three sections. *Is it getting worse?*: monthly conflict by
@@ -538,6 +542,33 @@ Which level shows follows the zoom — divisions across a landscape, beats once
 the view is tight enough to read them. Streamlit's map reports clicks but not
 viewport changes, so that follows the view the filters produce rather than live
 pinch-zoom; the sidebar can pin a level instead.
+
+**Next moves.** A forecast from the register alone, with its own track record
+beside it (`core/movement.py`). Reports are first chained into *groups* the way
+radar tracks aircraft: a report joins a track if it is within reach for the
+time elapsed (up to 15 km a day) and its composition fits -- a party of bulls
+does not become a herd with calves overnight. A group is a plausible movement
+unit, not an identified animal, and it is lost after four days without a
+report. Every move between a group's reports a day or more apart sets how far
+groups go in a day; the places reported before, recent ones counting more, set
+where they tend to go. The forecast for a group is that reach, centred on its
+last report, weighted by those places. Its *likely zone* is the smallest set
+of 1 km cells holding half the forecast, the *possible zone* 80%, and the
+villages inside are listed to warn.
+
+**The forecast has to earn its place on each register.** Each month is
+forecast from the months before it only, and the likely zone is scored
+against where the group was reported next. The comparison is a circle of the
+same area around the last report -- "they stay near where they were". How
+much the earlier places count is chosen the same way, from past months only:
+where groups keep to the same forest blocks and fields it counts fully, and
+where they wander it is switched off, because there it drags the zone back
+along the group's own trail. On synthetic groups that circle fixed places the
+likely zone caught the next report 48% of the time against 41% for the same
+circle; on random walks the two tie at 52%. The page states the figures for
+the register loaded, and when the forecast does not beat staying put it says
+so and asks for the zone to be read as an area around the last report. It
+cannot foresee a first visit to a place nobody has reported elephants in.
 
 **Two maps.** The spatial view's layers are chosen on the *Where to act*
 page, not the sidebar. *Events* (what happened) and *Animals* (lone bull,
@@ -795,8 +826,8 @@ channel.
 ```
 app.py               Streamlit entry point: navigation, source line, scope bar,
                      sidebar, and the analysis every page shares
-app_pages/           One module per page (home, where, villages, patterns,
-                     data, analyst) and what they share (common, brief)
+app_pages/           One module per page (home, where, next, villages,
+                     patterns, data, analyst) and what they share (common, brief)
 core/config.py       Every tunable parameter
 core/csv_io.py       Encoding-tolerant CSV reading
 core/data_loader.py  Schema validation, date/time parsing, data-quality warnings
@@ -816,6 +847,7 @@ core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/analysis_settings.py Standard values for the tunables, and naming any changed
 core/scope.py        Area, period and incident type; focus window vs history
 core/overview.py     The Overview's sentence, Act now and What changed
+core/movement.py     Movement units, the next-move forecast and its track record
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief
 core/brief_insights.py Findings, action plan and ecology for the brief

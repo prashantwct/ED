@@ -27,128 +27,22 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from core.movement import (  # noqa: F401 - re-exported for the research scripts
+    COUNT_TOLERANCE,
+    COUNT_TOLERANCE_FRACTION,
+    MAX_GAP_DAYS,
+    MAX_SPEED_KM_PER_DAY,
+    SAME_DAY_RADIUS_KM,
+    SOLITARY_MAX,
+    _class_of,
+    _compatible,
+    _reach_km,
+    assign_units,
+)
 from research.features import conflict_target, km_plane
 
-# Sustained daily movement. Twenty is a hard day for a herd; beyond it
-# the two reports are far more likely to be different animals.
-MAX_SPEED_KM_PER_DAY = 15.0
-# Two observers reporting the same herd hours apart, from opposite sides
-# of it, still need room to be the same herd.
-SAME_DAY_RADIUS_KM = 12.0
-# Reporting is patchy. Past this, a track is closed rather than guessed
-# across the gap.
-MAX_GAP_DAYS = 4
-# Counts are eyeball estimates from the field. A herd of nine reported
-# as eight is the same herd.
-COUNT_TOLERANCE = 2
-COUNT_TOLERANCE_FRACTION = 0.4
-
-SOLITARY_MAX = 3
-
-
-def _class_of(total: float, calves: float, males: float, females: float) -> str:
-    """Coarse social class. The one distinction the data can support."""
-    if calves > 0 or females > 0:
-        return "family herd"
-    if total <= 1:
-        return "lone bull"
-    if total <= SOLITARY_MAX:
-        return "bull party"
-    return "unsexed group"
-
-
-def _compatible(a: Dict, b: Dict) -> bool:
-    """Could these two reports be the same animals?"""
-    if a["social"] != b["social"]:
-        return False
-    # A herd does not shed or acquire calves between sightings.
-    if (a["calves"] > 0) != (b["calves"] > 0):
-        return False
-    tolerance = max(COUNT_TOLERANCE,
-                    COUNT_TOLERANCE_FRACTION * (a["total"] + b["total"]) / 2)
-    return abs(a["total"] - b["total"]) <= tolerance
-
-
-def _reach_km(gap_days: float, max_speed_km_per_day: float) -> float:
-    """How far a unit could plausibly have moved in the elapsed time.
-
-    Same-day reports get a fixed radius rather than zero, because two
-    observers can log one herd hours apart from opposite sides of it.
-    That radius applies only at zero gap: using it as a floor at every
-    gap would mask the speed setting below 12 km/day and make the
-    sensitivity table understate how much the thresholds matter.
-    """
-    if gap_days <= 0:
-        return SAME_DAY_RADIUS_KM
-    return max_speed_km_per_day * gap_days
-
-
-def assign_units(
-    df: pd.DataFrame,
-    max_speed_km_per_day: float = MAX_SPEED_KM_PER_DAY,
-    max_gap_days: int = MAX_GAP_DAYS,
-) -> pd.Series:
-    """Greedy nearest-neighbour tracking over time-ordered sightings.
-
-    Each report either extends the best-matching open track or starts a
-    new one. Assigning to a single best candidate rather than every
-    candidate within reach is what keeps this from degenerating into one
-    connected component covering the whole landscape.
-    """
-    frame = df.sort_values("Date").reset_index()
-    ref_lat = float(frame["Latitude"].mean())
-    points = km_plane(frame["Latitude"].values, frame["Longitude"].values, ref_lat)
-    day = frame["Date"].values.astype("datetime64[D]").astype(int)
-
-    counts = frame.reindex(
-        columns=["Male Count", "Female Count", "Calf Count", "Total Count"]
-    ).fillna(0)
-
-    records = []
-    for i in range(len(frame)):
-        total = float(counts["Total Count"].iloc[i])
-        records.append({
-            "total": total,
-            "calves": float(counts["Calf Count"].iloc[i]),
-            "males": float(counts["Male Count"].iloc[i]),
-            "females": float(counts["Female Count"].iloc[i]),
-            "social": _class_of(total,
-                                float(counts["Calf Count"].iloc[i]),
-                                float(counts["Male Count"].iloc[i]),
-                                float(counts["Female Count"].iloc[i])),
-        })
-
-    unit_of = np.full(len(frame), -1, dtype=int)
-    # Open tracks, each holding the index of its most recent sighting.
-    open_tracks: List[int] = []
-    next_unit = 0
-
-    for i in range(len(frame)):
-        open_tracks = [t for t in open_tracks if day[i] - day[t] <= max_gap_days]
-
-        best, best_cost = None, np.inf
-        for t in open_tracks:
-            if not _compatible(records[i], records[t]):
-                continue
-            gap = day[i] - day[t]
-            reach = _reach_km(gap, max_speed_km_per_day)
-            distance = float(np.hypot(*(points[i] - points[t])))
-            if distance > reach:
-                continue
-            # Prefer close in space, then recent in time.
-            cost = distance / reach + 0.1 * gap
-            if cost < best_cost:
-                best, best_cost = t, cost
-
-        if best is None:
-            unit_of[i] = next_unit
-            next_unit += 1
-        else:
-            unit_of[i] = unit_of[best]
-            open_tracks.remove(best)
-        open_tracks.append(i)
-
-    return pd.Series(unit_of, index=frame["index"]).reindex(df.index)
+# The tracker itself moved to core.movement when the app began forecasting
+# from it; this module keeps the summaries and the sensitivity table.
 
 
 def _hull_area_km2(xy: np.ndarray) -> float:

@@ -57,7 +57,8 @@ def test_the_overview_opens_first_with_the_four_numbers(loaded):
     assert any(b.label == "Generate brief" for b in loaded.button)
 
 
-@pytest.mark.parametrize("page", ["where", "villages", "patterns", "data", "analyst"])
+@pytest.mark.parametrize("page", ["where", "next", "villages", "patterns", "data",
+                                  "analyst"])
 def test_every_page_draws_under_the_same_scope(loaded, page):
     open_page(loaded, page).run()
     assert not loaded.exception, loaded.exception
@@ -141,3 +142,16 @@ def test_the_overview_links_carry_the_scope(loaded):
     assert all("period=30d" in link.proto.query_string for link in links)
     maps = [link for link in links if link.proto.label == "Map"]
     assert maps and all("focus=beat" in link.proto.query_string for link in maps)
+
+
+def test_next_moves_says_when_there_is_too_little_history_to_test_it(loaded):
+    """Nine reports over nine days cannot test a forecast: the page must say
+    so rather than present zones as if they had a track record."""
+    open_page(loaded, "next").run()
+    assert not loaded.exception, loaded.exception
+    assert any("Not enough history to test the forecast" in i.value for i in loaded.info)
+
+
+def test_the_overview_points_to_next_moves_when_groups_are_on_the_move(loaded):
+    links = [link for link in loaded.get("page_link") if link.proto.page == "next"]
+    assert links and "On the move" in _texts(loaded)

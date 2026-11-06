@@ -13,7 +13,7 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
-from core import map_select, spacetime
+from core import map_select, movement, spacetime
 from core.exports import download_menu
 from core.hotspots import detect_hotspots, villages_at_risk
 from core.intelligence import management_brief
@@ -183,3 +183,23 @@ def villages_for(frame: pd.DataFrame, villages: Optional[pd.DataFrame],
                  hotspots: pd.DataFrame, radius_km: float, as_of):
     """Cached village ranking: the slowest step on a rerun."""
     return villages_at_risk(frame, villages, hotspots, radius_km=radius_km, as_of=as_of)
+
+
+@st.cache_data(show_spinner="Testing the forecast against past months...", hash_funcs=_FRAMES,
+               max_entries=8)
+def movement_record(frame: pd.DataFrame, horizon_days: int):
+    """Cached track record of the next-move forecast on this register."""
+    return movement.backtest(frame, horizon_days=horizon_days)
+
+
+@st.cache_data(show_spinner="Forecasting next moves...", hash_funcs=_FRAMES, max_entries=8)
+def next_moves_for(frame: pd.DataFrame, as_of, horizon_days: int,
+                   villages: Optional[pd.DataFrame], prior_weight: float):
+    """Cached forecast for the groups reported in the last few days."""
+    return movement.next_moves(frame, as_of, horizon_days=horizon_days, villages=villages,
+                               prior_weight=prior_weight)
+
+
+@st.cache_data(show_spinner=False, hash_funcs=_FRAMES, max_entries=8)
+def recent_groups(frame: pd.DataFrame, as_of) -> int:
+    return movement.recent_groups(frame, as_of)
