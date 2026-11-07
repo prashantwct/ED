@@ -355,6 +355,10 @@ question pushes another off the screen:
   in the next 24 hours, 2 days or 3 days: its likely zone on the map, the
   villages in it, and how often the forecast has been right on this
   register (below).
+* *Range & corridors* -- where elephants range, from presence-only reports
+  corrected for where people report from: the next fortnight's forecast with
+  its tested track record, the effort-corrected map of use by season, and the
+  corridors between the most-used places (below).
 * *Villages* -- the village ranking beside its map, and early-warning
   coverage when a registry is loaded.
 * *Patterns* -- three sections. *Is it getting worse?*: monthly conflict by
@@ -618,6 +622,83 @@ The summary gives each horizon's hit rate, zone size, the same-size circle and
 the parts chosen; `--state` saves the training as JSON and `--previous` reads it
 back so the next run trains only what changed.
 
+**Range & corridors.** The register holds presence reports only. Nobody
+files "looked, saw none", and reports pile up where people are, so a raw map of
+them is partly a map of people. The model behind this page
+(`core/presence.py`) separates the two as far as the register allows:
+
+* *Thinning*: one record per 2 km cell per day, so five reports of one herd in
+  one square on one day are one piece of evidence.
+* *Fortnights*: records are counted per cell per fortnight, the last ending on
+  the period's last day. The landscape is the reports' convex hull and 10 km
+  around it, so the land between two clusters of reports is in it.
+* *An effort-corrected point process*: the counts follow a Poisson point
+  process whose log intensity adds habitat (notified forest in and around the
+  cell), reporting effort (distance from the nearest village; registered
+  villagers and app users when those files are loaded; any CSV of points where
+  reporters are, such as app-open pings), a smooth surface of its own (an
+  intrinsic CAR penalty), seasonal shifts of it, and the recent past (last
+  fortnight's records here and within 7 km, use over the last few months, every
+  earlier record). It is fitted conditional on each fortnight's total, a
+  multinomial over cells, so a register that grows as more people use the app
+  does not bend the map. Holding the effort terms level everywhere gives where
+  elephants are rather than where they are seen from. MaxEnt fits the same model,
+  so it is not run separately.
+* *Tested like Next moves*: each of the last twelve fortnights is forecast from
+  the fortnights before it, and scored against two simple maps: last fortnight's
+  reports, and all past reports. Which version of the model forecasts (with or
+  without its own surface, seasonal shifts and the recent past) is chosen the
+  same way. The bands on the map say what share of records the top 5%, next 5%
+  and next 15% of the area held in those tests.
+
+On synthetic landscapes with a known truth (`tests/presence_fixtures.py`), the
+area that held half of each tested fortnight's records, and bits per record
+(higher is sharper):
+
+| Landscape | Model | Last fortnight's map | All past reports | Verdict |
+|---|---|---|---|---|
+| Fixed hotspots, observer bias | 84 km², -6.58 | 91 km², -6.80 | 80 km², -6.63 | tie with all past reports |
+| A herd drifting east | **115 km², -7.05** | 121 km², -7.06 | 768 km², -9.01 | beats both, narrowly |
+| A herd shifting by season | **117 km², -6.83** | 124 km², -6.96 | 164 km², -7.37 | beats both |
+| Fixed hotspots, few reports | 94 km², -6.63 | 114 km², -6.96 | 91 km², -6.62 | tie with all past reports |
+
+Where use never changes, a map of all past reports is about as good as
+forecasting gets, and the page says so rather than claim more. On observer
+bias, the two equal hotspots of the first landscape show what the correction is
+for: the one far from villages holds 50% of true use, reports alone put 14%
+there, and the effort-corrected surface 46%.
+
+*Corridors* (`core/corridors.py`) are traced across the effort-corrected map,
+season by season once the register spans a year. Less-used cells are harder
+to cross (Keeley et al.'s negative-exponential transform, resistance 1 to 100).
+Core areas are touching cells in the top 5% of use. The cheapest network joins
+them (a minimum spanning tree of Dijkstra cost distances), and each corridor
+holds every route within 5% of the cheapest (Linkage Mapper's normalised
+least-cost corridor). The shading is the current a circuit model sends through
+it, Circuitscape's pairwise mode, so the darkest stretches are pinch points.
+They are hypotheses to check on the ground, not tracks.
+
+What the register cannot support is stated rather than modelled around.
+Dynamic occupancy models (colonisation and extinction) need repeat visits that
+record non-detections, so this is relative use, not the chance a place is
+occupied; the recent-past terms are the presence-only stand-in. Graph neural
+networks need far more data than a district register holds. Distance from
+villages is reporting effort and a real pull (crops) at once, so correcting for
+it also removes some real use. The page can count it as habitat instead, and
+app-open pings or patrol tracks would separate the two.
+
+The page's downloads include the model inputs for R (one row per cell per
+fortnight: records, covariates and which are effort, recent-past terms) for
+inlabru, R-INLA or mgcv. Exports kept outside the app fit from the command line:
+
+```bash
+python -m tools.fit_presence register_2025.csv register_2026.csv --out presence/
+python -m tools.fit_presence register_2026.csv --effort app_pings.csv --out presence/
+```
+
+It writes `model_inputs.csv`, `surfaces.csv`, `corridors.geojson` and a
+`summary.json` with the track record, no report, place or person.
+
 **Two maps.** The spatial view's layers are chosen on the *Where to act*
 page, not the sidebar. *Events* (what happened) and *Animals* (lone bull,
 bull party, family herd, ...) combine, so "crop or grain loss" with "lone
@@ -874,7 +955,7 @@ channel.
 ```
 app.py               Streamlit entry point: navigation, source line, scope bar,
                      sidebar, and the analysis every page shares
-app_pages/           One module per page (home, where, next, villages,
+app_pages/           One module per page (home, where, next, range, villages,
                      patterns, data, analyst) and what they share (common, brief)
 core/config.py       Every tunable parameter
 core/csv_io.py       Encoding-tolerant CSV reading
@@ -896,6 +977,8 @@ core/analysis_settings.py Standard values for the tunables, and naming any chang
 core/scope.py        Area, period and incident type; focus window vs history
 core/overview.py     The Overview's sentence, Act now and What changed
 core/movement.py     Movement units, the next-move forecast, its training and track record
+core/presence.py     Effort-corrected presence model: thinning, fortnights, fit, tests
+core/corridors.py    Core areas, least-cost corridors and current flow
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief
 core/brief_insights.py Findings, action plan and ecology for the brief
@@ -916,6 +999,7 @@ data/centroids.csv   Bundled village centroids
 tools/api_source.py  JSON payload shapes, and API routes read from bundles
 tools/export_source.py  The Export button's download, whatever format it is
 tools/train_movement.py  Train the forecast on historic exports from the command line
+tools/fit_presence.py    Fit the presence model on exports; write inputs for R
 tools/               Data preparation and the scraper, not imported by the app
 tests/replica.py     A local stand-in for the Forest Alerts admin site
 tests/               Unit tests, run with `pytest -q`
@@ -997,8 +1081,11 @@ secrets; never commit it. The app works without it.
   created and never used as a quiet division.
 - **No persistent store.** Fresh upload per session, so month-over-month
   comparison means re-uploading.
-- **Effort is not modelled.** Rates control for how many reports a beat filed,
-  not how many patrols produced them.
+- **Effort is modelled only by proxy.** Rates control for how many reports a
+  beat filed, not how many patrols produced them. *Range & corridors* corrects
+  for distance from villages and, when loaded, registered villagers and app
+  users. Real effort (app-open pings, patrol tracks) can be uploaded there, and
+  without it the correction cannot tell observers from crops.
 - **Night is a fixed 18:00–06:00 window**, not sunset-to-sunrise, which shifts
   by over an hour across the year in central India.
 - **`Movement Direction` is unused** — inconsistently cased and mostly blank.
