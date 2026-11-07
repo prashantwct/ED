@@ -592,6 +592,32 @@ does not beat staying put it says so and asks for the zone to be read as an
 area around the last report. It cannot foresee a first visit to a place nobody
 has reported elephants in.
 
+**Training, and training again as entries arrive.** The forecast is trained
+on the whole register every time the register on screen changes -- an upload,
+a fetch with new entries, an edit to an old one -- and the page says what it
+was trained on and what that load retrained. Training keeps each month's
+results with a fingerprint of the reports they depend on, so new entries
+retrain only the months they fall in and an edit retrains from its own month;
+the rest carry over. The result is identical to training from scratch (a test
+holds it to that, including when reports from a new area widen the grid), at a
+fraction of the time: on the 1,580-report test register, a week of new entries
+retrains in 0.2 s against 1.4 s from scratch. Trainings hold scores and settings only, no report, place
+or person, and the server keeps the last few so the next session that loads the
+same register, or the same register plus a day, starts from them.
+
+Exports kept outside the app -- older years in other files -- train from the
+command line, merged with each report kept once:
+
+```bash
+python -m tools.train_movement old_2025.csv register_2026.csv --json summary.json
+python -m tools.train_movement register_2026.csv --state training.json
+python -m tools.train_movement register_latest.csv --previous training.json
+```
+
+The summary gives each horizon's hit rate, zone size, the same-size circle and
+the parts chosen; `--state` saves the training as JSON and `--previous` reads it
+back so the next run trains only what changed.
+
 **Two maps.** The spatial view's layers are chosen on the *Where to act*
 page, not the sidebar. *Events* (what happened) and *Animals* (lone bull,
 bull party, family herd, ...) combine, so "crop or grain loss" with "lone
@@ -869,7 +895,7 @@ core/analytics.py    Severity, conflict classification, KPIs, filters, trends
 core/analysis_settings.py Standard values for the tunables, and naming any changed
 core/scope.py        Area, period and incident type; focus window vs history
 core/overview.py     The Overview's sentence, Act now and What changed
-core/movement.py     Movement units, the next-move forecast and its track record
+core/movement.py     Movement units, the next-move forecast, its training and track record
 core/charts.py       Plotly figures for the trend views
 core/report_charts.py The same views as static SVG for the brief
 core/brief_insights.py Findings, action plan and ecology for the brief
@@ -889,6 +915,7 @@ data/boundaries/     Division, range, beat and reserve outlines
 data/centroids.csv   Bundled village centroids
 tools/api_source.py  JSON payload shapes, and API routes read from bundles
 tools/export_source.py  The Export button's download, whatever format it is
+tools/train_movement.py  Train the forecast on historic exports from the command line
 tools/               Data preparation and the scraper, not imported by the app
 tests/replica.py     A local stand-in for the Forest Alerts admin site
 tests/               Unit tests, run with `pytest -q`

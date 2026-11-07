@@ -8,6 +8,7 @@ villages on every click.
 from __future__ import annotations
 
 import hashlib
+import threading
 from typing import Optional
 
 import pandas as pd
@@ -185,11 +186,44 @@ def villages_for(frame: pd.DataFrame, villages: Optional[pd.DataFrame],
     return villages_at_risk(frame, villages, hotspots, radius_km=radius_km, as_of=as_of)
 
 
-@st.cache_data(show_spinner="Testing the forecast against past months...", hash_funcs=_FRAMES,
-               max_entries=8)
-def movement_record(frame: pd.DataFrame, horizon_days: int):
-    """Cached track record of the next-move forecast on this register."""
-    return movement.backtest(frame, horizon_days=horizon_days)
+@st.cache_resource
+def _training_store() -> dict:
+    """Recent trainings of the forecast, shared by the sessions on this server.
+
+    A training holds scores and settings only -- no report, place or person
+    -- so a session that loads a register someone else just trained, or the
+    same register with a day's new entries, starts from it instead of from
+    nothing.
+    """
+    return {"lock": threading.Lock(), "items": {}}
+
+
+TRAININGS_KEPT = 8
+
+
+def movement_training(frame: pd.DataFrame, horizon_days: int):
+    """The forecast trained on this register, retraining only what changed.
+
+    Runs whenever the register on screen changes -- an upload, a fetch with
+    new entries, an edit to an old one -- and reuses every month whose
+    reports are unchanged (core.movement.train). The result is the same as
+    training from scratch, in a fraction of the time.
+    """
+    store = _training_store()
+    session = st.session_state.setdefault("_movement_training", {})
+    with store["lock"]:
+        candidates = list(store["items"].get(horizon_days, []))
+    mine = session.get(horizon_days)
+    if mine is not None:
+        candidates.insert(0, mine)
+    with st.spinner("Training the forecast on the register..."):
+        training = movement.train(frame, horizon_days, previous=candidates)
+    session[horizon_days] = training
+    with store["lock"]:
+        others = [t for t in store["items"].get(horizon_days, [])
+                  if t.data_key != training.data_key]
+        store["items"][horizon_days] = ([training] + others)[:TRAININGS_KEPT]
+    return training
 
 
 @st.cache_data(show_spinner="Forecasting next moves...", hash_funcs=_FRAMES, max_entries=8)

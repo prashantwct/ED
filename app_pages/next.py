@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from app_pages.common import movement_record, next_moves_for
+from app_pages.common import movement_training, next_moves_for
 from core import movement as mv
 from core.brief_insights import names, plural
 from core.map_engine import ZONE_COLORS, render_forecast_map
@@ -57,6 +57,28 @@ def _track_record(record: mv.TrackRecord) -> None:
                    "direction.", icon=":material/info:")
 
 
+def _model_status(training: mv.Training) -> None:
+    """What the forecast was trained on, and what this load had to retrain."""
+    if not training.reports:
+        return
+    span = (f"{training.first_report.day} {training.first_report:%b %Y} to "
+            f"{training.last_report.day} {training.last_report:%b %Y}")
+    said = (f"Trained on {training.reports:,} reports from {span}: "
+            f"{training.moves:,} moves, {plural(len(training.months), 'month')} forecast "
+            "and checked. ")
+    if not training.months:
+        said += "It retrains whenever the register changes."
+    elif training.retrained_months == 0:
+        said += "Up to date with the register on screen."
+    elif training.reused_months == 0:
+        said += "Trained from scratch on this register; it retrains whenever entries change."
+    else:
+        said += (f"New or changed entries retrained the last "
+                 f"{plural(training.retrained_months, 'month')}; the "
+                 f"{plural(training.reused_months, 'earlier month')} carried over unchanged.")
+    st.caption(said)
+
+
 def _turn_phrase(turns: dict) -> str:
     """What the register says about direction, in words."""
     if not turns or 1 not in turns:
@@ -81,11 +103,13 @@ def render(c) -> None:
     days = HORIZONS[choice]
 
     register = c.df[c.df["Date"] < c.period_end + pd.Timedelta(days=1)]
-    record = movement_record(register, days)
+    training = movement_training(register, days)
+    record = training.record
     out = next_moves_for(register, c.period_end, days, c.villages, record,
                          (record.config, record.masses, record.tested))
     groups = _in_scope(out["groups"], c) if len(out["groups"]) else out["groups"]
     _track_record(record)
+    _model_status(training)
 
     if groups.empty:
         st.info(f"No group was reported in this area in the {mv.ACTIVE_DAYS} days to "

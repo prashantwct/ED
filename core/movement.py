@@ -48,7 +48,7 @@ elephants in, follow a group through a reporting gap longer than
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -85,6 +85,22 @@ def km_plane(lat: np.ndarray, lon: np.ndarray, ref_lat: float) -> np.ndarray:
     x = np.radians(lon) * np.cos(np.radians(ref_lat)) * EARTH_RADIUS_KM
     y = np.radians(lat) * EARTH_RADIUS_KM
     return np.column_stack([x, y])
+
+
+def pair_km(lat_a, lon_a, lat_b, lon_b):
+    """East and north offsets in km from a to b, measured at the pair's own latitude.
+
+    Distances between two reports must not depend on which other reports
+    are in the register -- a global reference latitude would move them
+    whenever a new area joined it -- so each pair is projected about its
+    own midpoint.
+    """
+    lat_a, lon_a = np.asarray(lat_a, dtype=float), np.asarray(lon_a, dtype=float)
+    lat_b, lon_b = np.asarray(lat_b, dtype=float), np.asarray(lon_b, dtype=float)
+    mid = np.radians((lat_a + lat_b) / 2)
+    dx = np.radians(lon_b - lon_a) * np.cos(mid) * EARTH_RADIUS_KM
+    dy = np.radians(lat_b - lat_a) * EARTH_RADIUS_KM
+    return dx, dy
 
 
 def from_plane(xy: np.ndarray, ref_lat: float) -> np.ndarray:
@@ -161,8 +177,8 @@ def assign_units(
     if df.empty:
         return pd.Series(dtype=int, index=df.index)
     frame = df.sort_values("Date", kind="stable").reset_index()
-    ref_lat = float(frame["Latitude"].mean())
-    points = km_plane(frame["Latitude"].values, frame["Longitude"].values, ref_lat)
+    lat = frame["Latitude"].to_numpy(dtype=float)
+    lon = frame["Longitude"].to_numpy(dtype=float)
     day = frame["Date"].values.astype("datetime64[D]").astype(int)
     records = _records(frame)
 
@@ -180,7 +196,7 @@ def assign_units(
                 continue
             gap = day[i] - day[t]
             reach = _reach_km(gap, max_speed_km_per_day)
-            distance = float(np.hypot(*(points[i] - points[t])))
+            distance = float(np.hypot(*pair_km(lat[t], lon[t], lat[i], lon[i])))
             if distance > reach:
                 continue
             # Prefer close in space, then recent in time.
@@ -241,6 +257,26 @@ MIN_CALIBRATION = 40
 _TINY = 1e-12
 
 
+# Cells sit on one lattice for the whole country (1 km squares counted from
+# the projection's origin), and the projection's reference latitude is the
+# middle of the degree the reports fall in. So adding reports somewhere
+# else -- a new month, a wider area -- never moves a cell, and the months
+# already scored stay valid (see ``train``).
+_KEY_STRIDE = 10 ** 8
+# A place with no reports keeps this much usage per 100 x 100 km.
+FLOOR_AREA_KM2 = 10_000.0
+
+
+@dataclass
+class Local:
+    """The cells within reach of one group: lattice keys, grid index, centres, distances."""
+
+    keys: np.ndarray       # ascending; comparable across grids
+    flat: np.ndarray       # index into the grid's arrays, -1 outside it
+    centres: np.ndarray    # km plane
+    distance: np.ndarray   # from the group's last report
+
+
 @dataclass
 class Grid:
     """Square cells over the landscape, in the ``km_plane`` projection."""
@@ -258,13 +294,16 @@ class Grid:
         ys = self.y0 + (np.arange(self.ny) + 0.5) * self.cell_km
         gx, gy = np.meshgrid(xs, ys)
         self.centres = np.column_stack([gx.ravel(), gy.ravel()])
+        self._ix0 = int(np.floor(self.x0 / self.cell_km + 1e-9))
+        self._iy0 = int(np.floor(self.y0 / self.cell_km + 1e-9))
 
     @classmethod
     def around(cls, df: pd.DataFrame, cell_km: float = CELL_KM,
                margin_km: float = GRID_MARGIN_KM) -> "Grid":
-        ref_lat = float(df["Latitude"].mean())
+        """The reports' extent plus a margin, snapped to the national lattice."""
+        ref_lat = float(np.floor(df["Latitude"].mean())) + 0.5
         xy = km_plane(df["Latitude"].values, df["Longitude"].values, ref_lat)
-        x0, y0 = xy.min(axis=0) - margin_km
+        x0, y0 = np.floor((xy.min(axis=0) - margin_km) / cell_km) * cell_km
         x1, y1 = xy.max(axis=0) + margin_km
         return cls(ref_lat, float(x0), float(y0), int(np.ceil((x1 - x0) / cell_km)),
                    int(np.ceil((y1 - y0) / cell_km)), cell_km)
@@ -279,25 +318,47 @@ class Grid:
         inside = (ix >= 0) & (ix < self.nx) & (iy >= 0) & (iy < self.ny)
         return np.where(inside, iy * self.nx + ix, -1)
 
-    def near(self, xy: np.ndarray, radius_km: float):
-        """Cells within ``radius_km`` of ``xy``: flat indices (ascending) and distances.
+    def key_of(self, xy: np.ndarray) -> np.ndarray:
+        """Lattice key of each point: the same cell gets the same key on any grid."""
+        ix = np.floor(xy[:, 0] / self.cell_km + 1e-9).astype(np.int64)
+        iy = np.floor(xy[:, 1] / self.cell_km + 1e-9).astype(np.int64)
+        return iy * _KEY_STRIDE + ix
+
+    def near(self, xy: np.ndarray, radius_km: float) -> Local:
+        """Cells within ``radius_km`` of ``xy``, whether or not the grid covers them.
 
         A forecast only needs the cells a group could reach, which is a few
-        thousand rather than the landscape's tens of thousands.
+        thousand rather than the landscape's tens of thousands; and because
+        they are taken from the lattice rather than the grid, the forecast
+        does not change when the grid grows.
         """
         c = self.cell_km
-        ix0 = max(0, int(np.floor((xy[0] - radius_km - self.x0) / c)))
-        ix1 = min(self.nx - 1, int(np.floor((xy[0] + radius_km - self.x0) / c)))
-        iy0 = max(0, int(np.floor((xy[1] - radius_km - self.y0) / c)))
-        iy1 = min(self.ny - 1, int(np.floor((xy[1] + radius_km - self.y0) / c)))
-        if ix0 > ix1 or iy0 > iy1:
-            return np.array([], dtype=int), np.array([])
-        gx, gy = np.meshgrid(np.arange(ix0, ix1 + 1), np.arange(iy0, iy1 + 1))
-        index = (gy * self.nx + gx).ravel()
-        offset = self.centres[index] - xy
+        ix = np.arange(int(np.floor((xy[0] - radius_km) / c)),
+                       int(np.floor((xy[0] + radius_km) / c)) + 1)
+        iy = np.arange(int(np.floor((xy[1] - radius_km) / c)),
+                       int(np.floor((xy[1] + radius_km) / c)) + 1)
+        gx, gy = np.meshgrid(ix, iy)
+        gx, gy = gx.ravel(), gy.ravel()
+        centres = np.column_stack([(gx + 0.5) * c, (gy + 0.5) * c])
+        offset = centres - xy
         distance = np.hypot(offset[:, 0], offset[:, 1])
         keep = distance <= radius_km
-        return index[keep], distance[keep]
+        gx, gy, centres, distance = gx[keep], gy[keep], centres[keep], distance[keep]
+        lx, ly = gx - self._ix0, gy - self._iy0
+        inside = (lx >= 0) & (lx < self.nx) & (ly >= 0) & (ly < self.ny)
+        flat = np.where(inside, ly * self.nx + lx, -1)
+        return Local(gy.astype(np.int64) * _KEY_STRIDE + gx, flat, centres, distance)
+
+    def floor(self) -> float:
+        """Usage left on a cell nobody has reported elephants near."""
+        return USAGE_FLOOR * self.cell_km ** 2 / FLOOR_AREA_KM2
+
+    def at(self, values: np.ndarray, local: Local) -> np.ndarray:
+        """A grid-wide map's values on ``local``'s cells; the floor off the grid."""
+        out = np.full(len(local.flat), self.floor())
+        inside = local.flat >= 0
+        out[inside] = values[local.flat[inside]]
+        return out
 
     def latlon(self, index: Optional[np.ndarray] = None) -> np.ndarray:
         centres = self.centres if index is None else self.centres[index]
@@ -306,18 +367,22 @@ class Grid:
 
 def _density(points_xy: np.ndarray, weight: np.ndarray, grid: Grid,
              bandwidth_km: float) -> np.ndarray:
+    """Share of the weighted reports per cell, smoothed, plus the floor.
+
+    Zero padding at the edges and an absolute floor keep a cell's value
+    independent of how far the grid happens to reach.
+    """
     from scipy.ndimage import gaussian_filter
 
     density = np.zeros(grid.nx * grid.ny)
-    if len(points_xy):
+    if len(points_xy) and weight.sum() > 0:
         cells = grid.cell_of(points_xy)
         keep = cells >= 0
         np.add.at(density, cells[keep], weight[keep])
         density = gaussian_filter(density.reshape(grid.ny, grid.nx),
-                                  sigma=bandwidth_km / grid.cell_km).ravel()
-    mean = density.mean() if density.any() else 1.0
-    density = density + USAGE_FLOOR * mean
-    return density / density.sum()
+                                  sigma=bandwidth_km / grid.cell_km, mode="constant").ravel()
+        density /= weight.sum()
+    return density + grid.floor()
 
 
 def usage_prior(df: pd.DataFrame, grid: Grid, as_of: pd.Timestamp,
@@ -371,13 +436,13 @@ def steps(df: pd.DataFrame, units: pd.Series) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=columns)
     work = df.assign(_unit=units.values).sort_values(["_unit", "Date"], kind="stable")
-    ref_lat = float(df["Latitude"].mean())
-    xy = km_plane(work["Latitude"].values, work["Longitude"].values, ref_lat)
+    lat = work["Latitude"].to_numpy(dtype=float)
+    lon = work["Longitude"].to_numpy(dtype=float)
     same = work["_unit"].values[1:] == work["_unit"].values[:-1]
     gap = (work["Date"].values[1:] - work["Date"].values[:-1]).astype("timedelta64[D]")
     gap = gap.astype(int)
     keep = same & (gap >= 1)
-    delta = xy[1:] - xy[:-1]
+    delta = np.column_stack(pair_km(lat[:-1], lon[:-1], lat[1:], lon[1:]))
     origin = work.iloc[:-1][keep]
     target = work.iloc[1:][keep]
     social = [r["social"] for r in _records(origin)]
@@ -550,26 +615,26 @@ class Situation:
 def _components(s: Situation, grid: Grid, model: StepModel, priors: Dict[str, np.ndarray]):
     """Each part of the forecast as a log-density over the cells within reach."""
     r, density = model.profile(s.social, s.days, grid.cell_km)
-    index, distance = grid.near(s.xy, float(r[-1]))
-    parts = {"reach": np.log(np.interp(distance, r, density) + _TINY)}
+    local = grid.near(s.xy, float(r[-1]))
+    parts = {"reach": np.log(np.interp(local.distance, r, density) + _TINY)}
     for name, prior in priors.items():
-        parts[name] = np.log(prior[index])
+        parts[name] = np.log(grid.at(prior, local))
     turn = model.turn(s.days)
     if turn is not None and s.prev_angle is not None and np.isfinite(s.prev_angle):
         mu, kappa = turn
-        offset = grid.centres[index] - s.xy
+        offset = local.centres - s.xy
         theta = np.arctan2(offset[:, 1], offset[:, 0])
         heading = kappa * np.cos(theta - s.prev_angle - mu)
         # The cell the group stands in has no direction: give it the average.
-        heading[distance < grid.cell_km / 2] = np.log(np.i0(kappa))
+        heading[local.distance < grid.cell_km / 2] = np.log(np.i0(kappa))
         parts["heading"] = heading
     if s.own_xy is not None and len(s.own_xy):
-        offset = grid.centres[index][:, None, :] - s.own_xy[None, :, :]
+        offset = local.centres[:, None, :] - s.own_xy[None, :, :]
         d2 = (offset ** 2).sum(axis=2)
         own = np.exp(-0.5 * d2 / OWN_BANDWIDTH_KM ** 2).sum(axis=1)
         own = own + USAGE_FLOOR * (own.mean() if own.any() else 1.0)
         parts["own"] = np.log(own)
-    return index, distance, parts
+    return local, parts
 
 
 def _combine(parts: Dict[str, np.ndarray], config: Config) -> np.ndarray:
@@ -700,113 +765,321 @@ def _situations(table: pd.DataFrame, grid: Grid, history: _History) -> List[Situ
     return out
 
 
-def backtest(df: pd.DataFrame, horizon_days: int = 1, min_history_days: int = 60,
-             grid: Optional[Grid] = None) -> TrackRecord:
-    """Forecast each month from the months before it, and score the likely zone.
+# ---------------------------------------------------------------------------
+# Training: month by month, and only the months that changed
+# ---------------------------------------------------------------------------
+# Bump when the method changes, so a training made by older code is never
+# reused by newer code.
+TRAINING_VERSION = 1
+MIN_HISTORY_DAYS = 60
 
-    A test is a step whose origin falls in the month and whose next report
-    came within ``horizon_days`` (1 means the next day). Units, step
-    lengths, turns, the usage maps and the calibration are all built from
-    reports before the month began, so nothing from the month being scored
-    leaks in. Which parts of the forecast to use is chosen the same way:
-    the configuration with the best log score over the earlier months.
+
+@dataclass
+class MonthResult:
+    """One month forecast from the months before it, kept so it need not be redone."""
+
+    month: str
+    fingerprint: str
+    scores: Dict[Config, float]           # summed log score per configuration
+    masses: Dict[Config, List[float]]     # mass needed to reach each next report
+    reach: List[float]                    # next-report distance / sqrt(days)
+    tested: int = 0
+    hits: int = 0
+    stay_hits: int = 0
+    discordant: int = 0
+    area_sum: float = 0.0
+    circle_hits: int = 0
+    circle_tested: int = 0
+    circle_area_sum: float = 0.0
+
+
+@dataclass
+class Training:
+    """The forecast trained on a register: its months, what it chose, how it did.
+
+    Hand a training back to ``train`` with a newer register and only the
+    months whose reports changed -- new entries, or edits to old ones --
+    are forecast again; the rest are carried over unchanged.
     """
-    empty = TrackRecord(0, 0, 0, float("nan"), 0, horizon_days)
-    if df.empty or (df["Date"].max() - df["Date"].min()).days < min_history_days + 14:
-        return empty
-    grid = grid or Grid.around(df)
-    units_all = assign_units(df)
-    all_steps = steps(df, units_all)
-    if all_steps.empty:
-        return empty
-    history = _History(df, units_all, grid)
-    with_season = (df["Date"].max() - df["Date"].min()).days > SEASON_MIN_AGE_DAYS + 60
-    candidates = configs(with_season)
+
+    horizon_days: int
+    version: int
+    with_season: bool
+    months: List[MonthResult]
+    record: "TrackRecord"
+    reports: int = 0
+    first_report: Optional[pd.Timestamp] = None
+    last_report: Optional[pd.Timestamp] = None
+    moves: int = 0
+    reused_months: int = 0
+    data_key: str = ""
+
+    @property
+    def retrained_months(self) -> int:
+        return len(self.months) - self.reused_months
+
+    # Saved as JSON, never pickle: a saved training is data, and loading one
+    # must not be able to run anything. It holds scores and settings only.
+    def to_dict(self) -> dict:
+        def key(c: Config) -> str:
+            return f"{c.places:g}|{int(c.season)}|{int(c.heading)}|{int(c.own)}"
+        return {
+            "horizon_days": int(self.horizon_days), "version": int(self.version),
+            "with_season": bool(self.with_season), "reports": int(self.reports),
+            "first_report": str(self.first_report) if self.first_report is not None else None,
+            "last_report": str(self.last_report) if self.last_report is not None else None,
+            "moves": int(self.moves), "data_key": self.data_key,
+            "months": [{
+                "month": m.month, "fingerprint": m.fingerprint,
+                "scores": {key(c): float(v) for c, v in m.scores.items()},
+                "masses": {key(c): [float(x) for x in v] for c, v in m.masses.items()},
+                "reach": [float(x) for x in m.reach], "tested": int(m.tested),
+                "hits": int(m.hits), "stay_hits": int(m.stay_hits),
+                "discordant": int(m.discordant), "area_sum": float(m.area_sum),
+                "circle_hits": int(m.circle_hits), "circle_tested": int(m.circle_tested),
+                "circle_area_sum": float(m.circle_area_sum),
+            } for m in self.months],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Training":
+        def config(text: str) -> Config:
+            places, season, heading, own = text.split("|")
+            return Config(float(places), bool(int(season)), bool(int(heading)),
+                          bool(int(own)))
+        months = [MonthResult(
+            str(m["month"]), str(m["fingerprint"]),
+            {config(k): float(v) for k, v in m["scores"].items()},
+            {config(k): [float(x) for x in v] for k, v in m["masses"].items()},
+            [float(x) for x in m["reach"]], int(m["tested"]), int(m["hits"]),
+            int(m["stay_hits"]), int(m["discordant"]), float(m["area_sum"]),
+            int(m["circle_hits"]), int(m["circle_tested"]), float(m["circle_area_sum"]),
+        ) for m in data["months"]]
+        with_season = bool(data["with_season"])
+        horizon = int(data["horizon_days"])
+        stamp = (lambda v: pd.Timestamp(v) if v else None)
+        return cls(horizon, int(data["version"]), with_season, months,
+                   _summarise(months, configs(with_season), horizon),
+                   reports=int(data["reports"]), first_report=stamp(data["first_report"]),
+                   last_report=stamp(data["last_report"]), moves=int(data["moves"]),
+                   reused_months=len(months), data_key=str(data["data_key"]))
+
+
+def _fingerprints(df: pd.DataFrame, cutoffs: List[pd.Timestamp], salt: str = "") -> List[str]:
+    """A digest of every report up to each cutoff, in the order the tracker reads them.
+
+    Two registers share a month's fingerprint only if every report the
+    month's forecasts and scores depend on is identical, including the
+    order of same-day reports, which the tracker is sensitive to.
+    """
+    import hashlib
+
+    order = df.sort_values("Date", kind="stable")
+    counts = order.reindex(columns=["Total Count", "Male Count", "Female Count",
+                                    "Calf Count"]).apply(pd.to_numeric, errors="coerce")
+    table = np.column_stack([
+        order["Date"].values.astype("datetime64[ns]").astype(np.int64).astype(np.float64),
+        order["Latitude"].to_numpy(dtype=float), order["Longitude"].to_numpy(dtype=float),
+        counts.fillna(-1).to_numpy(dtype=float)])
+    dates = order["Date"].values
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(f"v{TRAINING_VERSION}|{salt}".encode())
+    out, done = [], 0
+    for cutoff in cutoffs:
+        upto = int(np.searchsorted(dates, np.datetime64(cutoff), side="right"))
+        digest.update(table[done:upto].tobytes())
+        done = upto
+        out.append(digest.copy().hexdigest())
+    return out
+
+
+def _months(df: pd.DataFrame, min_history_days: int) -> pd.PeriodIndex:
     start = (df["Date"].min() + pd.Timedelta(days=min_history_days)).to_period("M").start_time
-    months = pd.period_range(start, df["Date"].max(), freq="M")
+    return pd.period_range(start, df["Date"].max(), freq="M")
 
-    tested = forecast_hits = stay_hits = discordant = circle_hits = 0
-    areas: List[float] = []
-    circle_areas: List[float] = []
-    used_months = 0
-    # Summed log score per configuration over the months already scored,
-    # and each configuration's past mass-to-target scores for calibration.
-    scores = {c: 0.0 for c in candidates}
-    masses: Dict[Config, List[float]] = {c: [] for c in candidates}
-    reach_scores: List[float] = []   # past distance / sqrt(days), for the circle
-    for month in months:
-        begin, end = month.start_time, month.end_time
-        tests = all_steps[(all_steps["From Date"] >= begin) & (all_steps["From Date"] <= end)
-                          & (all_steps["Gap (days)"] <= horizon_days)]
-        if tests.empty:
+
+def _reusable(previous, months, prints, horizon_days, with_season) -> List[MonthResult]:
+    """The longest run of leading months a previous training already did on identical data."""
+    best: List[MonthResult] = []
+    for candidate in previous or []:
+        if (candidate is None or candidate.version != TRAINING_VERSION
+                or candidate.horizon_days != horizon_days
+                or candidate.with_season != with_season):
             continue
-        # The tracker only ever looks back, so the units it gives the
-        # reports before ``begin`` are the same whether or not later
-        # reports exist: the steps finished before the month are the
-        # ones a forecast made then could have learned from.
-        model = StepModel.learn(all_steps[all_steps["To Date"] < begin])
-        recent = usage_prior(df, grid, begin)
-        priors = {"places": recent}
-        seasonal = season_prior(df, grid, begin + pd.Timedelta(days=14), recent) \
-            if with_season else None
-        if seasonal is not None:
-            priors["season"] = seasonal
-        chosen = max(scores, key=scores.get) if used_months else DEFAULT_CONFIG
-        likely_mass = calibrated_mass(masses[chosen], LIKELY_MASS)
-        circle_r = (float(np.quantile(reach_scores, 0.5)) if len(reach_scores)
-                    >= MIN_CALIBRATION else None)
-        used_months += 1
-        targets = grid.project(tests["To Latitude"].values, tests["To Longitude"].values)
-        month_scores = {c: 0.0 for c in candidates}
-        month_masses: Dict[Config, List[float]] = {c: [] for c in candidates}
-        month_reach: List[float] = []
-        for situation, target in zip(_situations(tests, grid, history), targets):
-            index, distance, parts = _components(situation, grid, model, priors)
-            target_cell = grid.cell_of(target[None, :])[0]
-            at = np.searchsorted(index, target_cell)
-            at = at if at < len(index) and index[at] == target_cell else -1
-            probs = {}
-            for c in candidates:
-                p = _combine(parts, c)
-                probs[c] = p
-                month_scores[c] += float(np.log(p[at] + _TINY)) if at >= 0 else np.log(_TINY)
-                month_masses[c].append(_mass_to(p, at))
-            moved = float(np.hypot(*(target - situation.xy)))
-            month_reach.append(moved / np.sqrt(situation.days))
+        run: List[MonthResult] = []
+        for done, month, digest in zip(candidate.months, months, prints):
+            if done.month != str(month) or done.fingerprint != digest:
+                break
+            run.append(done)
+        if len(run) > len(best):
+            best = run
+    return best
 
-            likely = zone(probs[chosen], likely_mass)
-            area = likely.sum() * grid.cell_km ** 2
-            hit = at >= 0 and bool(likely[at])
-            # The same area as a disc around where the group was last seen.
-            stay = moved <= np.sqrt(area / np.pi)
-            tested += 1
-            forecast_hits += hit
-            stay_hits += stay
-            discordant += hit != stay
-            areas.append(area)
-            if circle_r is not None:
-                radius = circle_r * np.sqrt(situation.days)
-                circle_hits += moved <= radius
-                circle_areas.append(np.pi * radius ** 2)
+
+def _summarise(months: List[MonthResult], candidates: List[Config],
+               horizon_days: int) -> "TrackRecord":
+    tested = sum(m.tested for m in months)
+    if not months or not tested:
+        return TrackRecord(0, 0, 0, float("nan"), len(months), horizon_days)
+    scores = {c: sum(m.scores.get(c, 0.0) for m in months) for c in candidates}
+    masses: Dict[Config, List[float]] = {c: [] for c in candidates}
+    for m in months:
         for c in candidates:
-            scores[c] += month_scores[c]
-            masses[c].extend(month_masses[c])
-        reach_scores.extend(month_reach)
-
-    best = max(scores, key=scores.get) if used_months else DEFAULT_CONFIG
-    circle_tested = len(circle_areas)
+            masses[c].extend(m.masses.get(c, []))
+    best = max(scores, key=scores.get)
+    circle_tested = sum(m.circle_tested for m in months)
+    circle_hits = sum(m.circle_hits for m in months)
     return TrackRecord(
-        tested, forecast_hits, stay_hits, float(np.mean(areas)) if areas else float("nan"),
-        used_months, horizon_days, discordant,
+        tested, sum(m.hits for m in months), sum(m.stay_hits for m in months),
+        sum(m.area_sum for m in months) / tested, sum(1 for m in months if m.tested),
+        horizon_days,
+        sum(m.discordant for m in months),
         # The calibrated circle's hit count over the forecasts it covered,
         # scaled to all of them so the two rates share a denominator.
         int(round(circle_hits * tested / circle_tested)) if circle_tested else 0,
-        float(np.mean(circle_areas)) if circle_areas else float("nan"),
+        (sum(m.circle_area_sum for m in months) / circle_tested) if circle_tested
+        else float("nan"),
         best,
         (calibrated_mass(masses[best], LIKELY_MASS),
          calibrated_mass(masses[best], POSSIBLE_MASS)),
-        {c: v / max(tested, 1) for c, v in scores.items()},
+        {c: v / tested for c, v in scores.items()},
     )
+
+
+def train(df: pd.DataFrame, horizon_days: int = 1, previous=None,
+          min_history_days: int = MIN_HISTORY_DAYS) -> Training:
+    """Train the forecast on the register, month by month.
+
+    Each month is forecast from the months before it only: units, step
+    lengths, turns, the usage maps, which parts to switch on (the best log
+    score over the earlier months) and the zone sizes (calibrated on the
+    earlier months) are all built from reports before the month began,
+    and the forecasts are scored against where each group was reported
+    next. Nothing from the month being scored leaks in.
+
+    ``previous`` is an earlier ``Training`` (or a list of them). Months it
+    already scored on identical reports are carried over, so a register
+    that gained a day of entries is trained again in the time it takes to
+    score that day's month; an edit to an old entry retrains from that
+    entry's month on. The result is the same as training from scratch.
+    """
+    if isinstance(previous, Training):
+        previous = [previous]
+    if df.empty or (df["Date"].max() - df["Date"].min()).days < min_history_days + 14:
+        return Training(horizon_days, TRAINING_VERSION, False, [],
+                        TrackRecord(0, 0, 0, float("nan"), 0, horizon_days),
+                        reports=len(df),
+                        first_report=df["Date"].min() if len(df) else None,
+                        last_report=df["Date"].max() if len(df) else None,
+                        data_key=_fingerprints(df, [df["Date"].max()])[0] if len(df) else "")
+    with_season = (df["Date"].max() - df["Date"].min()).days > SEASON_MIN_AGE_DAYS + 60
+    candidates = configs(with_season)
+    months = _months(df, min_history_days)
+    # A month's results depend on every report up to its last day plus the
+    # horizon: the next report that scores a forecast made on its last day.
+    cutoffs = [m.end_time + pd.Timedelta(days=horizon_days) for m in months]
+    grid = Grid.around(df)
+    # The projection's reference latitude shapes every forecast; a register
+    # whose reports moved to another degree of latitude starts afresh.
+    prints = _fingerprints(df, cutoffs + [df["Date"].max()],
+                           salt=f"{grid.ref_lat:g}|{grid.cell_km:g}")
+    data_key, prints = prints[-1], prints[:-1]
+    # The very same register, already trained: nothing to do.
+    for candidate in previous or []:
+        if (candidate is not None and candidate.data_key == data_key
+                and candidate.version == TRAINING_VERSION
+                and candidate.horizon_days == horizon_days
+                and candidate.with_season == with_season):
+            return replace(candidate, reused_months=len(candidate.months))
+    kept = _reusable(previous, months, prints, horizon_days, with_season)
+
+    units_all = assign_units(df)
+    all_steps = steps(df, units_all)
+    history = _History(df, units_all, grid)
+
+    scores = {c: 0.0 for c in candidates}
+    masses: Dict[Config, List[float]] = {c: [] for c in candidates}
+    reach_scores: List[float] = []
+    results: List[MonthResult] = []
+    for done in kept:
+        results.append(done)
+        for c in candidates:
+            scores[c] += done.scores.get(c, 0.0)
+            masses[c].extend(done.masses.get(c, []))
+        reach_scores.extend(done.reach)
+
+    for month, digest in zip(months[len(kept):], prints[len(kept):]):
+        begin, end = month.start_time, month.end_time
+        result = MonthResult(str(month), digest, {c: 0.0 for c in candidates},
+                             {c: [] for c in candidates}, [])
+        tests = all_steps[(all_steps["From Date"] >= begin) & (all_steps["From Date"] <= end)
+                          & (all_steps["Gap (days)"] <= horizon_days)]
+        scored_before = any(m.tested for m in results)
+        if not tests.empty:
+            # The tracker only ever looks back, so the units it gives the
+            # reports before ``begin`` are the same whether or not later
+            # reports exist: the steps finished before the month are the
+            # ones a forecast made then could have learned from.
+            model = StepModel.learn(all_steps[all_steps["To Date"] < begin])
+            recent = usage_prior(df, grid, begin)
+            priors = {"places": recent}
+            seasonal = season_prior(df, grid, begin + pd.Timedelta(days=14), recent) \
+                if with_season else None
+            if seasonal is not None:
+                priors["season"] = seasonal
+            chosen = max(scores, key=scores.get) if scored_before else DEFAULT_CONFIG
+            likely_mass = calibrated_mass(masses[chosen], LIKELY_MASS)
+            circle_r = (float(np.quantile(reach_scores, 0.5)) if len(reach_scores)
+                        >= MIN_CALIBRATION else None)
+            targets = grid.project(tests["To Latitude"].values, tests["To Longitude"].values)
+            target_keys = grid.key_of(targets)
+            for situation, target, key in zip(_situations(tests, grid, history), targets,
+                                              target_keys):
+                local, parts = _components(situation, grid, model, priors)
+                at = int(np.searchsorted(local.keys, key))
+                at = at if at < len(local.keys) and local.keys[at] == key else -1
+                probs = {}
+                for c in candidates:
+                    p = _combine(parts, c)
+                    probs[c] = p
+                    result.scores[c] += float(np.log(p[at] + _TINY)) if at >= 0 \
+                        else float(np.log(_TINY))
+                    result.masses[c].append(_mass_to(p, at))
+                moved = float(np.hypot(*(target - situation.xy)))
+                result.reach.append(moved / np.sqrt(situation.days))
+
+                likely = zone(probs[chosen], likely_mass)
+                area = likely.sum() * grid.cell_km ** 2
+                hit = at >= 0 and bool(likely[at])
+                # The same area as a disc around where the group was last seen.
+                stay = moved <= np.sqrt(area / np.pi)
+                result.tested += 1
+                result.hits += hit
+                result.stay_hits += stay
+                result.discordant += hit != stay
+                result.area_sum += area
+                if circle_r is not None:
+                    radius = circle_r * np.sqrt(situation.days)
+                    result.circle_hits += moved <= radius
+                    result.circle_tested += 1
+                    result.circle_area_sum += np.pi * radius ** 2
+        results.append(result)
+        for c in candidates:
+            scores[c] += result.scores[c]
+            masses[c].extend(result.masses[c])
+        reach_scores.extend(result.reach)
+
+    return Training(horizon_days, TRAINING_VERSION, with_season, results,
+                    _summarise(results, candidates, horizon_days),
+                    reports=len(df), first_report=df["Date"].min(),
+                    last_report=df["Date"].max(), moves=len(all_steps),
+                    reused_months=len(kept), data_key=data_key)
+
+
+def backtest(df: pd.DataFrame, horizon_days: int = 1,
+             min_history_days: int = MIN_HISTORY_DAYS) -> "TrackRecord":
+    """The track record of a forecast trained from scratch on ``df``."""
+    return train(df, horizon_days, min_history_days=min_history_days).record
 
 
 # ---------------------------------------------------------------------------
@@ -868,7 +1141,7 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
         located = villages.dropna(subset=["Latitude", "Longitude"]).reset_index(drop=True)
         village_xy = grid.project(located["Latitude"].values, located["Longitude"].values)
 
-    village_cells = grid.cell_of(village_xy) if village_xy is not None else None
+    village_keys = grid.key_of(village_xy) if village_xy is not None else None
     size = grid.nx * grid.ny
     combined_miss = np.ones(size)
     likely_any = np.zeros(size, dtype=bool)
@@ -889,15 +1162,16 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
                 prev = float(final["Angle"])
         situation = Situation(origin, days, rec["social"], prev,
                               tracks.own(unit, pd.Timestamp(row["Date"])))
-        index, distance, parts = _components(situation, grid, model, priors)
+        local, parts = _components(situation, grid, model, priors)
         prob = _combine(parts, config)
         likely, possible = zone(prob, likely_mass), zone(prob, possible_mass)
-        likely_any[index[likely]] = True
-        possible_any[index[possible]] = True
-        combined_miss[index] *= 1 - prob
-        best_cell = index[int(np.argmax(prob))]
-        best_xy = grid.centres[best_cell]
-        best_latlon = grid.latlon(np.array([best_cell]))[0]
+        # The map covers the grid; a zone cell beyond its margin is not drawn.
+        on_grid = local.flat >= 0
+        likely_any[local.flat[on_grid & likely]] = True
+        possible_any[local.flat[on_grid & possible]] = True
+        combined_miss[local.flat[on_grid]] *= 1 - prob[on_grid]
+        best_xy = local.centres[int(np.argmax(prob))]
+        best_latlon = from_plane(best_xy[None, :], grid.ref_lat)[0]
         offset = best_xy - origin
         unit_rows = work[work["_unit"] == unit].sort_values("Date").tail(6)
         label = f"G{unit + 1:03d}"
@@ -906,9 +1180,9 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
         near: List[str] = []
         most_likely_near = ""
         if village_xy is not None:
-            spot = np.searchsorted(index, village_cells)
-            spot = np.clip(spot, 0, max(len(index) - 1, 0))
-            inside = (len(index) > 0) & (index[spot] == village_cells) & (village_cells >= 0)
+            spot = np.searchsorted(local.keys, village_keys)
+            spot = np.clip(spot, 0, max(len(local.keys) - 1, 0))
+            inside = (len(local.keys) > 0) & (local.keys[spot] == village_keys)
             in_likely = inside & likely[spot]
             in_possible = inside & possible[spot]
             for vi in np.flatnonzero(in_possible):
