@@ -14,9 +14,10 @@ import pandas as pd
 import streamlit as st
 
 from app_pages.brief import brief_button
-from app_pages.common import FOCUS_PARAM, _change, brief_for
+from app_pages.common import FOCUS_PARAM, _change, brief_for, recent_groups
 from core import map_select, overview
-from core.brief_insights import action_plan
+from core.brief_insights import action_plan, plural
+from core.movement import ACTIVE_DAYS
 from core.intelligence import (
     CRITICAL_CASUALTY_WINDOW_DAYS,
     TIER_CRITICAL,
@@ -143,6 +144,13 @@ def _act_now(c) -> None:
     if warn:
         st.markdown(f"**Warn first:** {warn}")
         _link(c, "villages", "All villages at risk", icon=":material/arrow_forward:")
+
+    register = c.df[c.df["Date"] < c.period_end + pd.Timedelta(days=1)]
+    active = recent_groups(register, c.period_end)
+    if active:
+        st.markdown(f"**On the move:** {plural(active, 'group')} reported in the last "
+                    f"{ACTIVE_DAYS} days.")
+        _link(c, "next", "Where they may be next", icon=":material/near_me:")
 
 
 def _map(c) -> None:

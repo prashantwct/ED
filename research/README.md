@@ -231,6 +231,10 @@ bulls does not become a breeding herd with calves overnight.
 
 `python -m research.herd_map <csv>` draws the ranges over land cover.
 
+The tracker now lives in `core/movement.py`, which the app's *Next moves*
+page forecasts from; `herds.py` re-exports it and keeps the summaries and the
+sensitivity table.
+
 **These are movement units, not identified animals.** No collars, no ear-notch
 photographs, no DNA — only a time, a place and a rough count. Two bulls working
 the same valley on alternating days are one track here, and there is a test

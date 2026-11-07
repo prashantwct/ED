@@ -447,6 +447,126 @@ def render_village_map(
     )
 
 
+# Next moves: the likely and possible zones, each group's recent trail, its
+# last report, and the villages the zones reach.
+ZONE_COLORS = {"Likely": (194, 87, 12), "Possible": (242, 201, 76)}
+GROUP_COLOR = (31, 95, 63)
+
+
+@_never_breaks_the_page
+def render_forecast_map(
+    cells: pd.DataFrame,
+    groups: pd.DataFrame,
+    trails: pd.DataFrame,
+    villages: pd.DataFrame,
+    cell_km: float,
+    style_name: str = DEFAULT_BASEMAP,
+    show_boundaries: bool = True,
+    boundary_level: Optional[str] = None,
+) -> None:
+    """Where each group recently seen may be next."""
+    if groups is None or groups.empty:
+        st.info("No group was reported recently enough to forecast.")
+        return
+    frame = pd.concat([cells[["Latitude", "Longitude"]], groups[["Latitude", "Longitude"]]])
+    view_state = _adaptive_view_state(frame)
+    layers = list(boundary_layers(view_state, boundary_level)) if show_boundaries else []
+
+    if not cells.empty:
+        half_lat = cell_km / 2 / 111.32
+        zone = cells.copy()
+        half_lon = half_lat / np.cos(np.radians(zone["Latitude"]))
+        zone["polygon"] = [
+            [[round(lon - dx, 5), round(lat - half_lat, 5)],
+             [round(lon + dx, 5), round(lat - half_lat, 5)],
+             [round(lon + dx, 5), round(lat + half_lat, 5)],
+             [round(lon - dx, 5), round(lat + half_lat, 5)]]
+            for lat, lon, dx in zip(zone["Latitude"], zone["Longitude"], half_lon)
+        ]
+        band = np.where(zone["Likely"], "Likely", "Possible")
+        colour = np.array([ZONE_COLORS[b] for b in band])
+        zone["_r"], zone["_g"], zone["_b"] = colour[:, 0], colour[:, 1], colour[:, 2]
+        zone["_alpha"] = np.where(zone["Likely"], 120, 70)
+        layers.append(pdk.Layer(
+            "PolygonLayer", data=zone[["polygon", "_r", "_g", "_b", "_alpha"]],
+            get_polygon="polygon", get_fill_color="[_r, _g, _b, _alpha]",
+            stroked=False, filled=True, pickable=False,
+        ))
+
+    if trails is not None and not trails.empty:
+        paths = [
+            {"path": [[round(lon, 5), round(lat, 5)] for lat, lon in
+                      zip(g["Latitude"], g["Longitude"])]}
+            for _, g in trails.sort_values("Date").groupby("Group") if len(g) > 1
+        ]
+        if paths:
+            layers.append(pdk.Layer(
+                "PathLayer", data=paths, get_path="path", get_color=[40, 52, 46, 200],
+                width_min_pixels=2, get_width=2, pickable=False,
+            ))
+
+    if villages is not None and not villages.empty:
+        warn = villages.copy()
+        colour = np.array([TIER_COLORS["Critical"] if b == "Likely" else TIER_COLORS["High"]
+                           for b in warn["Band"]])
+        warn["_r"], warn["_g"], warn["_b"] = colour[:, 0], colour[:, 1], colour[:, 2]
+        warn = warn.join(pd.DataFrame([
+            _slots(_clean(row.get("Village"), "Village"),
+                   TIER_COLORS["Critical"] if row.get("Band") == "Likely"
+                   else TIER_COLORS["High"],
+                   [("Zone", row.get("Band")), ("Group", row.get("Group")),
+                    ("From its last report", f"{row.get('From last report (km)')} km")],
+                   subtitle="In a group's next-move zone")
+            for row in warn.to_dict("records")
+        ], index=warn.index))
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=warn[["Longitude", "Latitude", "_r", "_g", "_b", *TOOLTIP_FIELDS]],
+            get_position="[Longitude, Latitude]", get_radius=220,
+            get_fill_color="[_r, _g, _b, 230]", get_line_color=[255, 255, 255, 240],
+            line_width_min_pixels=1.5, stroked=True, radius_min_pixels=4,
+            radius_max_pixels=14, pickable=True, auto_highlight=True,
+        ))
+        # The label picker ranks villages by tier and toll; here every
+        # likely village is equal, nearest the group first.
+        likely = warn[warn["Band"] == "Likely"].assign(
+            Tier="Critical", **{"Human Deaths": 0,
+                                "Conflict Events": lambda f: -f["From last report (km)"]})
+        labelled = _select_labels(likely, _label_separation_km(view_state.zoom,
+                                                               view_state.latitude))
+        if not labelled.empty:
+            layers.append(pdk.Layer(
+                "TextLayer", data=labelled[["Longitude", "Latitude", "Village"]],
+                get_position="[Longitude, Latitude]", get_text="Village",
+                get_size=LABEL_FONT_SIZE, get_color=[255, 255, 255, 255],
+                get_pixel_offset=[0, -16], font_settings={"sdf": True}, outline_width=4,
+                outline_color=[20, 28, 24, 255], font_weight=600, background=True,
+                get_background_color=[20, 28, 24, 140], background_padding=[5, 2],
+            ))
+
+    marks = groups.copy()
+    marks = marks.join(pd.DataFrame([
+        _slots(_clean(row.get("Group"), "Group"), GROUP_COLOR,
+               [("Last seen", f"{pd.Timestamp(row['Last Seen']):%d %b}"
+                 + (f", {int(row['Days Ago'])} d ago" if row.get("Days Ago") else ", today")),
+                ("Size", row.get("Size")),
+                ("Near", _clean(row.get("Near"), "")),
+                ("Likely zone", f"{row.get('Likely Zone (km2)', 0):.0f} km\u00b2"),
+                ("Reports", row.get("Reports"))],
+               subtitle=_clean(row.get("Class")))
+        for row in marks.to_dict("records")
+    ], index=marks.index))
+    layers.append(pdk.Layer(
+        "ScatterplotLayer",
+        data=marks[["Longitude", "Latitude", *TOOLTIP_FIELDS]],
+        get_position="[Longitude, Latitude]", get_radius=300,
+        get_fill_color=[*GROUP_COLOR, 240], get_line_color=[255, 255, 255, 255],
+        line_width_min_pixels=2, stroked=True, radius_min_pixels=6, radius_max_pixels=16,
+        pickable=True, auto_highlight=True,
+    ))
+    _render_deck(layers, view_state, style_name)
+
+
 def _boundary_note(view_state: pdk.ViewState, level: Optional[str]) -> None:
     """Say which level is drawn and why, so it is not a surprise."""
     chosen = level or boundaries.level_for_zoom(float(view_state.zoom))
