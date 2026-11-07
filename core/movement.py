@@ -2,44 +2,50 @@
 
 The register has no collars and no identified animals, only a time, a
 place and a rough count per report. So the forecast is built from parts,
-each of them inspectable:
+each of them inspectable (``docs/MOVEMENT_REVIEW.md`` reviews them):
 
-1. **Movement units.** Reports are chained into tracks the way radar
-   tracks aircraft (``assign_units``): a report joins the best-matching
-   open track if it is close enough in space for the time elapsed and its
-   group composition is compatible. A unit is a plausible sequence of
+1. **Movement units** (``assign_units``). Day by day, the day's reports are
+   grouped into sightings (several people reporting one herd) and matched
+   to the open tracks all at once, the cheapest set of links: within reach
+   for the time elapsed, a compatible count, and the breakdown compared
+   only where both reports recorded it. A unit is a plausible sequence of
    reports of one group, not an identified animal.
 2. **How far** (``StepModel``). Every consecutive pair of reports in a
-   unit, a day or more apart, is one observed step. Their lengths, scaled
-   to one day, give the distance a group covers -- per class once a class
+   unit, a day or more apart, is one observed step, per class once a class
    has enough steps of its own, since a lone bull covers more ground than
-   a family herd.
-3. **Which way** (``StepModel.turns``). The direction of each move relative
-   to the move before it: steady travel shows as turns near zero, a group
-   shuttling between a day refuge and the fields it raids as turns near a
-   half circle. Learned from the register, so it can be either.
+   a family herd. How distance grows with days is learned too
+   (``scaling``): a random walk goes twice as far in four days, a group
+   holding its heading nearly four times.
+3. **Which way** (``StepModel.turn_density``). The turn from each move to
+   the next, smoothed, so the density can hold both steady travel (turns
+   near zero) and a group shuttling between a day refuge and the fields it
+   raids (turns near a half circle). A group's own recent turns say which
+   it is likely to do.
 4. **Where** (``usage_prior``, ``season_prior``). Elephants keep returning
    to the same forest blocks, nalas and fields, so the places reported
    before -- recent ones weighted more, and optionally the same weeks of
    earlier years -- form a usage map.
 5. **Its own range.** A group's own earlier reports.
 
-The forecast for a group is the reach centred on its last report, times
-whichever of the other parts help: within reach, in the direction groups
-tend to go, where elephants have been and where this group has been. Its
-*likely zone* is the smallest set of 1 km cells holding half the
-forecast, its *possible zone* 80%.
+The forecast for a group covers every day of the horizon -- "the next
+three days" is where it may be on any of them -- as the reach from its last
+report, times whichever of the other parts help. Its *likely zone* is the
+smallest set of 1 km cells holding half the forecast, its *possible zone*
+80%.
 
-**Every forecast comes with its own track record** (``backtest``). Each
-month of the register is forecast from the months before it only and
-scored against where the group was actually reported next. Which parts to
-switch on is chosen the same way -- the combination with the best log
-score on the earlier months -- and so is the size of the zones: if zones
-of half the forecast caught the group only 40% of the time, the likely
-zone is widened until it would have caught half (a conformal
-calibration). The comparison throughout is a circle around where the
-group was last seen -- "they stay near where they were". If the forecast
-does not beat that, the page says so.
+**Every forecast comes with its own track record** (``train``). The
+backtest makes the forecasts the page would have made: each morning, for
+every group seen in the three days before, from what was known that
+morning, scored against where the group was reported next (``_cases``).
+Which parts to switch on is chosen the same way -- the combination with
+the best log score on the earlier months -- and so is the size of the
+zones: if zones of half the forecast caught the group only 40% of the
+time, the likely zone is widened until it would have caught half (a
+conformal calibration on recent forecasts). The comparison throughout is a
+circle around where the group was last seen -- "they stay near where they
+were". Each morning's whole map is also scored against every report of the
+days after, linked or not (``_score_landscape``). If the forecast does not
+beat staying put, the page says so.
 
 What this cannot do: predict a first visit to a place nobody has reported
 elephants in, follow a group through a reporting gap longer than
@@ -49,7 +55,7 @@ elephants in, follow a group through a reporting gap longer than
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -74,6 +80,18 @@ COUNT_TOLERANCE = 2
 COUNT_TOLERANCE_FRACTION = 0.4
 
 SOLITARY_MAX = 3
+# How much a count difference (as a share of the tolerance) weighs against
+# distance (as a share of reach) when two open tracks could take a report.
+COUNT_COST = 0.3
+# Reports the same day this close, and compatible, are one sighting:
+# several people reporting one herd -- its spread, where each stood, and
+# GPS error.
+DUPLICATE_KM = 3.0
+# Costs in the daily matching: no link possible, and a new track (dearer
+# than any feasible link, so a report continues a track whenever one can
+# take it).
+_NO_LINK = 1e6
+_NEW_TRACK = 1e3
 
 
 def km_plane(lat: np.ndarray, lon: np.ndarray, ref_lat: float) -> np.ndarray:
@@ -121,16 +139,25 @@ def _class_of(total: float, calves: float, males: float, females: float) -> str:
     return "unsexed group"
 
 
+def _tolerance(a: Dict, b: Dict) -> float:
+    return max(COUNT_TOLERANCE, COUNT_TOLERANCE_FRACTION * (a["total"] + b["total"]) / 2)
+
+
 def _compatible(a: Dict, b: Dict) -> bool:
-    """Could these two reports be the same animals?"""
-    if a["social"] != b["social"]:
-        return False
-    # A herd does not shed or acquire calves between sightings.
-    if (a["calves"] > 0) != (b["calves"] > 0):
-        return False
-    tolerance = max(COUNT_TOLERANCE,
-                    COUNT_TOLERANCE_FRACTION * (a["total"] + b["total"]) / 2)
-    return abs(a["total"] - b["total"]) <= tolerance
+    """Could these two reports be the same animals?
+
+    Composition is compared only where both reports recorded it: a herd
+    reported once with its calves counted and once as a bare total is
+    still one herd. Treating "not recorded" as a kind of group of its own
+    split every track at each report that left the breakdown blank.
+    """
+    if a["recorded"] and b["recorded"]:
+        if a["social"] != b["social"]:
+            return False
+        # A herd does not shed or acquire calves between sightings.
+        if (a["calves"] > 0) != (b["calves"] > 0):
+            return False
+    return abs(a["total"] - b["total"]) <= _tolerance(a, b)
 
 
 def _reach_km(gap_days: float, max_speed_km_per_day: float) -> float:
@@ -157,9 +184,75 @@ def _records(frame: pd.DataFrame) -> List[Dict]:
             counts["Female Count"]):
         out.append({"total": float(total), "calves": float(calves),
                     "males": float(males), "females": float(females),
+                    # A breakdown that adds up to nothing was not recorded.
+                    "recorded": bool(males + females + calves > 0),
                     "social": _class_of(float(total), float(calves), float(males),
                                         float(females))})
     return out
+
+
+def _same_day_reach_km(hours: float, max_speed_km_per_day: float) -> float:
+    """How far apart two reports the same day can be and still be one herd:
+    the width of a herd seen by two people, plus what it can cover in the
+    hours between them. Without times (both at midnight), the width alone;
+    two herds 6 km apart on the same morning are two herds."""
+    return min(DUPLICATE_KM + max_speed_km_per_day * hours / 24.0, SAME_DAY_RADIUS_KM)
+
+
+def _link_costs(rows: np.ndarray, tracks: List[int], day: np.ndarray, lat: np.ndarray,
+                lon: np.ndarray, records: List[Dict], max_speed_km_per_day: float,
+                hour: Optional[np.ndarray] = None) -> np.ndarray:
+    """Cost of each report in ``rows`` continuing each open track; inf where it cannot.
+
+    Close in space (as a share of the reach for the time elapsed) first,
+    then a similar count, then recent in time.
+    """
+    costs = np.full((len(rows), len(tracks)), np.inf)
+    for a, i in enumerate(rows):
+        for b, t in enumerate(tracks):
+            if not _compatible(records[i], records[t]):
+                continue
+            gap = day[i] - day[t]
+            if gap <= 0:
+                hours = abs(hour[i] - hour[t]) if hour is not None else 0.0
+                reach = _same_day_reach_km(hours, max_speed_km_per_day)
+            else:
+                reach = _reach_km(gap, max_speed_km_per_day)
+            distance = float(np.hypot(*pair_km(lat[t], lon[t], lat[i], lon[i])))
+            if distance > reach:
+                continue
+            count = abs(records[i]["total"] - records[t]["total"]) / _tolerance(
+                records[i], records[t])
+            costs[a, b] = distance / reach + COUNT_COST * count + 0.1 * gap
+    return costs
+
+
+def _sightings(rows: np.ndarray, lat: np.ndarray, lon: np.ndarray,
+               records: List[Dict]) -> np.ndarray:
+    """Group a day's reports into sightings: compatible reports within
+    ``DUPLICATE_KM`` of each other are one herd seen by several people."""
+    from scipy.sparse.csgraph import connected_components
+
+    if len(rows) < 2:
+        return np.zeros(len(rows), dtype=int)
+    dx, dy = pair_km(lat[rows][:, None], lon[rows][:, None], lat[rows][None, :],
+                     lon[rows][None, :])
+    close = np.hypot(dx, dy) <= DUPLICATE_KM
+    for a in range(len(rows)):
+        for b in range(a + 1, len(rows)):
+            if close[a, b] and not _compatible(records[rows[a]], records[rows[b]]):
+                close[a, b] = close[b, a] = False
+    return connected_components(close, directed=False)[1]
+
+
+def _hours(frame: pd.DataFrame) -> np.ndarray:
+    """Hour of day of each report: the register's Hour column where filled
+    in, else the time in Date (midnight when it has none)."""
+    clock = (frame["Date"].values.astype("datetime64[m]").astype(np.int64) / 60.0) % 24.0
+    if "Hour" in frame.columns:
+        given = pd.to_numeric(frame["Hour"], errors="coerce").to_numpy(dtype=float)
+        clock = np.where(np.isfinite(given), given, clock)
+    return clock
 
 
 def assign_units(
@@ -167,50 +260,75 @@ def assign_units(
     max_speed_km_per_day: float = MAX_SPEED_KM_PER_DAY,
     max_gap_days: int = MAX_GAP_DAYS,
 ) -> pd.Series:
-    """Greedy nearest-neighbour tracking over time-ordered sightings.
+    """Tracking, one day at a time.
 
-    Each report either extends the best-matching open track or starts a
-    new one. Assigning to a single best candidate rather than every
-    candidate within reach is what keeps this from degenerating into one
-    connected component covering the whole landscape.
+    Each day's reports are first grouped into sightings (several people
+    reporting one herd). The day's sightings and the open tracks are then
+    matched all at once, the set of links with the lowest total cost
+    (the Hungarian method), each track taking at most one sighting. A
+    sighting no track can take joins one already placed that day if the
+    hours between them allow it (``_same_day_reach_km``) -- the herd moved
+    on during the day -- or starts a new track.
+
+    Matching the whole day at once matters where herds share a landscape:
+    taking reports one by one in the order they were filed let an early
+    report claim the track a later, closer one belonged to. On synthetic
+    herds with overlapping ranges, it raised the share of linked moves
+    joining one herd to itself from 0.70 to 0.78 (identical herds) and
+    0.82 to 0.86 (herds of different sizes).
     """
+    from scipy.optimize import linear_sum_assignment
+
     if df.empty:
         return pd.Series(dtype=int, index=df.index)
     frame = df.sort_values("Date", kind="stable").reset_index()
     lat = frame["Latitude"].to_numpy(dtype=float)
     lon = frame["Longitude"].to_numpy(dtype=float)
     day = frame["Date"].values.astype("datetime64[D]").astype(int)
+    hour = _hours(frame)
     records = _records(frame)
 
     unit_of = np.full(len(frame), -1, dtype=int)
-    # Open tracks, each holding the index of its most recent sighting.
+    # Open tracks, each held by the index of its most recent report.
     open_tracks: List[int] = []
     next_unit = 0
-
-    for i in range(len(frame)):
-        open_tracks = [t for t in open_tracks if day[i] - day[t] <= max_gap_days]
-
-        best, best_cost = None, np.inf
-        for t in open_tracks:
-            if not _compatible(records[i], records[t]):
-                continue
-            gap = day[i] - day[t]
-            reach = _reach_km(gap, max_speed_km_per_day)
-            distance = float(np.hypot(*pair_km(lat[t], lon[t], lat[i], lon[i])))
-            if distance > reach:
-                continue
-            # Prefer close in space, then recent in time.
-            cost = distance / reach + 0.1 * gap
-            if cost < best_cost:
-                best, best_cost = t, cost
-
-        if best is None:
-            unit_of[i] = next_unit
-            next_unit += 1
-        else:
-            unit_of[i] = unit_of[best]
-            open_tracks.remove(best)
-        open_tracks.append(i)
+    starts = np.flatnonzero(np.r_[True, day[1:] != day[:-1]])
+    for begin, end in zip(starts, np.r_[starts[1:], len(frame)]):
+        rows = np.arange(begin, end)
+        open_tracks = [t for t in open_tracks if day[begin] - day[t] <= max_gap_days]
+        label = _sightings(rows, lat, lon, records)
+        groups = [rows[label == k] for k in np.unique(label)]
+        heads = np.array([g[0] for g in groups])
+        linked: Dict[int, int] = {}
+        if open_tracks:
+            costs = _link_costs(heads, open_tracks, day, lat, lon, records,
+                                max_speed_km_per_day)
+            # Any feasible link is taken before a new track is started; among
+            # the ways to link as many as possible, the cheapest.
+            new = np.full((len(heads), len(heads)), _NO_LINK)
+            np.fill_diagonal(new, _NEW_TRACK)
+            matrix = np.hstack([np.where(np.isfinite(costs), costs, _NO_LINK), new])
+            for a, b in zip(*linear_sum_assignment(matrix)):
+                if b < len(open_tracks) and np.isfinite(costs[a, b]):
+                    linked[a] = open_tracks[b]
+        placed: List[int] = []
+        for a, members in enumerate(groups):
+            if a in linked:
+                unit = unit_of[linked[a]]
+            else:
+                same_day = _link_costs(heads[a:a + 1], placed, day, lat, lon, records,
+                                       max_speed_km_per_day, hour)[0] if placed \
+                    else np.array([])
+                if len(same_day) and np.isfinite(same_day).any():
+                    unit = unit_of[placed[int(np.argmin(same_day))]]
+                else:
+                    unit, next_unit = next_unit, next_unit + 1
+            unit_of[members] = unit
+            placed.extend(int(m) for m in members)
+        latest = {int(unit_of[t]): t for t in open_tracks}
+        for i in rows:
+            latest[int(unit_of[i])] = int(i)
+        open_tracks = list(latest.values())
 
     return pd.Series(unit_of, index=frame["index"]).reindex(df.index)
 
@@ -245,15 +363,32 @@ MIN_CLASS_STEPS = 60
 MIN_TURNS = 30
 MIN_MOVE_KM = 0.5
 MAX_KAPPA = 20.0
+# The turn density: bins round the circle, the smoothing kernel's
+# concentration (about 20 degrees), a group's own turns weighed against
+# the register's (``TURN_POOL`` turns of its own count as much as the
+# register), and the most recent of them used.
+TURN_BINS = 144
+TURN_KAPPA = 8.0
+TURN_POOL = 5.0
+OWN_MAX_TURNS = 10
 DEFAULT_KM_PER_DAY = 3.8
+# Distance grows with time as days ** alpha, alpha learned between these
+# (``scaling``), from gaps with at least this many moves.
+DIFFUSIVE, BALLISTIC = 0.5, 1.0
+MIN_GAP_STEPS = 15
+_MIN_MEDIAN_KM = 0.05
 # Groups seen this recently are forecast; older ones may be anywhere.
 ACTIVE_DAYS = 3
 MAX_HORIZON_DAYS = 7
 LIKELY_MASS = 0.5
 POSSIBLE_MASS = 0.8
 GRID_MARGIN_KM = 15.0
-# Past forecasts needed before the zones are calibrated on them.
+# Past forecasts needed before the zones are calibrated on them, and the
+# most recent this many are what they are calibrated on: the forecast gets
+# better as the register grows, and early forecasts made from a few
+# dozen moves would otherwise keep every later zone too wide.
 MIN_CALIBRATION = 40
+CALIBRATION_WINDOW = 300
 _TINY = 1e-12
 
 
@@ -468,19 +603,45 @@ def steps(df: pd.DataFrame, units: pd.Series) -> pd.DataFrame:
     return table[columns]
 
 
-def step_lengths(step_table: pd.DataFrame) -> np.ndarray:
-    """Observed distances scaled to one day (distance / sqrt(days)).
+def scaling(step_table: pd.DataFrame) -> float:
+    """How distance grows with time on this register: distance ~ days ** alpha.
 
-    Square-root scaling treats a multi-day gap as several daily moves in
-    loosely related directions, which is closer to what tracked elephants
-    do than straight-line travel at a constant speed.
+    One half is a random walk (four days, twice as far as one); one is
+    travel in a straight line (four days, four times as far). Groups that
+    keep their heading for several days sit between, and assuming one half
+    for them made every multi-day zone too small. Fitted to the median
+    distance at each gap with enough moves, by weighted least squares on
+    the log scale; one half until two gaps have enough moves.
     """
     if step_table.empty:
+        return DIFFUSIVE
+    gaps, medians, weights = [], [], []
+    for gap, group in step_table.groupby("Gap (days)"):
+        if len(group) >= MIN_GAP_STEPS:
+            gaps.append(float(gap))
+            medians.append(max(float(group["Distance (km)"].median()), _MIN_MEDIAN_KM))
+            weights.append(float(len(group)))
+    if len(gaps) < 2:
+        return DIFFUSIVE
+    x, y, w = np.log(gaps), np.log(medians), np.asarray(weights)
+    xm, ym = np.average(x, weights=w), np.average(y, weights=w)
+    spread = float(np.sum(w * (x - xm) ** 2))
+    if spread <= 0:
+        return DIFFUSIVE
+    slope = float(np.sum(w * (x - xm) * (y - ym)) / spread)
+    return float(np.clip(slope, DIFFUSIVE, BALLISTIC))
+
+
+def step_lengths(step_table: pd.DataFrame, alpha: float = 0.5) -> np.ndarray:
+    """Observed distances scaled to one day: distance / days ** alpha (see ``scaling``)."""
+    if step_table.empty:
         return np.array([])
-    return (step_table["Distance (km)"] / np.sqrt(step_table["Gap (days)"])).to_numpy()
+    return (step_table["Distance (km)"]
+            / step_table["Gap (days)"].astype(float) ** alpha).to_numpy()
 
 
-def radial_profile(per_day: np.ndarray, days: float, cell_km: float = CELL_KM):
+def radial_profile(per_day: np.ndarray, days: float, cell_km: float = CELL_KM,
+                   alpha: float = 0.5):
     """Density per square km of being ``r`` km from the start after ``days``, as a lookup table.
 
     Built once per horizon and interpolated for every cell, rather than
@@ -488,7 +649,7 @@ def radial_profile(per_day: np.ndarray, days: float, cell_km: float = CELL_KM):
     """
     days = max(days, 1.0)
     if len(per_day) >= MIN_STEPS:
-        sample = per_day * np.sqrt(days)
+        sample = per_day * days ** alpha
         bandwidth = max(1.06 * sample.std() * len(sample) ** -0.2, cell_km)
         r = np.linspace(0, sample.max() + 4 * bandwidth, 400)
         # Kernel density of the step length, reflected at zero.
@@ -497,7 +658,7 @@ def radial_profile(per_day: np.ndarray, days: float, cell_km: float = CELL_KM):
         radial = z.mean(axis=1)
     else:
         # Too few observed steps: a half-normal with the typical daily move.
-        scale = DEFAULT_KM_PER_DAY * np.sqrt(days) / 0.6745
+        scale = DEFAULT_KM_PER_DAY * days ** alpha / 0.6745
         r = np.linspace(0, 4 * scale, 400)
         radial = np.exp(-0.5 * (r / scale) ** 2)
     # Per unit area: a ring at distance r has area 2*pi*r*dr.
@@ -525,16 +686,25 @@ class StepModel:
     # days): mean turn and concentration. A turn near 0 is steady travel,
     # near pi a return the way it came -- refuge to field and back.
     turns: Dict[int, tuple]
+    # How distance grows with time (``scaling``): 0.5 a random walk, 1 travel.
+    alpha: float = 0.5
+    # The turns themselves, by gap bucket: their smoothed density can have
+    # two peaks -- some groups keep going, others turn back -- where one
+    # mean direction averages the two away (``turn_density``).
+    turn_samples: Dict[int, np.ndarray] = field(default_factory=dict, repr=False)
     _profiles: Dict[tuple, tuple] = field(default_factory=dict, repr=False)
+    _turn_grids: Dict[int, np.ndarray] = field(default_factory=dict, repr=False)
 
     @classmethod
     def learn(cls, step_table: pd.DataFrame) -> "StepModel":
-        per_day = {"all": step_lengths(step_table)}
+        alpha = scaling(step_table)
+        per_day = {"all": step_lengths(step_table, alpha)}
         if not step_table.empty:
             for social, group in step_table.groupby("Class"):
                 if len(group) >= MIN_CLASS_STEPS:
-                    per_day[social] = step_lengths(group)
+                    per_day[social] = step_lengths(group, alpha)
         turns: Dict[int, tuple] = {}
+        samples: Dict[int, np.ndarray] = {}
         usable = step_table.dropna(subset=["Prev Angle"]) if len(step_table) else step_table
         if len(usable):
             usable = usable[(usable["Distance (km)"] >= MIN_MOVE_KM)
@@ -548,7 +718,8 @@ class StepModel:
             turn = part["Angle"].to_numpy() - part["Prev Angle"].to_numpy()
             c, s = np.cos(turn).mean(), np.sin(turn).mean()
             turns[bucket] = (float(np.arctan2(s, c)), _kappa(np.hypot(c, s)))
-        return cls(per_day, turns)
+            samples[bucket] = np.mod(turn, 2 * np.pi)
+        return cls(per_day, turns, alpha, samples)
 
     def lengths(self, social: str, use_class: bool = True) -> np.ndarray:
         if use_class and social in self.per_day:
@@ -558,11 +729,53 @@ class StepModel:
     def profile(self, social: str, days: float, cell_km: float):
         key = (social if social in self.per_day else "all", int(days), cell_km)
         if key not in self._profiles:
-            self._profiles[key] = radial_profile(self.lengths(social), days, cell_km)
+            self._profiles[key] = radial_profile(self.lengths(social), days, cell_km,
+                                                 self.alpha)
         return self._profiles[key]
 
     def turn(self, days: float) -> Optional[tuple]:
-        return self.turns.get(int(min(max(days, 1), 3)))
+        return self.turns.get(_bucket(days))
+
+    def turn_density(self, days: float, own: Optional[np.ndarray] = None
+                     ) -> Optional[np.ndarray]:
+        """Density of the turn (radians, on ``TURN_BINS`` bins round the circle).
+
+        The register's turns, smoothed. For a one-day forecast, a group's
+        own earlier turns are mixed in, counting for more the more of them
+        there are: a group that has been shuttling is expected to shuttle,
+        one that has been travelling to keep going.
+        """
+        bucket = _bucket(days)
+        if bucket not in self.turn_samples:
+            return None
+        if bucket not in self._turn_grids:
+            self._turn_grids[bucket] = _circular_kde(self.turn_samples[bucket])
+        density = self._turn_grids[bucket]
+        if own is not None and len(own) and bucket == 1:
+            weight = len(own) / (len(own) + TURN_POOL)
+            density = (1 - weight) * density + weight * _circular_kde(np.mod(own, 2 * np.pi))
+        return density
+
+    def turn_shares(self) -> Optional[Tuple[float, float]]:
+        """Shares of one-day moves that keep within 45 degrees of the last
+        heading, and that turn back within 45 degrees of the way they came."""
+        turn = self.turn_samples.get(1)
+        if turn is None or not len(turn):
+            return None
+        off = np.abs(np.angle(np.exp(1j * turn)))
+        return float(np.mean(off <= np.pi / 4)), float(np.mean(off >= 3 * np.pi / 4))
+
+
+def _bucket(days: float) -> int:
+    return int(min(max(days, 1), 3))
+
+
+def _circular_kde(angles: np.ndarray) -> np.ndarray:
+    """Von Mises kernel density of ``angles`` on ``TURN_BINS`` bins."""
+    grid = (np.arange(TURN_BINS) + 0.5) * 2 * np.pi / TURN_BINS
+    weights = np.exp(TURN_KAPPA * (np.cos(grid[:, None] - angles[None, :]) - 1)).mean(axis=1)
+    norm = 2 * np.pi * np.i0(TURN_KAPPA) * np.exp(-TURN_KAPPA)
+    return weights / norm
 
 
 @dataclass(frozen=True)
@@ -603,49 +816,114 @@ def configs(with_season: bool) -> List[Config]:
 
 @dataclass
 class Situation:
-    """What is known about a group at the moment of forecasting."""
+    """What is known about a group at the moment of forecasting.
+
+    The forecast covers the ``span`` days ending ``days`` after the group's
+    last report: "the next three days" for a group seen yesterday is days
+    2, 3 and 4 after that report, and the group may be anywhere it could
+    be on any of them.
+    """
 
     xy: np.ndarray
     days: float
     social: str
     prev_angle: Optional[float] = None
     own_xy: Optional[np.ndarray] = None   # its earlier reports, km plane
+    span: int = 1
+    own_turns: Optional[np.ndarray] = None  # its earlier one-day turns
+
+    def leads(self) -> List[float]:
+        last = float(self.days)
+        first = max(1.0, last - max(int(self.span), 1) + 1)
+        return [float(d) for d in np.arange(first, last + 0.5)]
 
 
 def _components(s: Situation, grid: Grid, model: StepModel, priors: Dict[str, np.ndarray]):
-    """Each part of the forecast as a log-density over the cells within reach."""
-    r, density = model.profile(s.social, s.days, grid.cell_km)
-    local = grid.near(s.xy, float(r[-1]))
-    parts = {"reach": np.log(np.interp(local.distance, r, density) + _TINY)}
+    """Each part of the forecast as a log-density over the cells within reach.
+
+    Reach and heading are one per day of the forecast's span (lists);
+    places and the group's own range are one each.
+    """
+    leads = s.leads()
+    profiles = [model.profile(s.social, d, grid.cell_km) for d in leads]
+    local = grid.near(s.xy, max(float(r[-1]) for r, _ in profiles))
+    parts = {"reach": [np.log(np.interp(local.distance, r, density, right=0.0) + _TINY)
+                       for r, density in profiles]}
     for name, prior in priors.items():
         parts[name] = np.log(grid.at(prior, local))
-    turn = model.turn(s.days)
-    if turn is not None and s.prev_angle is not None and np.isfinite(s.prev_angle):
-        mu, kappa = turn
+    if s.prev_angle is not None and np.isfinite(s.prev_angle):
         offset = local.centres - s.xy
-        theta = np.arctan2(offset[:, 1], offset[:, 0])
-        heading = kappa * np.cos(theta - s.prev_angle - mu)
-        # The cell the group stands in has no direction: give it the average.
-        heading[local.distance < grid.cell_km / 2] = np.log(np.i0(kappa))
-        parts["heading"] = heading
+        turn = np.mod(np.arctan2(offset[:, 1], offset[:, 0]) - s.prev_angle, 2 * np.pi)
+        bins = np.minimum((turn / (2 * np.pi) * TURN_BINS).astype(int), TURN_BINS - 1)
+        still = local.distance < grid.cell_km / 2
+        headings = []
+        for d in leads:
+            density = model.turn_density(d, s.own_turns)
+            if density is None:
+                headings = []
+                break
+            # Relative to the uniform density, so the cell the group stands
+            # in -- which has no direction -- is neutral.
+            heading = np.log(density[bins] * 2 * np.pi + _TINY)
+            heading[still] = 0.0
+            headings.append(heading)
+        if headings:
+            parts["heading"] = headings
     if s.own_xy is not None and len(s.own_xy):
-        offset = local.centres[:, None, :] - s.own_xy[None, :, :]
-        d2 = (offset ** 2).sum(axis=2)
-        own = np.exp(-0.5 * d2 / OWN_BANDWIDTH_KM ** 2).sum(axis=1)
+        own = _own_range(local, s.own_xy, grid.cell_km)
         own = own + USAGE_FLOOR * (own.mean() if own.any() else 1.0)
         parts["own"] = np.log(own)
     return local, parts
 
 
-def _combine(parts: Dict[str, np.ndarray], config: Config) -> np.ndarray:
-    log_p = parts["reach"].copy()
+def _own_range(local: Local, own_xy: np.ndarray, cell_km: float) -> np.ndarray:
+    """A group's earlier reports, each spread over ``OWN_BANDWIDTH_KM``, on
+    the cells within reach: counted on a raster of the window and blurred,
+    rather than a distance from every cell to every report."""
+    from scipy.ndimage import gaussian_filter
+
+    ix = local.keys % _KEY_STRIDE
+    iy = local.keys // _KEY_STRIDE
+    x0, y0 = int(ix.min()), int(iy.min())
+    image = np.zeros((int(iy.max()) - y0 + 1, int(ix.max()) - x0 + 1))
+    px = np.floor(own_xy[:, 0] / cell_km + 1e-9).astype(np.int64) - x0
+    py = np.floor(own_xy[:, 1] / cell_km + 1e-9).astype(np.int64) - y0
+    inside = (px >= 0) & (px < image.shape[1]) & (py >= 0) & (py < image.shape[0])
+    if not inside.any():
+        return np.zeros(len(local.keys))
+    np.add.at(image, (py[inside], px[inside]), 1.0)
+    image = gaussian_filter(image, sigma=OWN_BANDWIDTH_KM / cell_km, mode="constant")
+    return image[iy - y0, ix - x0]
+
+
+def _movement(parts: Dict[str, object], heading: bool) -> np.ndarray:
+    """Where the group may be on any day of the span: the days' movement
+    kernels (reach, and heading if used), each normalised, averaged."""
+    out = None
+    for k, reach in enumerate(parts["reach"]):
+        log_k = reach + parts["heading"][k] if heading and "heading" in parts else reach.copy()
+        log_k = log_k - log_k.max()
+        p = np.exp(log_k)
+        p /= p.sum()
+        out = p if out is None else out + p
+    return out / len(parts["reach"])
+
+
+def _combine(parts: Dict[str, object], config: Config,
+             cache: Optional[Dict[bool, np.ndarray]] = None) -> np.ndarray:
+    heading = bool(config.heading and "heading" in parts)
+    if cache is not None and heading in cache:
+        move = cache[heading]
+    else:
+        move = _movement(parts, heading)
+        if cache is not None:
+            cache[heading] = move
+    log_p = np.log(move + _TINY)
     if config.places:
         key = "season" if config.season and "season" in parts else "places"
-        log_p += config.places * parts[key]
-    if config.heading and "heading" in parts:
-        log_p += parts["heading"]
+        log_p = log_p + config.places * parts[key]
     if config.own and "own" in parts:
-        log_p += parts["own"]
+        log_p = log_p + parts["own"]
     log_p -= log_p.max()
     p = np.exp(log_p)
     return p / p.sum()
@@ -677,6 +955,7 @@ def calibrated_mass(scores: List[float], target: float) -> float:
     """
     if len(scores) < MIN_CALIBRATION:
         return target
+    scores = scores[-CALIBRATION_WINDOW:]
     n = len(scores)
     return float(np.quantile(scores, min(1.0, target * (n + 1) / n)))
 
@@ -703,6 +982,23 @@ class TrackRecord:
     masses: tuple = (LIKELY_MASS, POSSIBLE_MASS)
     # Average log score per forecast for each configuration (higher is better).
     log_scores: Dict[Config, float] = field(default_factory=dict)
+    # Across the landscape, whatever the tracker linked: of every report in
+    # the days after each morning, how many fell in some group's likely
+    # zone, and in same-size circles round each group's last report; and
+    # the zones' area on an average morning.
+    field_reports: int = 0
+    field_hits: int = 0
+    field_circle_hits: int = 0
+    field_area_km2: float = float("nan")
+
+    @property
+    def field_rate(self) -> float:
+        return self.field_hits / self.field_reports if self.field_reports else float("nan")
+
+    @property
+    def field_circle_rate(self) -> float:
+        return (self.field_circle_hits / self.field_reports if self.field_reports
+                else float("nan"))
 
     @property
     def forecast_rate(self) -> float:
@@ -734,14 +1030,31 @@ class TrackRecord:
 
 
 class _History:
-    """Each unit's reports in date order, to look up its range and last move."""
+    """Each unit's reports in date order, to look up its range and its turns."""
 
-    def __init__(self, df: pd.DataFrame, units: pd.Series, grid: Grid):
+    def __init__(self, df: pd.DataFrame, units: pd.Series, grid: Grid,
+                 step_table: Optional[pd.DataFrame] = None):
         work = df.assign(_unit=units.values).sort_values("Date", kind="stable")
         xy = grid.project(work["Latitude"].values, work["Longitude"].values)
         self._by_unit: Dict[int, tuple] = {}
         for unit, rows in work.groupby("_unit").indices.items():
             self._by_unit[int(unit)] = (work["Date"].values[rows], xy[rows])
+        self._turns: Dict[int, tuple] = {}
+        if step_table is not None and len(step_table):
+            turns = step_table.dropna(subset=["Prev Angle"])
+            turns = turns[(turns["Gap (days)"] == 1) & (turns["Distance (km)"] >= MIN_MOVE_KM)
+                          & (turns["Prev Distance (km)"] >= MIN_MOVE_KM)]
+            for unit, rows in turns.groupby("Unit"):
+                self._turns[int(unit)] = (rows["To Date"].to_numpy(),
+                                          (rows["Angle"] - rows["Prev Angle"]).to_numpy())
+
+    def turns(self, unit: int, upto) -> Optional[np.ndarray]:
+        """The unit's one-day turns known at ``upto`` (the time of its last report)."""
+        dates, turn = self._turns.get(int(unit), (None, None))
+        if dates is None:
+            return None
+        known = turn[dates <= np.datetime64(upto)][-OWN_MAX_TURNS:]
+        return known if len(known) else None
 
     def own(self, unit: int, before) -> Optional[np.ndarray]:
         """The unit's reports before ``before``, the most recent ``OWN_MAX_REPORTS``."""
@@ -752,17 +1065,71 @@ class _History:
 
 
 def _situations(table: pd.DataFrame, grid: Grid, history: _History) -> List[Situation]:
+    """The forecasts in ``table`` (from ``_cases``), as the page would make them."""
     origin = grid.project(table["From Latitude"].values, table["From Longitude"].values)
     prev = table["Prev Angle"].to_numpy(dtype=float)
     prev_km = table["Prev Distance (km)"].to_numpy(dtype=float)
     out = []
-    for i, (unit, social, start, days) in enumerate(zip(
+    for i, (unit, social, start, days, span) in enumerate(zip(
             table["Unit"].to_numpy(), table["Class"].to_numpy(),
-            table["From Date"].to_numpy(), table["Gap (days)"].to_numpy())):
+            table["From Date"].to_numpy(), table["Days"].to_numpy(),
+            table["Span"].to_numpy())):
         usable = np.isfinite(prev[i]) and prev_km[i] >= MIN_MOVE_KM
         out.append(Situation(origin[i], float(days), str(social),
-                             float(prev[i]) if usable else None, history.own(unit, start)))
+                             float(prev[i]) if usable else None, history.own(unit, start),
+                             int(span), history.turns(unit, start)))
     return out
+
+
+def lead(since: int, horizon_days: int) -> Tuple[int, int]:
+    """The forecast's last day after the group's report, and how many days
+    it covers: a group seen ``since`` days ago, forecast ``horizon_days``
+    ahead."""
+    days = min(since + horizon_days, MAX_HORIZON_DAYS)
+    return days, max(days - since, 1)
+
+
+def _cases(step_table: pd.DataFrame, horizon_days: int, begin: pd.Timestamp,
+           end: pd.Timestamp) -> pd.DataFrame:
+    """The forecasts the page would have shown on each day from ``begin`` to
+    ``end``, for which the group's next report says how they did.
+
+    On day ``t`` a group is forecast if its last report is at most
+    ``ACTIVE_DAYS - 1`` days old, for the ``horizon_days`` after ``t``. A
+    move from report a to report b is the outcome of every such forecast
+    made from a with b inside its window: up to ``ACTIVE_DAYS`` of them,
+    one per morning the page showed the group. Scoring each move once,
+    with the time to the next report known, as this did before, tested a
+    forecast the page never makes.
+    """
+    columns = [*step_table.columns, "As Of", "Since", "Days", "Span"]
+    if step_table.empty:
+        return pd.DataFrame(columns=columns)
+    a = step_table["From Date"].dt.normalize()
+    b = step_table["To Date"].dt.normalize()
+    one = pd.Timedelta(days=1)
+    first = np.maximum(a, b - pd.Timedelta(days=horizon_days))
+    last = np.minimum(b - one, a + pd.Timedelta(days=ACTIVE_DAYS - 1))
+    first = np.maximum(first, begin.normalize())
+    last = np.minimum(last, end.normalize())
+    keep = first <= last
+    frames = []
+    for offset in range(ACTIVE_DAYS):
+        at = first + pd.Timedelta(days=offset)
+        ok = keep & (at <= last)
+        if not ok.any():
+            continue
+        part = step_table[ok].copy()
+        part["As Of"] = at[ok].to_numpy()
+        part["Since"] = (part["As Of"] - a[ok]).dt.days.to_numpy()
+        frames.append(part)
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    out = pd.concat(frames, ignore_index=True)
+    leads = [lead(int(since), horizon_days) for since in out["Since"]]
+    out["Days"] = [d for d, _ in leads]
+    out["Span"] = [n for _, n in leads]
+    return out.sort_values(["As Of", "Unit"], kind="stable").reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -770,7 +1137,7 @@ def _situations(table: pd.DataFrame, grid: Grid, history: _History) -> List[Situ
 # ---------------------------------------------------------------------------
 # Bump when the method changes, so a training made by older code is never
 # reused by newer code.
-TRAINING_VERSION = 1
+TRAINING_VERSION = 2
 MIN_HISTORY_DAYS = 60
 
 
@@ -782,7 +1149,7 @@ class MonthResult:
     fingerprint: str
     scores: Dict[Config, float]           # summed log score per configuration
     masses: Dict[Config, List[float]]     # mass needed to reach each next report
-    reach: List[float]                    # next-report distance / sqrt(days)
+    reach: List[List[float]]              # [distance to the next report, days forecast]
     tested: int = 0
     hits: int = 0
     stay_hits: int = 0
@@ -791,6 +1158,11 @@ class MonthResult:
     circle_hits: int = 0
     circle_tested: int = 0
     circle_area_sum: float = 0.0
+    field_reports: int = 0
+    field_hits: int = 0
+    field_circle_hits: int = 0
+    field_mornings: int = 0
+    field_area_sum: float = 0.0
 
 
 @dataclass
@@ -833,11 +1205,13 @@ class Training:
                 "month": m.month, "fingerprint": m.fingerprint,
                 "scores": {key(c): float(v) for c, v in m.scores.items()},
                 "masses": {key(c): [float(x) for x in v] for c, v in m.masses.items()},
-                "reach": [float(x) for x in m.reach], "tested": int(m.tested),
+                "reach": [[float(x), float(d)] for x, d in m.reach], "tested": int(m.tested),
                 "hits": int(m.hits), "stay_hits": int(m.stay_hits),
                 "discordant": int(m.discordant), "area_sum": float(m.area_sum),
                 "circle_hits": int(m.circle_hits), "circle_tested": int(m.circle_tested),
                 "circle_area_sum": float(m.circle_area_sum),
+                "field": [int(m.field_reports), int(m.field_hits), int(m.field_circle_hits),
+                          int(m.field_mornings), float(m.field_area_sum)],
             } for m in self.months],
         }
 
@@ -851,9 +1225,10 @@ class Training:
             str(m["month"]), str(m["fingerprint"]),
             {config(k): float(v) for k, v in m["scores"].items()},
             {config(k): [float(x) for x in v] for k, v in m["masses"].items()},
-            [float(x) for x in m["reach"]], int(m["tested"]), int(m["hits"]),
+            [[float(x), float(d)] for x, d in m["reach"]], int(m["tested"]), int(m["hits"]),
             int(m["stay_hits"]), int(m["discordant"]), float(m["area_sum"]),
             int(m["circle_hits"]), int(m["circle_tested"]), float(m["circle_area_sum"]),
+            *[int(x) for x in m["field"][:4]], float(m["field"][4]),
         ) for m in data["months"]]
         with_season = bool(data["with_season"])
         horizon = int(data["horizon_days"])
@@ -929,6 +1304,7 @@ def _summarise(months: List[MonthResult], candidates: List[Config],
     best = max(scores, key=scores.get)
     circle_tested = sum(m.circle_tested for m in months)
     circle_hits = sum(m.circle_hits for m in months)
+    mornings = sum(m.field_mornings for m in months)
     return TrackRecord(
         tested, sum(m.hits for m in months), sum(m.stay_hits for m in months),
         sum(m.area_sum for m in months) / tested, sum(1 for m in months if m.tested),
@@ -943,7 +1319,109 @@ def _summarise(months: List[MonthResult], candidates: List[Config],
         (calibrated_mass(masses[best], LIKELY_MASS),
          calibrated_mass(masses[best], POSSIBLE_MASS)),
         {c: v / tested for c, v in scores.items()},
+        sum(m.field_reports for m in months), sum(m.field_hits for m in months),
+        sum(m.field_circle_hits for m in months),
+        sum(m.field_area_sum for m in months) / mornings if mornings else float("nan"),
     )
+
+
+def _origins(df: pd.DataFrame, units: pd.Series, step_table: pd.DataFrame) -> pd.DataFrame:
+    """Each unit's last report of each day: where the page would forecast
+    it from, with the move that brought it there."""
+    work = df.assign(Unit=units.values).sort_values("Date", kind="stable")
+    work = work.assign(Day=work["Date"].dt.normalize())
+    last = work.groupby(["Unit", "Day"], sort=False).tail(1)
+    out = pd.DataFrame({
+        "Unit": last["Unit"].to_numpy(), "Date": last["Date"].to_numpy(),
+        "Day": last["Day"].to_numpy(), "Latitude": last["Latitude"].to_numpy(),
+        "Longitude": last["Longitude"].to_numpy(),
+        "Class": [r["social"] for r in _records(last)]})
+    moves = step_table[step_table["Distance (km)"] >= MIN_MOVE_KM]
+    into = dict(zip(zip(moves["Unit"].to_numpy(), moves["To Date"].to_numpy()),
+                    moves["Angle"].to_numpy()))
+    out["Prev"] = [into.get((u, d), np.nan) for u, d in zip(out["Unit"], out["Date"])]
+    return out.sort_values("Date", kind="stable").reset_index(drop=True)
+
+
+def _score_cases(rows: pd.DataFrame, grid: Grid, history: "_History", model: StepModel,
+                 priors: Dict[str, np.ndarray], candidates: List[Config], chosen: Config,
+                 likely_mass: float, circle_r: Optional[float], result: "MonthResult",
+                 memo: Dict[tuple, tuple]) -> None:
+    """Score one morning's forecasts of groups whose next report came in time."""
+    targets = grid.project(rows["To Latitude"].values, rows["To Longitude"].values)
+    for situation, target, key, unit, start in zip(
+            _situations(rows, grid, history), targets, grid.key_of(targets),
+            rows["Unit"].to_numpy(), rows["From Date"].to_numpy()):
+        local, parts = _components(situation, grid, model, priors)
+        memo[(int(unit), np.datetime64(start, "ns"))] = (local, parts)
+        at = int(np.searchsorted(local.keys, key))
+        at = at if at < len(local.keys) and local.keys[at] == key else -1
+        probs, cache = {}, {}
+        for c in candidates:
+            p = _combine(parts, c, cache)
+            probs[c] = p
+            result.scores[c] += float(np.log(p[at] + _TINY)) if at >= 0 \
+                else float(np.log(_TINY))
+            result.masses[c].append(_mass_to(p, at))
+        moved = float(np.hypot(*(target - situation.xy)))
+        result.reach.append([moved, float(situation.days)])
+
+        likely = zone(probs[chosen], likely_mass)
+        area = likely.sum() * grid.cell_km ** 2
+        hit = at >= 0 and bool(likely[at])
+        # The same area as a disc around where the group was last seen.
+        stay = moved <= np.sqrt(area / np.pi)
+        result.tested += 1
+        result.hits += hit
+        result.stay_hits += stay
+        result.discordant += hit != stay
+        result.area_sum += area
+        if circle_r is not None:
+            radius = circle_r * situation.days ** model.alpha
+            result.circle_hits += moved <= radius
+            result.circle_tested += 1
+            result.circle_area_sum += np.pi * radius ** 2
+
+
+def _score_landscape(mornings: pd.DataFrame, as_of: pd.Timestamp, df_days: np.ndarray,
+                     df_keys: np.ndarray, horizon_days: int, grid: Grid, history: "_History",
+                     model: StepModel, priors: Dict[str, np.ndarray], chosen: Config,
+                     likely_mass: float, result: "MonthResult",
+                     memo: Dict[tuple, tuple]) -> None:
+    """The morning's map as a whole, against every report of the days after.
+
+    Every group the page would have shown gets its likely zone, whether or
+    not it was reported again; every report in the window counts, whether
+    or not the tracker linked it, including groups nobody had seen for
+    days. This is what the map promises a field team, and it does not
+    depend on the tracker's choices.
+    """
+    after = (df_days > np.datetime64(as_of)) & \
+        (df_days <= np.datetime64(as_of + pd.Timedelta(days=horizon_days)))
+    if not after.any():
+        return
+    latest = mornings.groupby("Unit").tail(1)
+    zone_keys, circle_keys = set(), set()
+    for row in latest.itertuples(index=False):
+        since = int((as_of - pd.Timestamp(row.Day)).days)
+        days, span = lead(since, horizon_days)
+        prev = float(row.Prev) if np.isfinite(row.Prev) else None
+        situation = Situation(grid.project(row.Latitude, row.Longitude)[0], days, row.Class,
+                              prev, history.own(row.Unit, row.Date), span,
+                              history.turns(row.Unit, row.Date))
+        known = memo.get((int(row.Unit), np.datetime64(row.Date, "ns")))
+        local, parts = known if known is not None else _components(situation, grid, model,
+                                                                    priors)
+        likely = zone(_combine(parts, chosen), likely_mass)
+        zone_keys.update(local.keys[likely].tolist())
+        radius = float(np.sqrt(likely.sum() * grid.cell_km ** 2 / np.pi))
+        circle_keys.update(grid.near(situation.xy, radius).keys.tolist())
+    targets = df_keys[after]
+    result.field_reports += int(len(targets))
+    result.field_hits += int(sum(k in zone_keys for k in targets.tolist()))
+    result.field_circle_hits += int(sum(k in circle_keys for k in targets.tolist()))
+    result.field_mornings += 1
+    result.field_area_sum += len(zone_keys) * grid.cell_km ** 2
 
 
 def train(df: pd.DataFrame, horizon_days: int = 1, previous=None,
@@ -995,11 +1473,14 @@ def train(df: pd.DataFrame, horizon_days: int = 1, previous=None,
 
     units_all = assign_units(df)
     all_steps = steps(df, units_all)
-    history = _History(df, units_all, grid)
+    history = _History(df, units_all, grid, all_steps)
+    origins = _origins(df, units_all, all_steps)
+    df_days = df["Date"].dt.normalize().to_numpy()
+    df_keys = grid.key_of(grid.project(df["Latitude"].values, df["Longitude"].values))
 
     scores = {c: 0.0 for c in candidates}
     masses: Dict[Config, List[float]] = {c: [] for c in candidates}
-    reach_scores: List[float] = []
+    reach_scores: List[List[float]] = []
     results: List[MonthResult] = []
     for done in kept:
         results.append(done)
@@ -1012,57 +1493,43 @@ def train(df: pd.DataFrame, horizon_days: int = 1, previous=None,
         begin, end = month.start_time, month.end_time
         result = MonthResult(str(month), digest, {c: 0.0 for c in candidates},
                              {c: [] for c in candidates}, [])
-        tests = all_steps[(all_steps["From Date"] >= begin) & (all_steps["From Date"] <= end)
-                          & (all_steps["Gap (days)"] <= horizon_days)]
+        cases = _cases(all_steps, horizon_days, begin, end)
         scored_before = any(m.tested for m in results)
-        if not tests.empty:
+        active = origins[(origins["Day"] >= begin.normalize() - pd.Timedelta(days=ACTIVE_DAYS))
+                         & (origins["Day"] <= end)]
+        if len(cases) or len(active):
             # The tracker only ever looks back, so the units it gives the
             # reports before ``begin`` are the same whether or not later
             # reports exist: the steps finished before the month are the
             # ones a forecast made then could have learned from.
             model = StepModel.learn(all_steps[all_steps["To Date"] < begin])
-            recent = usage_prior(df, grid, begin)
-            priors = {"places": recent}
-            seasonal = season_prior(df, grid, begin + pd.Timedelta(days=14), recent) \
-                if with_season else None
-            if seasonal is not None:
-                priors["season"] = seasonal
             chosen = max(scores, key=scores.get) if scored_before else DEFAULT_CONFIG
             likely_mass = calibrated_mass(masses[chosen], LIKELY_MASS)
-            circle_r = (float(np.quantile(reach_scores, 0.5)) if len(reach_scores)
-                        >= MIN_CALIBRATION else None)
-            targets = grid.project(tests["To Latitude"].values, tests["To Longitude"].values)
-            target_keys = grid.key_of(targets)
-            for situation, target, key in zip(_situations(tests, grid, history), targets,
-                                              target_keys):
-                local, parts = _components(situation, grid, model, priors)
-                at = int(np.searchsorted(local.keys, key))
-                at = at if at < len(local.keys) and local.keys[at] == key else -1
-                probs = {}
-                for c in candidates:
-                    p = _combine(parts, c)
-                    probs[c] = p
-                    result.scores[c] += float(np.log(p[at] + _TINY)) if at >= 0 \
-                        else float(np.log(_TINY))
-                    result.masses[c].append(_mass_to(p, at))
-                moved = float(np.hypot(*(target - situation.xy)))
-                result.reach.append(moved / np.sqrt(situation.days))
-
-                likely = zone(probs[chosen], likely_mass)
-                area = likely.sum() * grid.cell_km ** 2
-                hit = at >= 0 and bool(likely[at])
-                # The same area as a disc around where the group was last seen.
-                stay = moved <= np.sqrt(area / np.pi)
-                result.tested += 1
-                result.hits += hit
-                result.stay_hits += stay
-                result.discordant += hit != stay
-                result.area_sum += area
-                if circle_r is not None:
-                    radius = circle_r * np.sqrt(situation.days)
-                    result.circle_hits += moved <= radius
-                    result.circle_tested += 1
-                    result.circle_area_sum += np.pi * radius ** 2
+            per_day = [moved / days ** model.alpha for moved, days in reach_scores]
+            circle_r = (float(np.quantile(per_day, 0.5)) if len(per_day) >= MIN_CALIBRATION
+                        else None)
+            by_day = dict(tuple(cases.groupby("As Of", sort=True))) if len(cases) else {}
+            for as_of in pd.date_range(begin.normalize(), end.normalize()):
+                mornings = origins[(origins["Day"] <= as_of)
+                                   & (origins["Day"] > as_of - pd.Timedelta(days=ACTIVE_DAYS))]
+                rows = by_day.get(as_of)
+                if rows is None and mornings.empty:
+                    continue
+                # What the page would have known that morning: every report
+                # up to the end of the day before ``as_of + 1``.
+                recent = usage_prior(df, grid, as_of + pd.Timedelta(days=1))
+                priors = {"places": recent}
+                seasonal = season_prior(df, grid, as_of, recent) if with_season else None
+                if seasonal is not None:
+                    priors["season"] = seasonal
+                memo: Dict[tuple, tuple] = {}
+                if rows is not None:
+                    _score_cases(rows, grid, history, model, priors, candidates, chosen,
+                                 likely_mass, circle_r, result, memo)
+                if not mornings.empty:
+                    _score_landscape(mornings, as_of, df_days, df_keys, horizon_days, grid,
+                                     history, model, priors, chosen, likely_mass, result,
+                                     memo)
         results.append(result)
         for c in candidates:
             scores[c] += result.scores[c]
@@ -1088,6 +1555,21 @@ def backtest(df: pd.DataFrame, horizon_days: int = 1,
 SOCIAL_LABELS = {"lone bull": "Lone bull", "bull party": "Bull party",
                  "family herd": "Family herd", "unsexed group": "Group, sex not recorded"}
 COMPASS = ["E", "NE", "N", "NW", "W", "SW", "S", "SE"]
+
+
+def _neighbourhood(prob: np.ndarray, local: Local) -> np.ndarray:
+    """Each cell's probability with its eight neighbours': the likeliest
+    3 x 3 km block. A single-cell peak always sits on the group's own cell,
+    because moves spread over rings around it, so the likeliest *cell*
+    says "where it was" even for a group plainly on the move."""
+    total = np.zeros_like(prob)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            shifted = local.keys + dy * _KEY_STRIDE + dx
+            at = np.clip(np.searchsorted(local.keys, shifted), 0, len(local.keys) - 1)
+            found = local.keys[at] == shifted
+            total[found] += prob[at[found]]
+    return total
 
 
 def compass(angle: float) -> str:
@@ -1123,6 +1605,8 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
     model = StepModel.learn(learned)
     out["steps_learned"] = len(learned)
     out["turns"] = model.turns
+    out["turn_shares"] = model.turn_shares()
+    out["alpha"] = model.alpha
     work = history.assign(_unit=units.values)
     last = work.sort_values("Date", kind="stable").groupby("_unit").tail(1)
     active = last[last["Date"] >= as_of.normalize() - pd.Timedelta(days=active_days - 1)]
@@ -1130,7 +1614,7 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
         return out
 
     grid = Grid.around(history)
-    tracks = _History(history, units, grid)
+    tracks = _History(history, units, grid, learned)
     recent = usage_prior(history, grid, as_of.normalize() + pd.Timedelta(days=1))
     priors = {"places": recent}
     seasonal = season_prior(history, grid, as_of, recent) if config.season else None
@@ -1150,7 +1634,7 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
     rows, trails = [], []
     for row, rec in zip(active.to_dict("records"), _records(active)):
         since = max((as_of.normalize() - pd.Timestamp(row["Date"]).normalize()).days, 0)
-        days = min(since + horizon_days, MAX_HORIZON_DAYS)
+        days, span = lead(since, horizon_days)
         unit = int(row["_unit"])
         origin = grid.project(row["Latitude"], row["Longitude"])[0]
         unit_steps = learned[learned["Unit"] == unit]
@@ -1161,7 +1645,8 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
                     final["Distance (km)"] >= MIN_MOVE_KM:
                 prev = float(final["Angle"])
         situation = Situation(origin, days, rec["social"], prev,
-                              tracks.own(unit, pd.Timestamp(row["Date"])))
+                              tracks.own(unit, pd.Timestamp(row["Date"])), span,
+                              tracks.turns(unit, pd.Timestamp(row["Date"])))
         local, parts = _components(situation, grid, model, priors)
         prob = _combine(parts, config)
         likely, possible = zone(prob, likely_mass), zone(prob, possible_mass)
@@ -1170,7 +1655,7 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
         likely_any[local.flat[on_grid & likely]] = True
         possible_any[local.flat[on_grid & possible]] = True
         combined_miss[local.flat[on_grid]] *= 1 - prob[on_grid]
-        best_xy = local.centres[int(np.argmax(prob))]
+        best_xy = local.centres[int(np.argmax(_neighbourhood(prob, local)))]
         best_latlon = from_plane(best_xy[None, :], grid.ref_lat)[0]
         offset = best_xy - origin
         unit_rows = work[work["_unit"] == unit].sort_values("Date").tail(6)

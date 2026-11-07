@@ -57,6 +57,7 @@ def test_a_saved_training_reads_back_the_same(tmp_path):
     trained = mv.train(register, 1)
     back = mv.Training.from_dict(json.loads(json.dumps(trained.to_dict())))
     assert back.record.forecast_hits == trained.record.forecast_hits
+    assert back.record.field_hits == trained.record.field_hits
     assert back.record.config == trained.record.config
     assert back.record.masses == trained.record.masses
     again = mv.train(register, 1, previous=back)

@@ -39,8 +39,9 @@ def _track_record(record: mv.TrackRecord) -> None:
                 "daily travel around each group's last report, not a tested forecast.")
         return
     uses = record.config.parts()
-    said = (f"Tested on this register: {record.tested:,} moves over "
-            f"{plural(record.months, 'month')}, each forecast only from the months before. "
+    said = (f"Tested on this register: {record.tested:,} forecasts over "
+            f"{plural(record.months, 'month')}, made each morning as this page makes them and "
+            "only from what was known then. "
             f"The likely zone held the group's next report **{record.forecast_rate:.0%}** of "
             f"the time (it aims for half), averaging {record.mean_area_km2:.0f} km\u00b2")
     if record.circle_area_km2 == record.circle_area_km2:
@@ -49,6 +50,11 @@ def _track_record(record: mv.TrackRecord) -> None:
     said += (f". At the same size, the circle held {record.stay_rate:.0%}. "
              + ("It uses " + ", ".join(uses) + "." if uses else
                 "On this register only the distance groups travel helped."))
+    if record.field_reports:
+        said += (f" Across the whole map, {record.field_rate:.0%} of all reports in the "
+                 "days after each morning, including groups nobody had seen, fell inside a "
+                 f"likely zone; same-size circles round each group held "
+                 f"{record.field_circle_rate:.0%}.")
     if record.beats_staying_put:
         st.markdown(f":material/verified: {said}")
     else:
@@ -79,8 +85,14 @@ def _model_status(training: mv.Training) -> None:
     st.caption(said)
 
 
-def _turn_phrase(turns: dict) -> str:
+def _turn_phrase(turns: dict, shares=None) -> str:
     """What the register says about direction, in words."""
+    if shares is not None:
+        ahead, back = shares
+        if ahead + back > 0.6:
+            return (f"{ahead:.0%} of day-to-day moves keep within 45\u00b0 of the group's "
+                    f"last heading and {back:.0%} turn back the way it came; each group's own "
+                    "recent turns decide which it is likely to do")
     if not turns or 1 not in turns:
         return "too few moves to say which way groups go next"
     mu, kappa = turns[1]
@@ -92,6 +104,14 @@ def _turn_phrase(turns: dict) -> str:
     if degrees > 135:
         return "groups mostly come back the way they went, as between a day refuge and fields"
     return "groups mostly turn off their last direction"
+
+
+def _scaling_phrase(alpha: float) -> str:
+    if alpha >= 0.9:
+        return "about as fast as travel in a straight line (four days, four times as far)"
+    if alpha <= 0.6:
+        return "about as a random walk (four days, twice as far as one)"
+    return f"between a random walk and straight travel (four days, {4 ** alpha:.1f} times as far)"
 
 
 def render(c) -> None:
@@ -177,16 +197,21 @@ def render(c) -> None:
     with st.expander("How this is worked out, and what it cannot do", expanded=False):
         likely_mass, possible_mass = out.get("masses", (mv.LIKELY_MASS, mv.POSSIBLE_MASS))
         st.markdown(
-            f"- **Groups** are chained from reports by time, place and group composition: "
-            f"a report joins a track if it is within reach for the time elapsed (up to "
-            f"{mv.MAX_SPEED_KM_PER_DAY:g} km a day) and the group could be the same. They "
-            "are plausible movement units, not identified animals: two bulls in one valley "
-            "can be one group here, and a group is lost after "
+            "- **Groups** are chained from reports day by day. Each day's reports are "
+            "grouped into sightings (several people reporting one herd), then matched to "
+            "the groups seen in the days before all at once, the cheapest set of links: "
+            f"within reach for the time elapsed (up to {mv.MAX_SPEED_KM_PER_DAY:g} km a "
+            "day), a compatible size, and the breakdown compared only where both reports "
+            "recorded it. They are plausible movement units, not identified animals: two "
+            "bulls in one valley can be one group here, and a group is lost after "
             f"{mv.MAX_GAP_DAYS} days without a report.\n"
             f"- **How far**: {out.get('steps_learned', 0):,} moves between a group's reports "
-            "a day or more apart set how far a group goes in a day, separately for lone "
-            "bulls, bull parties and family herds once each has enough moves of its own.\n"
-            f"- **Which way**: on this register, {_turn_phrase(out.get('turns', {}))}.\n"
+            "a day or more apart set how far a group goes, separately for lone bulls, bull "
+            "parties and family herds once each has enough moves of its own. How distance "
+            "grows with days is learned too: here, "
+            + _scaling_phrase(out.get("alpha", 0.5)) + ".\n"
+            f"- **Which way**: on this register, "
+            f"{_turn_phrase(out.get('turns', {}), out.get('turn_shares'))}.\n"
             "- **Where**: places with earlier reports, recent ones counting more and "
             "optionally the same weeks of earlier years, and each group's own earlier "
             "reports.\n"
