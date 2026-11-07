@@ -150,6 +150,8 @@ def test_next_moves_says_when_there_is_too_little_history_to_test_it(loaded):
     open_page(loaded, "next").run()
     assert not loaded.exception, loaded.exception
     assert any("Not enough history to test the forecast" in i.value for i in loaded.info)
+    # And it says what it was trained on.
+    assert any("Trained on 9 reports" in c.value for c in loaded.caption)
 
 
 def test_the_overview_points_to_next_moves_when_groups_are_on_the_move(loaded):

@@ -102,10 +102,20 @@ def test_a_short_register_has_no_season_map(ranging):
 # ---------------------------------------------------------------------------
 def test_cells_within_reach_are_found_in_order():
     grid = mv.Grid(23.0, 0.0, 0.0, 50, 40)
-    index, distance = grid.near(np.array([10.2, 20.7]), 5.0)
-    assert (np.diff(index) > 0).all()
-    assert distance.max() <= 5.0
-    assert len(index) == pytest.approx(np.pi * 25, rel=0.15)
+    local = grid.near(np.array([10.2, 20.7]), 5.0)
+    assert (np.diff(local.keys) > 0).all()
+    assert local.distance.max() <= 5.0
+    assert len(local.keys) == pytest.approx(np.pi * 25, rel=0.15)
+    # The lattice key and the grid's own index name the same cells.
+    assert (grid.key_of(grid.centres[local.flat]) == local.keys).all()
+
+
+def test_cells_beyond_the_grid_are_still_reachable_at_the_floor():
+    grid = mv.Grid(23.0, 0.0, 0.0, 10, 10)
+    local = grid.near(np.array([1.0, 1.0]), 4.0)
+    assert (local.flat == -1).any() and (local.flat >= 0).any()
+    values = grid.at(np.full(100, 0.5), local)
+    assert (values[local.flat == -1] == grid.floor()).all()
 
 
 def test_lone_bulls_and_family_herds_get_their_own_step_lengths():
@@ -235,3 +245,72 @@ def test_compass_points():
     assert mv.compass(np.pi / 2) == "N"
     assert mv.compass(-np.pi / 2) == "S"
     assert mv.compass(3 * np.pi / 4) == "NW"
+
+
+
+# ---------------------------------------------------------------------------
+# Training again as entries arrive
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def register():
+    return simulate(groups=6, days=200, seed=7, persistence=0.6, home=0.4)
+
+
+def _same(a: mv.TrackRecord, b: mv.TrackRecord) -> None:
+    assert (a.tested, a.forecast_hits, a.stay_hits, a.discordant, a.circle_hits) == \
+        (b.tested, b.forecast_hits, b.stay_hits, b.discordant, b.circle_hits)
+    assert a.config == b.config
+    assert a.masses == pytest.approx(b.masses)
+    assert a.mean_area_km2 == pytest.approx(b.mean_area_km2)
+
+
+def test_new_entries_retrain_only_the_months_they_touch(register):
+    """A register that gained a fortnight of entries is trained again from
+    the month they fall in, and comes out exactly as a fresh training."""
+    cut = register["Date"].max() - pd.Timedelta(days=14)
+    earlier = mv.train(register[register["Date"] <= cut], 1)
+    updated = mv.train(register, 1, previous=earlier)
+    fresh = mv.train(register, 1)
+    assert updated.reused_months >= len(earlier.months) - 2
+    assert 0 < updated.retrained_months <= 3
+    _same(updated.record, fresh.record)
+
+
+def test_an_edited_old_entry_retrains_from_its_month(register):
+    trained = mv.train(register, 1)
+    edited = register.copy()
+    row = edited.index[edited["Date"] == START + pd.Timedelta(days=120)][0]
+    edited.loc[row, "Latitude"] += 0.05
+    again = mv.train(edited, 1, previous=trained)
+    month = str(edited.loc[row, "Date"].to_period("M"))
+    first_redone = [m.month for m in again.months][again.reused_months]
+    assert first_redone <= month
+    _same(again.record, mv.train(edited, 1).record)
+
+
+def test_an_unchanged_register_is_not_trained_again(register):
+    trained = mv.train(register, 1)
+    again = mv.train(register, 1, previous=trained)
+    assert again.retrained_months == 0
+    assert again.data_key == trained.data_key
+
+
+def test_a_training_for_another_horizon_is_not_reused(register):
+    one_day = mv.train(register, 1)
+    three = mv.train(register, 3, previous=one_day)
+    assert three.reused_months == 0
+
+
+def test_reports_far_away_do_not_change_months_already_scored(register):
+    """A new area joining the register widens the grid; the cells and the
+    usage maps around existing groups must not move with it."""
+    trained = mv.train(register, 1)
+    far = register.tail(30).copy()
+    far["Latitude"] += 2.0
+    far["Date"] = register["Date"].max() + pd.Timedelta(days=40)
+    grown = pd.concat([register, far], ignore_index=True)
+    again = mv.train(grown, 1, previous=trained)
+    old_months = {m.month: m for m in trained.months}
+    for month in again.months[:again.reused_months]:
+        assert month is old_months[month.month]
+    _same(mv.train(grown, 1).record, again.record)
