@@ -549,26 +549,48 @@ radar tracks aircraft: a report joins a track if it is within reach for the
 time elapsed (up to 15 km a day) and its composition fits -- a party of bulls
 does not become a herd with calves overnight. A group is a plausible movement
 unit, not an identified animal, and it is lost after four days without a
-report. Every move between a group's reports a day or more apart sets how far
-groups go in a day; the places reported before, recent ones counting more, set
-where they tend to go. The forecast for a group is that reach, centred on its
-last report, weighted by those places. Its *likely zone* is the smallest set
-of 1 km cells holding half the forecast, the *possible zone* 80%, and the
-villages inside are listed to warn.
+report. The forecast is then built from parts, each learned from the register:
 
-**The forecast has to earn its place on each register.** Each month is
-forecast from the months before it only, and the likely zone is scored
-against where the group was reported next. The comparison is a circle of the
-same area around the last report -- "they stay near where they were". How
-much the earlier places count is chosen the same way, from past months only:
-where groups keep to the same forest blocks and fields it counts fully, and
-where they wander it is switched off, because there it drags the zone back
-along the group's own trail. On synthetic groups that circle fixed places the
-likely zone caught the next report 48% of the time against 41% for the same
-circle; on random walks the two tie at 52%. The page states the figures for
-the register loaded, and when the forecast does not beat staying put it says
-so and asks for the zone to be read as an area around the last report. It
-cannot foresee a first visit to a place nobody has reported elephants in.
+* *How far*: every move between a group's reports a day or more apart, per
+  class once lone bulls, bull parties and family herds each have enough moves.
+* *Which way*: the direction of each move relative to the one before it. Steady
+  travel shows as turns near zero; a group shuttling between a day refuge and
+  the fields it raids shows as turns near a half circle, and the forecast then
+  points back the way it came.
+* *Where*: places with earlier reports, recent ones counting more, and, once the
+  register holds an earlier year, the same weeks of that year -- raiding follows
+  the harvest.
+* *Its own range*: the group's own earlier reports.
+
+The forecast for a group is the reach centred on its last report times
+whichever of the other parts help. Each group shows its heading, its single
+likeliest spot ("3 km NE, by Khati") and its *likely* and *possible* zones,
+with the villages inside listed to warn.
+
+**Every part has to earn its place on each register.** Each month is forecast
+from the months before it only and scored against where the group was reported
+next. Which parts to switch on is chosen the same way -- the combination with
+the best log score on the earlier months -- and so is the size of the zones:
+they are calibrated (a split-conformal quantile) so that the likely zone
+catches about half of next reports and the possible zone about four in five,
+whatever the movement. The comparison throughout is a circle around the last
+report -- "they stay near where they were" -- at the same size, and sized from
+past months to catch as many. On synthetic movement, one ingredient at a time
+(`tests/movement_fixtures.py`), the next-day likely zone against a circle of
+the same size:
+
+| Movement | Likely zone | Same-size circle | Parts chosen |
+|---|---|---|---|
+| Wandering at random | 49% | 52% | none: reported as no better |
+| Steady travel | **51%** | 40% | direction of travel |
+| Keeping to a home range | **51%** | 46% | places used before |
+| Refuge to field and back | **52%** | 4% | direction, places, own range |
+| Mixed, two years | **51%** | 49% | places (same season), direction |
+
+The page states the figures for the register loaded, and when the forecast
+does not beat staying put it says so and asks for the zone to be read as an
+area around the last report. It cannot foresee a first visit to a place nobody
+has reported elephants in.
 
 **Two maps.** The spatial view's layers are chosen on the *Where to act*
 page, not the sidebar. *Events* (what happened) and *Animals* (lone bull,
