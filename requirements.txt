@@ -4,6 +4,8 @@ numpy==2.4.6
 pydeck==0.9.3
 plotly==6.9.0
 scipy==1.17.1
+# One BLAS thread while the presence model fits: spinning threads made it 5x slower.
+threadpoolctl==3.7.0
 pillow==12.3.0
 python-dateutil==2.9.0.post0
 requests==2.33.1

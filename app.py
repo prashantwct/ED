@@ -250,6 +250,8 @@ PAGES = {
                      url_path="where"),
     "next": st.Page(_page("next"), title="Next moves", icon=":material/near_me:",
                     url_path="next"),
+    "range": st.Page(_page("range"), title="Range & corridors", icon=":material/route:",
+                     url_path="range"),
     "villages": st.Page(_page("villages"), title="Villages", icon=":material/home:",
                         url_path="villages"),
     "patterns": st.Page(_page("patterns"), title="Patterns",
@@ -264,7 +266,7 @@ PAGES = {
                        url_path="analyst"),
 }
 ctx.pages = PAGES
-CONFLICT_PAGES = {"", "where", "next", "villages", "patterns", "data", "analyst"}
+CONFLICT_PAGES = {"", "where", "next", "range", "villages", "patterns", "data", "analyst"}
 
 nav = st.navigation(list(PAGES.values()), position="top")
 current = next(k for k, p in PAGES.items() if p.url_path == nav.url_path)

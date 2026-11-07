@@ -57,7 +57,7 @@ def test_the_overview_opens_first_with_the_four_numbers(loaded):
     assert any(b.label == "Generate brief" for b in loaded.button)
 
 
-@pytest.mark.parametrize("page", ["where", "next", "villages", "patterns", "data",
+@pytest.mark.parametrize("page", ["where", "next", "range", "villages", "patterns", "data",
                                   "analyst"])
 def test_every_page_draws_under_the_same_scope(loaded, page):
     open_page(loaded, page).run()
@@ -157,3 +157,12 @@ def test_next_moves_says_when_there_is_too_little_history_to_test_it(loaded):
 def test_the_overview_points_to_next_moves_when_groups_are_on_the_move(loaded):
     links = [link for link in loaded.get("page_link") if link.proto.page == "next"]
     assert links and "On the move" in _texts(loaded)
+
+
+def test_range_says_when_there_is_too_little_history_to_model(loaded):
+    """Nine reports over nine days are not a landscape: the page says what it
+    needs rather than drawing a surface from them."""
+    open_page(loaded, "range").run()
+    assert not loaded.exception, loaded.exception
+    assert any("Not enough history to model where elephants range" in i.value
+               for i in loaded.info)

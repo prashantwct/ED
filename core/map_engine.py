@@ -587,6 +587,130 @@ def render_forecast_map(
     _render_deck(layers, view_state, style_name)
 
 
+# Bands of the presence surface: the top 5%, the next 5% and the next 15%
+# of the landscape. One hue per map, darkest where most is expected.
+FORECAST_BANDS = {"Top 5%": (156, 64, 10), "Next 5%": (214, 116, 40),
+                  "Next 15%": (242, 201, 76)}
+USE_BANDS = {"Top 5%": (22, 74, 48), "Next 5%": (64, 132, 88),
+             "Next 15%": (166, 205, 150)}
+CORRIDOR_COLOR = (194, 87, 12)
+CORE_COLOR = (22, 74, 48)
+PATH_COLOR = (60, 34, 18)
+
+
+def _squares(frame: pd.DataFrame, cell_km: float) -> list:
+    half_lat = cell_km / 2 / 111.32
+    half_lon = half_lat / np.cos(np.radians(frame["Latitude"].to_numpy()))
+    return [
+        [[round(lon - dx, 5), round(lat - half_lat, 5)],
+         [round(lon + dx, 5), round(lat - half_lat, 5)],
+         [round(lon + dx, 5), round(lat + half_lat, 5)],
+         [round(lon - dx, 5), round(lat + half_lat, 5)]]
+        for lat, lon, dx in zip(frame["Latitude"], frame["Longitude"], half_lon)
+    ]
+
+
+@_never_breaks_the_page
+def render_presence_map(
+    cells: pd.DataFrame,
+    cell_km: float,
+    bands: Dict[str, Tuple[int, int, int]],
+    title: str,
+    cores: Optional[pd.DataFrame] = None,
+    paths: Optional[List[dict]] = None,
+    corridor: Optional[pd.DataFrame] = None,
+    style_name: str = DEFAULT_BASEMAP,
+    show_boundaries: bool = True,
+    boundary_level: Optional[str] = None,
+) -> None:
+    """A surface of grid cells in bands, with corridors on top if given.
+
+    ``cells`` holds Latitude, Longitude, Band and the tooltip's Share,
+    Place and Beat; only banded cells are drawn. ``corridor`` cells carry
+    Latitude, Longitude and Current (0-1 within the map); ``paths`` are
+    least-cost paths, ``cores`` the core areas' centres and names.
+    """
+    shown = cells[cells["Band"].isin(list(bands))] if len(cells) else cells
+    extent = [shown[["Latitude", "Longitude"]]] if len(shown) else []
+    if corridor is not None and len(corridor):
+        extent.append(corridor[["Latitude", "Longitude"]])
+    if not extent:
+        st.info("Nothing to draw for this choice.")
+        return
+    view_state = _adaptive_view_state(pd.concat(extent))
+    layers = list(boundary_layers(view_state, boundary_level)) if show_boundaries else []
+
+    if len(shown):
+        zone = shown.copy()
+        zone["polygon"] = _squares(zone, cell_km)
+        colour = np.array([bands[b] for b in zone["Band"]])
+        zone["_r"], zone["_g"], zone["_b"] = colour[:, 0], colour[:, 1], colour[:, 2]
+        alpha = {band: a for band, a in zip(bands, (190, 140, 95))}
+        zone["_alpha"] = [alpha[b] for b in zone["Band"]]
+        faded = corridor is not None and len(corridor)
+        if faded:
+            zone["_alpha"] = (zone["_alpha"] * 0.45).astype(int)
+        zone = zone.join(pd.DataFrame([
+            _slots(title, bands[row["Band"]],
+                   [("Band", row["Band"]), ("Share", row.get("Share")),
+                    ("Near", row.get("Place")), ("Beat", row.get("Beat") or None)])
+            for row in zone.to_dict("records")
+        ], index=zone.index))
+        layers.append(pdk.Layer(
+            "PolygonLayer",
+            data=zone[["polygon", "_r", "_g", "_b", "_alpha", *TOOLTIP_FIELDS]],
+            get_polygon="polygon", get_fill_color="[_r, _g, _b, _alpha]",
+            stroked=False, filled=True, pickable=not faded, auto_highlight=not faded,
+        ))
+
+    if corridor is not None and len(corridor):
+        band = corridor.copy()
+        band["polygon"] = _squares(band, cell_km)
+        band["_alpha"] = (70 + 170 * band["Current"].clip(0, 1)).astype(int)
+        band = band.join(pd.DataFrame([
+            _slots("Corridor", CORRIDOR_COLOR,
+                   [("Between", row.get("Link")), ("Flow", row.get("Flow")),
+                    ("Near", row.get("Place"))])
+            for row in band.to_dict("records")
+        ], index=band.index))
+        layers.append(pdk.Layer(
+            "PolygonLayer", data=band[["polygon", "_alpha", *TOOLTIP_FIELDS]],
+            get_polygon="polygon",
+            get_fill_color="[%d, %d, %d, _alpha]" % CORRIDOR_COLOR,
+            stroked=False, filled=True, pickable=True, auto_highlight=True,
+        ))
+    if paths:
+        layers.append(pdk.Layer(
+            "PathLayer", data=paths, get_path="path", get_color=[*PATH_COLOR, 230],
+            width_min_pixels=2, get_width=3, pickable=False,
+        ))
+    if cores is not None and len(cores):
+        marks = cores.copy()
+        marks = marks.join(pd.DataFrame([
+            _slots(_clean(row.get("Core"), "Core area"), CORE_COLOR,
+                   [("Area", f"{row.get('Area (km2)', 0):.0f} km\u00b2"),
+                    ("Share of use", row.get("Share")), ("Near", row.get("Place"))],
+                   subtitle="Core area")
+            for row in marks.to_dict("records")
+        ], index=marks.index))
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", data=marks[["Longitude", "Latitude", *TOOLTIP_FIELDS]],
+            get_position="[Longitude, Latitude]", get_radius=500,
+            get_fill_color=[*CORE_COLOR, 240], get_line_color=[255, 255, 255, 255],
+            line_width_min_pixels=2, stroked=True, radius_min_pixels=6, radius_max_pixels=14,
+            pickable=True, auto_highlight=True,
+        ))
+        layers.append(pdk.Layer(
+            "TextLayer", data=marks[["Longitude", "Latitude", "Core"]],
+            get_position="[Longitude, Latitude]", get_text="Core",
+            get_size=LABEL_FONT_SIZE, get_color=[255, 255, 255, 255],
+            get_pixel_offset=[0, -18], font_settings={"sdf": True}, outline_width=4,
+            outline_color=[20, 28, 24, 255], font_weight=600, background=True,
+            get_background_color=[20, 28, 24, 140], background_padding=[5, 2],
+        ))
+    _render_deck(layers, view_state, style_name)
+
+
 def _boundary_note(view_state: pdk.ViewState, level: Optional[str]) -> None:
     """Say which level is drawn and why, so it is not a surprise."""
     chosen = level or boundaries.level_for_zoom(float(view_state.zoom))

@@ -14,7 +14,7 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
-from core import map_select, movement, spacetime
+from core import corridors, map_select, movement, presence, spacetime
 from core.exports import download_menu
 from core.hotspots import detect_hotspots, villages_at_risk
 from core.intelligence import management_brief
@@ -241,3 +241,29 @@ def next_moves_for(frame: pd.DataFrame, as_of, horizon_days: int,
 @st.cache_data(show_spinner=False, hash_funcs=_FRAMES, max_entries=8)
 def recent_groups(frame: pd.DataFrame, as_of) -> int:
     return movement.recent_groups(frame, as_of)
+
+
+@st.cache_resource(show_spinner="Fitting where elephants range...", hash_funcs=_FRAMES,
+                   max_entries=4)
+def presence_for(frame: pd.DataFrame, as_of, villages: Optional[pd.DataFrame],
+                 registry: Optional[pd.DataFrame], users: Optional[pd.DataFrame],
+                 uploaded: Optional[pd.DataFrame], village_effort: bool):
+    """The presence model, tested and fitted (core.presence).
+
+    Kept as a resource, not copied per rerun: the page only reads it, and
+    the surfaces are a few megabytes. It holds per-cell counts and fitted
+    surfaces, no report, name or number.
+    """
+    layers = {name: points for name, points in (
+        ("Registered villagers", registry), ("App users", users),
+        ("Uploaded effort", uploaded)) if points is not None and len(points)}
+    inputs = presence.prepare(frame, as_of, villages=villages, effort_layers=layers,
+                              village_effort=village_effort)
+    return presence.run(inputs)
+
+
+@st.cache_resource(show_spinner="Tracing corridors...", max_entries=16)
+def corridors_for(_result, result_key: str, season: str, corrected: bool):
+    """Cores, links and corridors for one season's surface of use."""
+    use = _result.use(season, corrected=corrected)
+    return corridors.network(_result.inputs.lattice, use)
