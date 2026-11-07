@@ -505,6 +505,25 @@ def render_forecast_map(
                 width_min_pixels=2, get_width=2, pickable=False,
             ))
 
+    if {"Spot Latitude", "Spot Longitude"} <= set(groups.columns):
+        # Last report to likeliest spot: which way the forecast leans.
+        arrows = groups[["Longitude", "Latitude", "Spot Longitude", "Spot Latitude"]].round(5)
+        arrows.columns = ["Longitude", "Latitude", "_slon", "_slat"]
+        layers.append(pdk.Layer(
+            "LineLayer", data=arrows,
+            get_source_position="[Longitude, Latitude]",
+            get_target_position="[_slon, _slat]",
+            get_color=[*GROUP_COLOR, 230], get_width=3, width_min_pixels=2,
+            pickable=False,
+        ))
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", data=arrows,
+            get_position="[_slon, _slat]", get_radius=160,
+            get_fill_color=[255, 255, 255, 235], get_line_color=[*GROUP_COLOR, 255],
+            line_width_min_pixels=2, stroked=True, radius_min_pixels=3,
+            radius_max_pixels=8, pickable=False,
+        ))
+
     if villages is not None and not villages.empty:
         warn = villages.copy()
         colour = np.array([TIER_COLORS["Critical"] if b == "Likely" else TIER_COLORS["High"]
@@ -550,7 +569,8 @@ def render_forecast_map(
                [("Last seen", f"{pd.Timestamp(row['Last Seen']):%d %b}"
                  + (f", {int(row['Days Ago'])} d ago" if row.get("Days Ago") else ", today")),
                 ("Size", row.get("Size")),
-                ("Near", _clean(row.get("Near"), "")),
+                ("Heading", row.get("Heading") or None),
+                ("Most likely", row.get("Most Likely") or None),
                 ("Likely zone", f"{row.get('Likely Zone (km2)', 0):.0f} km\u00b2"),
                 ("Reports", row.get("Reports"))],
                subtitle=_clean(row.get("Class")))

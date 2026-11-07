@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from html import escape
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -34,20 +35,41 @@ def _in_scope(groups: pd.DataFrame, c) -> pd.DataFrame:
 def _track_record(record: mv.TrackRecord) -> None:
     if record.tested == 0:
         st.info("Not enough history to test the forecast on this register yet: it needs "
-                "about three months of reports. Treat the zones as a rough guide.")
+                "about three months of reports. Until then the zones are a circle of typical "
+                "daily travel around each group's last report, not a tested forecast.")
         return
-    said = (f"Tested on this register: over {plural(record.months, 'month')}, the likely "
-            f"zone (on average {record.mean_area_km2:.0f} km²) held the group's next "
-            f"report **{record.forecast_rate:.0%}** of the time, against "
-            f"**{record.stay_rate:.0%}** for a circle of the same size around where it was "
-            f"last seen. {record.tested:,} moves, each forecast only from the months "
-            "before it.")
+    uses = record.config.parts()
+    said = (f"Tested on this register: {record.tested:,} moves over "
+            f"{plural(record.months, 'month')}, each forecast only from the months before. "
+            f"The likely zone held the group's next report **{record.forecast_rate:.0%}** of "
+            f"the time (it aims for half), averaging {record.mean_area_km2:.0f} km\u00b2")
+    if record.circle_area_km2 == record.circle_area_km2:
+        said += (f"; a circle around the last report needed "
+                 f"{record.circle_area_km2:.0f} km\u00b2 to do as well")
+    said += (f". At the same size, the circle held {record.stay_rate:.0%}. "
+             + ("It uses " + ", ".join(uses) + "." if uses else
+                "On this register only the distance groups travel helped."))
     if record.beats_staying_put:
         st.markdown(f":material/verified: {said}")
     else:
-        st.warning(said + " On this register the forecast is no better than assuming a "
-                   "group stays near where it was last seen: read each zone as an area "
-                   "around the last report, not a direction.", icon=":material/info:")
+        st.warning(said + " That is no better than assuming a group stays near where it "
+                   "was last seen: read each zone as an area around the last report, not a "
+                   "direction.", icon=":material/info:")
+
+
+def _turn_phrase(turns: dict) -> str:
+    """What the register says about direction, in words."""
+    if not turns or 1 not in turns:
+        return "too few moves to say which way groups go next"
+    mu, kappa = turns[1]
+    if kappa < 0.3:
+        return "no settled direction from one day to the next"
+    degrees = abs(np.degrees(mu))
+    if degrees < 45:
+        return "groups mostly keep going the way they were heading"
+    if degrees > 135:
+        return "groups mostly come back the way they went, as between a day refuge and fields"
+    return "groups mostly turn off their last direction"
 
 
 def render(c) -> None:
@@ -60,7 +82,8 @@ def render(c) -> None:
 
     register = c.df[c.df["Date"] < c.period_end + pd.Timedelta(days=1)]
     record = movement_record(register, days)
-    out = next_moves_for(register, c.period_end, days, c.villages, record.prior_weight)
+    out = next_moves_for(register, c.period_end, days, c.villages, record,
+                         (record.config, record.masses, record.tested))
     groups = _in_scope(out["groups"], c) if len(out["groups"]) else out["groups"]
     _track_record(record)
 
@@ -88,19 +111,25 @@ def render(c) -> None:
                             style_name=c.basemap, show_boundaries=c.layer_boundaries,
                             boundary_level=c.boundary_level)
         map_legend("Zones", {band: {"accent": "#%02x%02x%02x" % rgb, "glyph": "",
-                                    "label": f"{band} (holds {mass:.0%})"}
-                             for (band, rgb), mass in zip(ZONE_COLORS.items(),
-                                                          (mv.LIKELY_MASS, mv.POSSIBLE_MASS))})
-        st.caption("Green dots are each group's last report, with its recent trail. "
-                   "Villages in a likely zone are labelled.")
+                                    "label": f"{band} (catches about {share})"}
+                             for (band, rgb), share in zip(ZONE_COLORS.items(),
+                                                           ("1 in 2", "4 in 5"))})
+        st.caption("Green dots are each group's last report, with its recent trail; the "
+                   "short line points to its likeliest spot. Villages in a likely zone are "
+                   "labelled.")
     with table_col:
         st.markdown("**Groups**")
         st.dataframe(
-            groups[["Group", "Class", "Size", "Last Seen", "Near", "Likely Zone (km2)",
-                    "Villages in Likely Zone"]],
+            groups[["Group", "Most Likely", "Heading", "Last Seen", "Class", "Size",
+                    "Likely Zone (km2)", "Villages in Likely Zone"]],
             hide_index=True, width="stretch",
             column_config={
                 "Last Seen": st.column_config.DateColumn("Last seen", format="D MMM"),
+                "Heading": st.column_config.TextColumn(
+                    "Heading", help="Direction of its last move, a day or more apart."),
+                "Most Likely": st.column_config.TextColumn(
+                    "Most likely", help="The single likeliest kilometre square, from its "
+                    "last report.", width="medium"),
                 "Likely Zone (km2)": st.column_config.NumberColumn(
                     "Likely zone", format="%.0f km²",
                     help="The smallest area holding half the forecast."),
@@ -122,6 +151,7 @@ def render(c) -> None:
                                "next_moves_villages.csv", mime="text/csv")
 
     with st.expander("How this is worked out, and what it cannot do", expanded=False):
+        likely_mass, possible_mass = out.get("masses", (mv.LIKELY_MASS, mv.POSSIBLE_MASS))
         st.markdown(
             f"- **Groups** are chained from reports by time, place and group composition: "
             f"a report joins a track if it is within reach for the time elapsed (up to "
@@ -129,14 +159,19 @@ def render(c) -> None:
             "are plausible movement units, not identified animals: two bulls in one valley "
             "can be one group here, and a group is lost after "
             f"{mv.MAX_GAP_DAYS} days without a report.\n"
-            f"- **How far**: every move between a group's reports a day or more apart, "
-            f"{out.get('steps_learned', 0):,} of them on this register, sets how far a group "
-            "goes in a day.\n"
-            "- **Where**: places with earlier reports, recent ones counting more, are where "
-            "groups tend to go. How much that counts is chosen from past months: "
-            f"{record.prior_weight:g} on a scale from 0 (ignored) to 1.\n"
-            "- **The zones** hold half (likely) and 80% (possible) of the forecast. They "
-            "are areas to watch, not promises: a forecast cannot see a first visit to a "
-            "place nobody has reported elephants in.\n"
-            "- **The track record** forecasts each month from the months before it and "
-            "checks where each group was reported next.")
+            f"- **How far**: {out.get('steps_learned', 0):,} moves between a group's reports "
+            "a day or more apart set how far a group goes in a day, separately for lone "
+            "bulls, bull parties and family herds once each has enough moves of its own.\n"
+            f"- **Which way**: on this register, {_turn_phrase(out.get('turns', {}))}.\n"
+            "- **Where**: places with earlier reports, recent ones counting more and "
+            "optionally the same weeks of earlier years, and each group's own earlier "
+            "reports.\n"
+            "- **Which of these to use** is chosen from past months: the combination that "
+            "forecast them best. On this register: "
+            + (", ".join(record.config.parts()) if record.config.parts()
+               else "distance alone") + ".\n"
+            f"- **The zones** are sized from past months so that they catch about half "
+            f"(likely) and 80% (possible) of next reports: here they hold "
+            f"{likely_mass:.0%} and {possible_mass:.0%} of each forecast. They are areas to "
+            "watch, not promises: a forecast cannot see a first visit to a place nobody "
+            "has reported elephants in.")

@@ -194,10 +194,14 @@ def movement_record(frame: pd.DataFrame, horizon_days: int):
 
 @st.cache_data(show_spinner="Forecasting next moves...", hash_funcs=_FRAMES, max_entries=8)
 def next_moves_for(frame: pd.DataFrame, as_of, horizon_days: int,
-                   villages: Optional[pd.DataFrame], prior_weight: float):
-    """Cached forecast for the groups reported in the last few days."""
+                   villages: Optional[pd.DataFrame], _record, record_key: tuple):
+    """Cached forecast for the groups reported in the last few days.
+
+    The track record decides which parts of the forecast are on and how
+    wide the zones are; ``record_key`` stands for it in the cache key.
+    """
     return movement.next_moves(frame, as_of, horizon_days=horizon_days, villages=villages,
-                               prior_weight=prior_weight)
+                               record=_record)
 
 
 @st.cache_data(show_spinner=False, hash_funcs=_FRAMES, max_entries=8)
