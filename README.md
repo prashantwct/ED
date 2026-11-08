@@ -570,11 +570,22 @@ built from parts, each learned from the register:
   register holds an earlier year, the same weeks of that year -- raiding follows
   the harvest.
 * *Its own range*: the group's own earlier reports.
+* *Grid memory*: every move is remembered as from one 2 km grid to the next.
+  From a group's grid, the moves that began there are weighted -- recent ones
+  more, moves of the same length in days more, and, with the season on, moves
+  made within about a month of today's date in any year more -- and where they
+  went is mixed into the forecast, counting for more the more moves there are
+  to go on. It matters where herds keep to habitual routes, one way round, or
+  out in one season and back in another.
 
 The forecast for a group covers every day of the horizon: "the next 3 days" is
 where it may be on any of them. Each group shows its heading, its likeliest
-3 km block ("3 km NE, by Khati") and its *likely* and *possible* zones, with
-the villages inside listed to warn.
+3 km block ("3 km NE, by Khati"), its three likeliest next 2 km grids with
+their chance (outlined on the map), and its *likely* and *possible* zones, with
+the villages inside listed to warn. Under them, the grid memory for each
+group's grid: where groups went next from it before, how often, how many of
+those at this time of year, and when last; the whole memory (every pair of
+grids, by season) downloads as CSV.
 
 **Every part has to earn its place on each register.** The backtest makes the
 forecasts the page would have made: each morning, for every group seen in the
@@ -598,6 +609,15 @@ movement (`tests/movement_fixtures.py`), next 24 hours:
 | Refuge to field and back | **52%** | 29% | **51%** | 28% | direction, places, own range |
 | Half travel, half shuttle | **51%** | 33% | **48%** | 31% | places, direction |
 | Mixed, two years | 51% | 50% | 47% | 46% | places (same season) |
+
+The grid memory, on worlds built to test it: on herds walking loops one way
+round, stopping and starting at random (`circuits`), it is chosen with places
+and direction and the forecast scores 1.30 bits per forecast over distance
+alone (the best version without the memory: 1.05); on herds migrating out in
+October and back in June along the same corridors (`seasonal_routes`) it is
+chosen in its seasonal form, though there the usage map of the same weeks of
+earlier years already says most of it. On herds wandering at random or
+keeping to home ranges it lowers the score, and the backtest leaves it out.
 
 `docs/MOVEMENT_REVIEW.md` is the methodology review behind this design: what
 the earlier method got wrong (its backtest scored a forecast the page never

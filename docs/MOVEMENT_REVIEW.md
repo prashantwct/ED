@@ -192,6 +192,41 @@ These figures are not comparable with the earlier README table. That table
 scored moves with their gap known, which this review found to be a different,
 easier forecast.
 
+## Added since: grid memory with seasons
+
+Every move is remembered as from one 2 km grid (on the national lattice, so a
+grid keeps its name whatever register is loaded) to the next (`Routes`). To
+forecast a group, the moves that began in its grid, or within about 1.5 km of
+its position, are weighted:
+- recent ones more (half the weight after two years),
+- moves whose length in days matches the forecast's more,
+- with the season on, moves made within about 30 days of today's date in any
+  year more.
+
+A move counts only from the day its second report came in, so the backtest
+never remembers a move it could not have known about.
+
+The first version multiplied the memory into the forecast, as the other parts
+are. That lost to the forecast without it: remembered destinations already say
+how far groups go, so multiplying counted distance twice. The memory is now
+mixed in as a forecast of its own, with weight n / (n + k) for n remembered
+moves. The backtest chooses k (2 or 8), the season on or off, or no memory at
+all, as it chooses every other part.
+
+| World | Best without memory | With memory | Chosen |
+|---|---|---|---|
+| Loops walked one way round, at random times | +1.05 bits | **+1.30 bits** | memory, trusted from two moves |
+| Out in October, back in June, same corridors | +0.35 | +0.36 | memory, seasonal |
+| Wandering at random | 0 | -0.02 | no memory |
+| Home ranges | +0.17 | +0.10 | no memory |
+
+(Bits per forecast over distance alone, next 24 hours.) The memory earns its
+place where direction depends on the place, not on the date. Where it depends
+on the date, the usage map of the same weeks of earlier years already says most
+of it. The page shows each group's grid, its three likeliest next grids with
+their chance, and what the memory holds for its grid, whether or not the
+forecast uses it.
+
 ## Still open
 
 - **Fitted weights, and habitat.** The parts are switched on or off from a
