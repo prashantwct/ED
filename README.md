@@ -548,48 +548,62 @@ viewport changes, so that follows the view the filters produce rather than live
 pinch-zoom; the sidebar can pin a level instead.
 
 **Next moves.** A forecast from the register alone, with its own track record
-beside it (`core/movement.py`). Reports are first chained into *groups* the way
-radar tracks aircraft: a report joins a track if it is within reach for the
-time elapsed (up to 15 km a day) and its composition fits -- a party of bulls
-does not become a herd with calves overnight. A group is a plausible movement
-unit, not an identified animal, and it is lost after four days without a
-report. The forecast is then built from parts, each learned from the register:
+beside it (`core/movement.py`). Reports are first chained into *groups*, day by
+day. Each day's reports are grouped into sightings (several people reporting
+one herd), then matched to the groups seen in the days before all at once, the
+cheapest set of links. A link needs reach for the time elapsed (up to 15 km a
+day) and a compatible count; the breakdown is compared only where both reports
+recorded it, so a herd counted with its calves one day and as a bare total the
+next stays one herd. A group is a plausible movement unit, not an identified
+animal, and it is lost after four days without a report. The forecast is then
+built from parts, each learned from the register:
 
 * *How far*: every move between a group's reports a day or more apart, per
-  class once lone bulls, bull parties and family herds each have enough moves.
-* *Which way*: the direction of each move relative to the one before it. Steady
-  travel shows as turns near zero; a group shuttling between a day refuge and
-  the fields it raids shows as turns near a half circle, and the forecast then
-  points back the way it came.
+  class once lone bulls, bull parties and family herds each have enough moves,
+  and how distance grows with days: about √days for groups wandering at random,
+  nearly in proportion for groups holding their heading.
+* *Which way*: the turn from one move to the next, as a smoothed density that
+  can hold both "keeps going" and "turns back", and each group's own recent turns
+  deciding which it is likely to do -- a group shuttling between a day refuge and
+  the fields it raids is expected to come back.
 * *Where*: places with earlier reports, recent ones counting more, and, once the
   register holds an earlier year, the same weeks of that year -- raiding follows
   the harvest.
 * *Its own range*: the group's own earlier reports.
 
-The forecast for a group is the reach centred on its last report times
-whichever of the other parts help. Each group shows its heading, its single
-likeliest spot ("3 km NE, by Khati") and its *likely* and *possible* zones,
-with the villages inside listed to warn.
+The forecast for a group covers every day of the horizon: "the next 3 days" is
+where it may be on any of them. Each group shows its heading, its likeliest
+3 km block ("3 km NE, by Khati") and its *likely* and *possible* zones, with
+the villages inside listed to warn.
 
-**Every part has to earn its place on each register.** Each month is forecast
-from the months before it only and scored against where the group was reported
-next. Which parts to switch on is chosen the same way -- the combination with
-the best log score on the earlier months -- and so is the size of the zones:
-they are calibrated (a split-conformal quantile) so that the likely zone
-catches about half of next reports and the possible zone about four in five,
-whatever the movement. The comparison throughout is a circle around the last
-report -- "they stay near where they were" -- at the same size, and sized from
-past months to catch as many. On synthetic movement, one ingredient at a time
-(`tests/movement_fixtures.py`), the next-day likely zone against a circle of
-the same size:
+**Every part has to earn its place on each register.** The backtest makes the
+forecasts the page would have made: each morning, for every group seen in the
+three days before, from what was known that morning, scored against the
+group's next report within the horizon. Which parts to switch on is chosen the
+same way -- the combination with the best log score on the earlier months --
+and so is the size of the zones: they are calibrated (a split-conformal
+quantile on the most recent 300 forecasts) so that the likely zone catches
+about half of next reports and the possible zone about four in five, whatever
+the movement. The comparison throughout is a circle around the last report --
+"they stay near where they were" -- at the same size. Alongside, each morning's
+whole map is scored against every report of the days after, including groups
+nobody had seen, which does not depend on the tracker at all. On synthetic
+movement (`tests/movement_fixtures.py`), next 24 hours:
 
-| Movement | Likely zone | Same-size circle | Parts chosen |
-|---|---|---|---|
-| Wandering at random | 49% | 52% | none: reported as no better |
-| Steady travel | **51%** | 40% | direction of travel |
-| Keeping to a home range | **51%** | 46% | places used before |
-| Refuge to field and back | **52%** | 4% | direction, places, own range |
-| Mixed, two years | **51%** | 49% | places (same season), direction |
+| Movement | Likely zone | Same-size circle | Whole map | Circles | Parts chosen |
+|---|---|---|---|---|---|
+| Wandering at random | 50% | 50% | 47% | 46% | none: reported as no better |
+| Steady travel | **50%** | 36% | **46%** | 33% | direction of travel |
+| Keeping to a home range | **52%** | 47% | **48%** | 43% | places used before |
+| Refuge to field and back | **52%** | 29% | **51%** | 28% | direction, places, own range |
+| Half travel, half shuttle | **51%** | 33% | **48%** | 31% | places, direction |
+| Mixed, two years | 51% | 50% | 47% | 46% | places (same season) |
+
+`docs/MOVEMENT_REVIEW.md` is the methodology review behind this design: what
+the earlier method got wrong (its backtest scored a forecast the page never
+made, so "catches about half" was 65-69% for three days; √days made travelling
+groups' zones too small; unrecorded composition split tracks; one-at-a-time
+matching merged herds), the evidence for each, and what is still open.
 
 The page states the figures for the register loaded, and when the forecast
 does not beat staying put it says so and asks for the zone to be read as an
@@ -604,8 +618,8 @@ results with a fingerprint of the reports they depend on, so new entries
 retrain only the months they fall in and an edit retrains from its own month;
 the rest carry over. The result is identical to training from scratch (a test
 holds it to that, including when reports from a new area widen the grid), at a
-fraction of the time: on the 1,580-report test register, a week of new entries
-retrains in 0.2 s against 1.4 s from scratch. Trainings hold scores and settings only, no report, place
+fraction of the time: on a 2,509-report synthetic register, a week of new
+entries retrains in 0.8 s against 8 s from scratch. Trainings hold scores and settings only, no report, place
 or person, and the server keeps the last few so the next session that loads the
 same register, or the same register plus a day, starts from them.
 
@@ -1004,6 +1018,7 @@ tools/               Data preparation and the scraper, not imported by the app
 tests/replica.py     A local stand-in for the Forest Alerts admin site
 tests/               Unit tests, run with `pytest -q`
 docs/UX_STRATEGY.md  UI/UX diagnosis, benchmarks and the phased redesign plan
+docs/MOVEMENT_REVIEW.md  Methodology review of the movement forecast: findings, evidence, fixes
 ```
 
 All tunables live in `core/config.py`. They encode domain judgement, not fact,

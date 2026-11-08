@@ -179,9 +179,12 @@ def test_places_are_used_when_groups_keep_to_a_range(records):
 
 
 def test_shuttling_groups_are_forecast_far_better_than_staying_put(records):
+    """Seen yesterday, a shuttling group is somewhere else today; seen the
+    day before, it is back. The page forecasts both, and so does the test,
+    so staying put is right a fair share of the time -- but far less often."""
     record = records["shuttling"]
     assert record.config.heading
-    assert record.forecast_rate > 3 * record.stay_rate
+    assert record.forecast_rate > 1.6 * record.stay_rate
     # To catch as many next reports, a circle had to be several times larger.
     assert record.circle_area_km2 > 2.5 * record.mean_area_km2
 
@@ -240,6 +243,129 @@ def test_the_map_cells_carry_a_chance_between_zero_and_one(ranging):
     assert cells["Likely"].any()
 
 
+# ---------------------------------------------------------------------------
+# What the methodology review fixed (docs/MOVEMENT_REVIEW.md)
+# ---------------------------------------------------------------------------
+def _report(day, x_km, y_km=0.0, total=1, males=None, females=0, calves=0, hour=8):
+    km_lon = KM_PER_DEG * np.cos(np.radians(23.3))
+    return {"Date": START + pd.Timedelta(days=day, hours=hour),
+            "Latitude": 23.3 + y_km / KM_PER_DEG, "Longitude": 81.0 + x_km / km_lon,
+            "Total Count": total, "Male Count": total if males is None else males,
+            "Female Count": females, "Calf Count": calves}
+
+
+def test_a_herd_reported_without_its_breakdown_stays_one_track():
+    """Field reports often give only a total. That is not a different kind
+    of group: the herd counted with its calves one day and as a bare 12 the
+    next is still one herd."""
+    rows = []
+    for day in range(10):
+        if day % 2:
+            rows.append(_report(day, 2.0 * day, total=12, males=0))
+        else:
+            rows.append(_report(day, 2.0 * day, total=12, males=2, females=7, calves=3))
+    units = mv.assign_units(pd.DataFrame(rows))
+    assert units.nunique() == 1
+
+
+def test_a_days_reports_are_matched_to_tracks_all_at_once():
+    """Two lone bulls 8 km apart. Next morning the report filed first is
+    a hair closer to the wrong bull; taken one at a time it would claim
+    that bull's track and push the other report onto the wrong one."""
+    df = pd.DataFrame([_report(0, 0.0), _report(0, 8.0),
+                       _report(1, 3.9, hour=6),    # bull B, 4.1 km from where it was
+                       _report(1, 0.5, hour=7)])   # bull A, barely moved
+    units = mv.assign_units(df)
+    assert units[3] == units[0]
+    assert units[2] == units[1]
+
+
+def test_two_people_reporting_one_herd_do_not_split_it_or_steal_a_track():
+    df = pd.DataFrame([_report(0, 0.0, total=12), _report(0, 6.0, total=12),
+                       _report(1, 0.3, total=12, hour=6), _report(1, 0.8, total=12, hour=9),
+                       _report(1, 6.2, total=12, hour=10)])
+    units = mv.assign_units(df)
+    assert units[2] == units[3] == units[0]
+    assert units[4] == units[1]
+
+
+def test_distance_grows_with_time_as_the_register_shows(wandering, travelling):
+    """A random walk goes twice as far in four days as in one; a group
+    holding its heading, nearly four times. Assuming the first for both
+    made multi-day zones too small for travelling groups."""
+    walk = mv.scaling(mv.steps(wandering, mv.assign_units(wandering)))
+    travel = mv.scaling(mv.steps(travelling, mv.assign_units(travelling)))
+    assert walk < 0.7
+    assert travel > 0.9
+
+
+def test_the_next_three_days_cover_each_of_the_three():
+    """A three-day forecast for a group seen today covers tomorrow too, not
+    only the third day."""
+    situation = mv.Situation(np.array([0.0, 0.0]), 3.0, "lone bull", span=3)
+    assert situation.leads() == [1.0, 2.0, 3.0]
+    assert mv.lead(since=1, horizon_days=3) == (4, 3)
+    assert mv.lead(since=0, horizon_days=1) == (1, 1)
+    grid = mv.Grid(23.5, -50.0, -50.0, 100, 100)
+    model = mv.StepModel({"all": np.full(100, 4.0)}, {}, 1.0)
+    near_start = []
+    for span in (1, 3):
+        local, parts = mv._components(mv.Situation(np.array([0.5, 0.5]), 3.0, "lone bull",
+                                                   span=span), grid, model, {})
+        p = mv._combine(parts, mv.BASELINE)
+        near_start.append(p[local.distance <= 6.0].sum())
+    assert near_start[1] > near_start[0] + 0.2
+
+
+def test_each_morning_a_group_was_shown_is_a_forecast_to_score():
+    """Seen on day 0, next reported on day 2: with a one-day horizon the
+    page forecast it on the morning of day 1; with three days, on days 0
+    and 1. The old backtest scored only the move, with its gap known."""
+    steps = pd.DataFrame({"Unit": [0], "From Date": [START], "To Date": [START + pd.Timedelta(days=2)],
+                          "Gap (days)": [2]})
+    one = mv._cases(steps, 1, START, START + pd.Timedelta(days=30))
+    assert list(one["Since"]) == [1] and list(one["Days"]) == [2] and list(one["Span"]) == [1]
+    three = mv._cases(steps, 3, START, START + pd.Timedelta(days=30))
+    assert list(three["Since"]) == [0, 1]
+    assert list(three["Days"]) == [3, 4] and list(three["Span"]) == [3, 3]
+
+
+def test_a_group_that_shuttles_is_expected_to_turn_back():
+    """Some groups keep going, others go back the way they came. One mean
+    turn for the register averages the two into no direction at all; the
+    turn density keeps both, and a group's own turns pick between them."""
+    turns = np.r_[np.random.default_rng(0).normal(0, 0.3, 200),
+                  np.random.default_rng(1).normal(np.pi, 0.3, 200)]
+    model = mv.StepModel({"all": np.full(100, 3.0)}, {1: (0.0, 0.0)},
+                         turn_samples={1: np.mod(turns, 2 * np.pi)})
+    centre = (np.arange(mv.TURN_BINS) + 0.5) * 2 * np.pi / mv.TURN_BINS
+    both = model.turn_density(1)
+    assert both[np.argmin(np.abs(centre - np.pi))] > 2 * both[mv.TURN_BINS // 4]
+    shuttler = model.turn_density(1, own=np.full(6, np.pi))
+    traveller = model.turn_density(1, own=np.zeros(6))
+    assert abs(centre[np.argmax(shuttler)] - np.pi) < 0.3
+    assert min(centre[np.argmax(traveller)], 2 * np.pi - centre[np.argmax(traveller)]) < 0.3
+
+
+def test_zones_are_calibrated_on_recent_forecasts():
+    """Early forecasts, made from a few dozen moves, needed more of the
+    forecast to catch the group; they must not keep later zones too wide."""
+    early = [0.95] * 500
+    recent = [0.4] * mv.CALIBRATION_WINDOW
+    assert mv.calibrated_mass(early + recent, 0.5) == pytest.approx(0.4)
+
+
+def test_the_landscape_score_counts_every_report_not_only_linked_ones(records):
+    for record in records.values():
+        assert record.field_reports >= record.tested
+        assert 0 <= record.field_rate <= 1
+
+
+def test_on_the_landscape_too_travelling_groups_beat_staying_put(records):
+    record = records["travelling"]
+    assert record.field_rate > record.field_circle_rate + 0.05
+
+
 def test_compass_points():
     assert mv.compass(0.0) == "E"
     assert mv.compass(np.pi / 2) == "N"
@@ -259,6 +385,8 @@ def register():
 def _same(a: mv.TrackRecord, b: mv.TrackRecord) -> None:
     assert (a.tested, a.forecast_hits, a.stay_hits, a.discordant, a.circle_hits) == \
         (b.tested, b.forecast_hits, b.stay_hits, b.discordant, b.circle_hits)
+    assert (a.field_reports, a.field_hits, a.field_circle_hits) == \
+        (b.field_reports, b.field_hits, b.field_circle_hits)
     assert a.config == b.config
     assert a.masses == pytest.approx(b.masses)
     assert a.mean_area_km2 == pytest.approx(b.mean_area_km2)
