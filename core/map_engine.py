@@ -450,6 +450,9 @@ def render_village_map(
 # Next moves: the likely and possible zones, each group's recent trail, its
 # last report, and the villages the zones reach.
 ZONE_COLORS = {"Likely": (194, 87, 12), "Possible": (242, 201, 76)}
+# Next grids are outlined when at least this likely.
+NEXT_GRID_COLOR = (44, 82, 160)
+NEXT_GRID_MIN_CHANCE = 0.10
 GROUP_COLOR = (31, 95, 63)
 
 
@@ -463,8 +466,14 @@ def render_forecast_map(
     style_name: str = DEFAULT_BASEMAP,
     show_boundaries: bool = True,
     boundary_level: Optional[str] = None,
+    next_grids: Optional[pd.DataFrame] = None,
+    grid_km: float = 2.0,
 ) -> None:
-    """Where each group recently seen may be next."""
+    """Where each group recently seen may be next.
+
+    ``next_grids`` (Latitude and Longitude of each grid's centre, Chance,
+    Group, Grid) are outlined, each labelled with its chance.
+    """
     if groups is None or groups.empty:
         st.info("No group was reported recently enough to forecast.")
         return
@@ -492,6 +501,32 @@ def render_forecast_map(
             get_polygon="polygon", get_fill_color="[_r, _g, _b, _alpha]",
             stroked=False, filled=True, pickable=False,
         ))
+
+    if next_grids is not None and not next_grids.empty:
+        squares = next_grids[next_grids["Chance"] >= NEXT_GRID_MIN_CHANCE].copy()
+        if len(squares):
+            squares["polygon"] = _squares(squares, grid_km)
+            squares["_label"] = [f"{c:.0%}" for c in squares["Chance"]]
+            squares = squares.join(pd.DataFrame([
+                _slots(f"Grid {row['Grid']}", NEXT_GRID_COLOR,
+                       [("Group", row.get("Group")), ("Chance", f"{row['Chance']:.0%}"),
+                        ("Near", row.get("Near") or None)],
+                       subtitle="Likely next grid")
+                for row in squares.to_dict("records")
+            ], index=squares.index))
+            layers.append(pdk.Layer(
+                "PolygonLayer",
+                data=squares[["polygon", *TOOLTIP_FIELDS]],
+                get_polygon="polygon", get_fill_color=[*NEXT_GRID_COLOR, 25],
+                get_line_color=[*NEXT_GRID_COLOR, 230], line_width_min_pixels=2,
+                stroked=True, filled=True, pickable=True, auto_highlight=True,
+            ))
+            layers.append(pdk.Layer(
+                "TextLayer", data=squares[["Longitude", "Latitude", "_label"]],
+                get_position="[Longitude, Latitude]", get_text="_label",
+                get_size=12, get_color=[255, 255, 255, 255], font_settings={"sdf": True},
+                outline_width=3, outline_color=[*NEXT_GRID_COLOR, 255], font_weight=700,
+            ))
 
     if trails is not None and not trails.empty:
         paths = [

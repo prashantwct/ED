@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from core import movement as mv
-from movement_fixtures import KM_PER_DEG, START, simulate
+from movement_fixtures import KM_PER_DEG, START, circuits, simulate
 
 
 @pytest.fixture(scope="module")
@@ -364,6 +364,81 @@ def test_the_landscape_score_counts_every_report_not_only_linked_ones(records):
 def test_on_the_landscape_too_travelling_groups_beat_staying_put(records):
     record = records["travelling"]
     assert record.field_rate > record.field_circle_rate + 0.05
+
+
+# ---------------------------------------------------------------------------
+# Grid memory: where groups went next from each grid
+# ---------------------------------------------------------------------------
+def _moves(rows):
+    """A step table from (from xy, to xy, from day, to day) tuples."""
+    km_lon = KM_PER_DEG * np.cos(np.radians(23.3))
+    out = []
+    for (fx, fy), (tx, ty), a, b in rows:
+        out.append({"From Latitude": 23.3 + fy / KM_PER_DEG, "From Longitude": 81.0 + fx / km_lon,
+                    "To Latitude": 23.3 + ty / KM_PER_DEG, "To Longitude": 81.0 + tx / km_lon,
+                    "From Date": START + pd.Timedelta(days=a),
+                    "To Date": START + pd.Timedelta(days=b), "Gap (days)": b - a})
+    return pd.DataFrame(out)
+
+
+def _grid():
+    return mv.Grid.around(pd.DataFrame({"Latitude": [23.0, 23.6], "Longitude": [80.7, 81.3]}))
+
+
+def test_a_move_is_remembered_only_once_its_second_report_is_in():
+    grid = _grid()
+    routes = mv.Routes.from_steps(_moves([((0, 0), (3, 0), 10, 11)]), grid)
+    here = grid.project(23.3, 81.0)[0]
+    before, _ = routes.weights(here, START + pd.Timedelta(days=10), [1.0], False)
+    after, _ = routes.weights(here, START + pd.Timedelta(days=11), [1.0], False)
+    assert len(before) == 0 and len(after) == 1
+
+
+def test_moves_made_at_this_time_of_year_count_most():
+    """From the same place, groups went east in October and west in June.
+    In October, the seasonal memory points east."""
+    grid = _grid()
+    moves = []
+    for year in (0, 365):
+        for d in range(5):
+            moves.append(((0, 0), (4, 0), 280 + year + d, 281 + year + d))   # October: east
+            moves.append(((0, 0), (-4, 0), 160 + year + d, 161 + year + d))  # June: west
+    routes = mv.Routes.from_steps(_moves(moves), grid)
+    here = grid.project(23.3, 81.0)[0]
+    october = START.replace(month=10, day=12) + pd.DateOffset(years=2)
+    near, weight = routes.weights(here, october, [1.0], seasonal=True)
+    east = (routes.dest[near][:, 0] > here[0])
+    assert weight[east].sum() > 10 * weight[~east].sum()
+    near, weight = routes.weights(here, october, [1.0], seasonal=False)
+    east = (routes.dest[near][:, 0] > here[0])
+    assert weight[east].sum() == pytest.approx(weight[~east].sum(), rel=0.3)
+
+
+def test_the_grid_memory_earns_its_place_where_groups_keep_to_routes(records):
+    """Herds walking loops one way round: which way they go depends on where
+    they are. The backtest keeps the memory there, and leaves it out for
+    groups wandering at random."""
+    looping = mv.backtest(circuits(), 1)
+    assert looping.config.routes > 0
+    assert looping.beats_staying_put
+    assert records["wandering"].config.routes == 0
+
+
+def test_each_group_gets_its_grid_its_next_grids_and_its_grid_memory(travelling, records):
+    out = mv.next_moves(travelling, travelling["Date"].max(), record=records["travelling"])
+    groups, grids = out["groups"], out["next_grids"]
+    assert {"Grid", "Next Grids", "Moves From Grid"} <= set(groups.columns)
+    assert set(grids["Group"]) == set(groups["Group"])
+    per_group = grids.groupby("Group")["Chance"]
+    assert (per_group.sum() <= 1.0 + 1e-9).all()
+    assert (per_group.apply(lambda c: c.is_monotonic_decreasing)).all()
+    memory = out["grid_memory"]
+    if len(memory):
+        for row in memory.itertuples():
+            assert row._2 == groups.set_index("Group").loc[row.Group, "Grid"]
+    moves = out["grid_moves"]
+    seasons = list(mv.SEASON_MONTHS)
+    assert (moves[seasons].sum(axis=1) == moves["Moves"]).all()
 
 
 def test_compass_points():

@@ -352,6 +352,22 @@ OWN_MAX_REPORTS = 60
 # same calendar date, at least ``SEASON_MIN_AGE_DAYS`` old.
 SEASON_HALF_WIDTH_DAYS = 30
 SEASON_MIN_AGE_DAYS = 300
+# The detection grid: 2 km squares on the same national lattice, the unit
+# the route memory is kept in and the page names next grids by.
+GRID_KM = 2.0
+# Route memory (``Routes``): moves that began this close to a group's
+# position count as moves from the same place (Gaussian sd), each one's
+# destination is spread this much, older moves count for less (half-life),
+# and with the season on, moves made near this date of any year count most.
+ROUTE_ORIGIN_KM = 1.5
+ROUTE_DEST_KM = 1.0
+ROUTE_HALF_LIFE_DAYS = 730.0
+ROUTE_SEASON_DAYS = 30.0
+# Weighted moves from a place needed before its memory says anything, and
+# the trust levels the backtest chooses between: the memory gets weight
+# n / (n + trust) for n remembered moves.
+ROUTE_MIN_WEIGHT = 1.0
+ROUTE_TRUST = (2.0, 8.0)
 # Steps used to learn how far groups move; fewer than this and a typical
 # figure for elephants in central India stands in (3.8 km/day median).
 MIN_STEPS = 30
@@ -375,6 +391,8 @@ DEFAULT_KM_PER_DAY = 3.8
 # Distance grows with time as days ** alpha, alpha learned between these
 # (``scaling``), from gaps with at least this many moves.
 DIFFUSIVE, BALLISTIC = 0.5, 1.0
+# Share of moves the forecast's window must reach.
+REACH_MASS = 0.999
 MIN_GAP_STEPS = 15
 _MIN_MEDIAN_KM = 0.05
 # Groups seen this recently are forecast; older ones may be anywhere.
@@ -661,6 +679,13 @@ def radial_profile(per_day: np.ndarray, days: float, cell_km: float = CELL_KM,
         scale = DEFAULT_KM_PER_DAY * days ** alpha / 0.6745
         r = np.linspace(0, 4 * scale, 400)
         radial = np.exp(-0.5 * (r / scale) ** 2)
+    # The forecast's window stops where the reach holds REACH_MASS of the
+    # moves: the longest move ever seen plus a margin made windows of
+    # thousands of cells that held almost nothing.
+    held = np.cumsum(radial)
+    cut = min(int(np.searchsorted(held / held[-1], REACH_MASS)) + 1, len(r) - 1)
+    cut = max(cut, int(np.searchsorted(r, cell_km * 2)) + 1)
+    r, radial = r[:cut + 1], radial[:cut + 1]
     # Per unit area: a ring at distance r has area 2*pi*r*dr.
     return r, radial / (2 * np.pi * np.maximum(r, cell_km / 2))
 
@@ -786,6 +811,11 @@ class Config:
     season: bool = False     # the usage map also counts the same weeks of earlier years
     heading: bool = False    # direction relative to the group's last move
     own: bool = False        # the group's own earlier reports
+    # Where groups went next from the same grid, mixed in with weight
+    # n / (n + routes) for n remembered moves (weighted): 0 leaves it out; the
+    # smaller the number, the fewer moves it takes to trust the memory.
+    routes: float = 0.0
+    route_season: bool = False  # ... weighted to moves made at this time of year
 
     def parts(self) -> List[str]:
         out = []
@@ -796,6 +826,9 @@ class Config:
             out.append("the group's direction of travel")
         if self.own:
             out.append("the group's own range")
+        if self.routes:
+            out.append("where groups went next from the same grid"
+                       + (" at this time of year" if self.route_season else ""))
         return out
 
 
@@ -810,7 +843,11 @@ def configs(with_season: bool) -> List[Config]:
         for season in ((False, True) if places and with_season else (False,)):
             for heading in (False, True):
                 for own in (False, True):
-                    out.append(Config(places, season, heading, own))
+                    for routes in (0.0, *ROUTE_TRUST):
+                        for route_season in ((False, True) if routes and with_season
+                                             else (False,)):
+                            out.append(Config(places, season, heading, own, routes,
+                                              route_season))
     return out
 
 
@@ -831,6 +868,7 @@ class Situation:
     own_xy: Optional[np.ndarray] = None   # its earlier reports, km plane
     span: int = 1
     own_turns: Optional[np.ndarray] = None  # its earlier one-day turns
+    as_of: Optional[pd.Timestamp] = None    # the morning the forecast is made
 
     def leads(self) -> List[float]:
         last = float(self.days)
@@ -838,12 +876,21 @@ class Situation:
         return [float(d) for d in np.arange(first, last + 0.5)]
 
 
-def _components(s: Situation, grid: Grid, model: StepModel, priors: Dict[str, np.ndarray]):
+def _components(s: Situation, grid: Grid, model: StepModel, priors: Dict[str, np.ndarray],
+                routes: Optional["Routes"] = None, only: Optional[Config] = None):
     """Each part of the forecast as a log-density over the cells within reach.
 
     Reach and heading are one per day of the forecast's span (lists);
-    places and the group's own range are one each.
+    places, the group's own range and the route memory are one each.
+    ``only`` builds just the parts that configuration uses.
     """
+    if only is not None:
+        if not only.places:
+            priors = {}
+        elif only.season and "season" in priors:
+            priors = {"season": priors["season"]}
+        else:
+            priors = {"places": priors["places"]}
     leads = s.leads()
     profiles = [model.profile(s.social, d, grid.cell_km) for d in leads]
     local = grid.near(s.xy, max(float(r[-1]) for r, _ in profiles))
@@ -851,7 +898,8 @@ def _components(s: Situation, grid: Grid, model: StepModel, priors: Dict[str, np
                        for r, density in profiles]}
     for name, prior in priors.items():
         parts[name] = np.log(grid.at(prior, local))
-    if s.prev_angle is not None and np.isfinite(s.prev_angle):
+    if s.prev_angle is not None and np.isfinite(s.prev_angle) and \
+            (only is None or only.heading):
         offset = local.centres - s.xy
         turn = np.mod(np.arctan2(offset[:, 1], offset[:, 0]) - s.prev_angle, 2 * np.pi)
         bins = np.minimum((turn / (2 * np.pi) * TURN_BINS).astype(int), TURN_BINS - 1)
@@ -869,31 +917,181 @@ def _components(s: Situation, grid: Grid, model: StepModel, priors: Dict[str, np
             headings.append(heading)
         if headings:
             parts["heading"] = headings
-    if s.own_xy is not None and len(s.own_xy):
+    if s.own_xy is not None and len(s.own_xy) and (only is None or only.own):
         own = _own_range(local, s.own_xy, grid.cell_km)
         own = own + USAGE_FLOOR * (own.mean() if own.any() else 1.0)
         parts["own"] = np.log(own)
+    if routes is not None and s.as_of is not None and (only is None or only.routes):
+        wanted = (("routes", False), ("routes_season", True)) if only is None else \
+            ((("routes_season", True),) if only.route_season else (("routes", False),))
+        for name, seasonal in wanted:
+            memory = routes.prior(local, s.xy, s.as_of, leads, seasonal, grid.cell_km)
+            if memory is not None:
+                parts[name], parts[name + "_n"] = memory
     return local, parts
 
 
 def _own_range(local: Local, own_xy: np.ndarray, cell_km: float) -> np.ndarray:
-    """A group's earlier reports, each spread over ``OWN_BANDWIDTH_KM``, on
-    the cells within reach: counted on a raster of the window and blurred,
-    rather than a distance from every cell to every report."""
+    """A group's earlier reports, each spread over ``OWN_BANDWIDTH_KM``."""
+    return _spread(local, own_xy, cell_km, OWN_BANDWIDTH_KM)
+
+
+def _spread(local: Local, points: np.ndarray, cell_km: float, bandwidth_km: float,
+            weights: Optional[np.ndarray] = None) -> np.ndarray:
+    """Weighted points, each spread over ``bandwidth_km``, on the cells within
+    reach: counted on a raster of the window and blurred, rather than a
+    distance from every cell to every point."""
     from scipy.ndimage import gaussian_filter
 
     ix = local.keys % _KEY_STRIDE
     iy = local.keys // _KEY_STRIDE
     x0, y0 = int(ix.min()), int(iy.min())
     image = np.zeros((int(iy.max()) - y0 + 1, int(ix.max()) - x0 + 1))
-    px = np.floor(own_xy[:, 0] / cell_km + 1e-9).astype(np.int64) - x0
-    py = np.floor(own_xy[:, 1] / cell_km + 1e-9).astype(np.int64) - y0
+    px = np.floor(points[:, 0] / cell_km + 1e-9).astype(np.int64) - x0
+    py = np.floor(points[:, 1] / cell_km + 1e-9).astype(np.int64) - y0
     inside = (px >= 0) & (px < image.shape[1]) & (py >= 0) & (py < image.shape[0])
     if not inside.any():
         return np.zeros(len(local.keys))
-    np.add.at(image, (py[inside], px[inside]), 1.0)
-    image = gaussian_filter(image, sigma=OWN_BANDWIDTH_KM / cell_km, mode="constant")
+    w = np.ones(len(points)) if weights is None else np.asarray(weights, dtype=float)
+    np.add.at(image, (py[inside], px[inside]), w[inside])
+    image = gaussian_filter(image, sigma=bandwidth_km / cell_km, mode="constant")
     return image[iy - y0, ix - x0]
+
+
+# ---------------------------------------------------------------------------
+# Route memory: which grids groups went to from each grid
+# ---------------------------------------------------------------------------
+def grid_key(xy: np.ndarray) -> np.ndarray:
+    """The detection grid (``GRID_KM`` squares on the national lattice) of each point."""
+    xy = np.atleast_2d(xy)
+    ix = np.floor(xy[:, 0] / GRID_KM + 1e-9).astype(np.int64)
+    iy = np.floor(xy[:, 1] / GRID_KM + 1e-9).astype(np.int64)
+    return iy * _KEY_STRIDE + ix
+
+
+def grid_label(key: int) -> str:
+    """A grid's name: its column and row on the national lattice."""
+    return f"{int(key) % _KEY_STRIDE}-{int(key) // _KEY_STRIDE}"
+
+
+def grid_centre(key: int) -> np.ndarray:
+    return np.array([(int(key) % _KEY_STRIDE + 0.5) * GRID_KM,
+                     (int(key) // _KEY_STRIDE + 0.5) * GRID_KM])
+
+
+def _day_gap(a: np.ndarray, b: float) -> np.ndarray:
+    """Days between days of the year, round the calendar."""
+    gap = np.abs(np.asarray(a, dtype=float) - b)
+    return np.minimum(gap, 365.25 - gap)
+
+
+@dataclass
+class Routes:
+    """Every move a group made, from the grid it was in to the one it was
+    next reported in, kept so a forecast can ask: from here, where did
+    groups go, and where did they go at this time of year?
+
+    Each remembered move is weighted by how close its start is to the
+    group's position, how long ago it was, how well its length in days
+    matches the forecast's, and, with the season on, how near its date is
+    to today's in any year. A move only counts once its second report is in
+    the register, so a forecast never remembers a move it could not have
+    known about.
+    """
+
+    origin: np.ndarray       # km plane
+    dest: np.ndarray
+    start: np.ndarray        # datetime64[D] of the first report
+    known: np.ndarray        # datetime64[D] of the second: known from that day
+    gap: np.ndarray          # days
+    doy: np.ndarray          # day of the year the move began
+    _tree: object = field(default=None, repr=False)
+
+    @classmethod
+    def from_steps(cls, step_table: pd.DataFrame, grid: "Grid") -> "Routes":
+        from scipy.spatial import cKDTree
+
+        if step_table.empty:
+            empty = np.empty((0, 2))
+            return cls(empty, empty, np.array([], dtype="datetime64[D]"),
+                       np.array([], dtype="datetime64[D]"), np.array([]), np.array([]))
+        origin = grid.project(step_table["From Latitude"].values,
+                              step_table["From Longitude"].values)
+        dest = grid.project(step_table["To Latitude"].values, step_table["To Longitude"].values)
+        start = pd.to_datetime(step_table["From Date"])
+        return cls(origin, dest, start.values.astype("datetime64[D]"),
+                   pd.to_datetime(step_table["To Date"]).values.astype("datetime64[D]"),
+                   step_table["Gap (days)"].to_numpy(dtype=float),
+                   start.dt.dayofyear.to_numpy(dtype=float), cKDTree(origin))
+
+    def __len__(self) -> int:
+        return len(self.gap)
+
+    def weights(self, xy: np.ndarray, as_of: pd.Timestamp, leads: List[float],
+                seasonal: bool, radius_km: float = 3 * ROUTE_ORIGIN_KM
+                ) -> Tuple[np.ndarray, np.ndarray]:
+        """The moves remembered from near ``xy`` on the morning of ``as_of``, and
+        their weights."""
+        if not len(self):
+            return np.array([], dtype=int), np.array([])
+        near = np.asarray(self._tree.query_ball_point(xy, radius_km), dtype=int)
+        if not len(near):
+            return near, np.array([])
+        today = np.datetime64(pd.Timestamp(as_of).normalize(), "D")
+        near = near[self.known[near] <= today]
+        if not len(near):
+            return near, np.array([])
+        distance = np.hypot(*(self.origin[near] - xy).T)
+        weight = np.exp(-0.5 * (distance / ROUTE_ORIGIN_KM) ** 2)
+        age = (today - self.known[near]).astype(float)
+        weight *= 0.5 ** (age / ROUTE_HALF_LIFE_DAYS)
+        # A move of 2 days says less about tomorrow than a move of 1.
+        off = np.abs(self.gap[near] - np.clip(self.gap[near], min(leads), max(leads)))
+        weight *= 0.5 ** off
+        if seasonal:
+            gap = _day_gap(self.doy[near], pd.Timestamp(as_of).dayofyear)
+            weight *= np.exp(-0.5 * (gap / ROUTE_SEASON_DAYS) ** 2)
+        return near, weight
+
+    def prior(self, local: Local, xy: np.ndarray, as_of: pd.Timestamp, leads: List[float],
+              seasonal: bool, cell_km: float) -> Optional[Tuple[np.ndarray, float]]:
+        """Where the remembered moves from here went, as a probability over the
+        cells within reach, and how many moves (weighted) it rests on; None
+        while too few are remembered from here.
+
+        It is a forecast of its own -- remembered destinations already say
+        how far groups go -- so it is mixed with the rest, not multiplied
+        into it: multiplying counted the distance twice.
+        """
+        near, weight = self.weights(xy, as_of, leads, seasonal)
+        if weight.sum() < ROUTE_MIN_WEIGHT:
+            return None
+        density = _spread(local, self.dest[near], cell_km, ROUTE_DEST_KM, weight)
+        if density.sum() <= 0:
+            return None
+        return density / density.sum(), float(weight.sum())
+
+    def from_grid(self, key: int, as_of: pd.Timestamp, season_days: float = ROUTE_SEASON_DAYS
+                  ) -> pd.DataFrame:
+        """Every remembered move that began in grid ``key`` before ``as_of``: where
+        it went, and whether it was made at this time of year."""
+        columns = ["To Grid", "Moves", "This Season", "Last"]
+        if not len(self):
+            return pd.DataFrame(columns=columns)
+        today = np.datetime64(pd.Timestamp(as_of).normalize(), "D")
+        mask = (grid_key(self.origin) == key) & (self.known <= today)
+        if not mask.any():
+            return pd.DataFrame(columns=columns)
+        frame = pd.DataFrame({
+            "To Grid": grid_key(self.dest[mask]),
+            "This Season": _day_gap(self.doy[mask], pd.Timestamp(as_of).dayofyear)
+            <= season_days,
+            "Last": self.known[mask],
+        })
+        out = frame.groupby("To Grid").agg(Moves=("Last", "size"),
+                                           **{"This Season": ("This Season", "sum"),
+                                              "Last": ("Last", "max")})
+        return out.sort_values(["This Season", "Moves"], ascending=False).reset_index()
 
 
 def _movement(parts: Dict[str, object], heading: bool) -> np.ndarray:
@@ -910,23 +1108,38 @@ def _movement(parts: Dict[str, object], heading: bool) -> np.ndarray:
 
 
 def _combine(parts: Dict[str, object], config: Config,
-             cache: Optional[Dict[bool, np.ndarray]] = None) -> np.ndarray:
-    heading = bool(config.heading and "heading" in parts)
-    if cache is not None and heading in cache:
-        move = cache[heading]
+             cache: Optional[Dict[object, np.ndarray]] = None) -> np.ndarray:
+    """The forecast for ``config``: movement times the place parts, then the
+    route memory mixed in by how much of it there is."""
+    base_key = ("base", config.places, config.season, config.heading, config.own)
+    if cache is not None and base_key in cache:
+        p = cache[base_key]
     else:
-        move = _movement(parts, heading)
+        heading = bool(config.heading and "heading" in parts)
+        if cache is not None and heading in cache:
+            move = cache[heading]
+        else:
+            move = _movement(parts, heading)
+            if cache is not None:
+                cache[heading] = move
+        log_p = np.log(move + _TINY)
+        if config.places:
+            key = "season" if config.season and "season" in parts else "places"
+            log_p = log_p + config.places * parts[key]
+        if config.own and "own" in parts:
+            log_p = log_p + parts["own"]
+        log_p -= log_p.max()
+        p = np.exp(log_p)
+        p /= p.sum()
         if cache is not None:
-            cache[heading] = move
-    log_p = np.log(move + _TINY)
-    if config.places:
-        key = "season" if config.season and "season" in parts else "places"
-        log_p = log_p + config.places * parts[key]
-    if config.own and "own" in parts:
-        log_p = log_p + parts["own"]
-    log_p -= log_p.max()
-    p = np.exp(log_p)
-    return p / p.sum()
+            cache[base_key] = p
+    if config.routes:
+        key = "routes_season" if config.route_season else "routes"
+        if key in parts:
+            n = float(parts[key + "_n"])
+            weight = n / (n + config.routes)
+            p = (1 - weight) * p + weight * parts[key]
+    return p
 
 
 def zone(prob: np.ndarray, mass: float = LIKELY_MASS) -> np.ndarray:
@@ -1070,14 +1283,16 @@ def _situations(table: pd.DataFrame, grid: Grid, history: _History) -> List[Situ
     prev = table["Prev Angle"].to_numpy(dtype=float)
     prev_km = table["Prev Distance (km)"].to_numpy(dtype=float)
     out = []
-    for i, (unit, social, start, days, span) in enumerate(zip(
+    mornings = table["As Of"].to_numpy() if "As Of" in table else [None] * len(table)
+    for i, (unit, social, start, days, span, as_of) in enumerate(zip(
             table["Unit"].to_numpy(), table["Class"].to_numpy(),
             table["From Date"].to_numpy(), table["Days"].to_numpy(),
-            table["Span"].to_numpy())):
+            table["Span"].to_numpy(), mornings)):
         usable = np.isfinite(prev[i]) and prev_km[i] >= MIN_MOVE_KM
         out.append(Situation(origin[i], float(days), str(social),
                              float(prev[i]) if usable else None, history.own(unit, start),
-                             int(span), history.turns(unit, start)))
+                             int(span), history.turns(unit, start),
+                             pd.Timestamp(as_of) if as_of is not None else None))
     return out
 
 
@@ -1137,7 +1352,7 @@ def _cases(step_table: pd.DataFrame, horizon_days: int, begin: pd.Timestamp,
 # ---------------------------------------------------------------------------
 # Bump when the method changes, so a training made by older code is never
 # reused by newer code.
-TRAINING_VERSION = 2
+TRAINING_VERSION = 3
 MIN_HISTORY_DAYS = 60
 
 
@@ -1194,7 +1409,8 @@ class Training:
     # must not be able to run anything. It holds scores and settings only.
     def to_dict(self) -> dict:
         def key(c: Config) -> str:
-            return f"{c.places:g}|{int(c.season)}|{int(c.heading)}|{int(c.own)}"
+            return (f"{c.places:g}|{int(c.season)}|{int(c.heading)}|{int(c.own)}|"
+                    f"{c.routes:g}|{int(c.route_season)}")
         return {
             "horizon_days": int(self.horizon_days), "version": int(self.version),
             "with_season": bool(self.with_season), "reports": int(self.reports),
@@ -1218,9 +1434,9 @@ class Training:
     @classmethod
     def from_dict(cls, data: dict) -> "Training":
         def config(text: str) -> Config:
-            places, season, heading, own = text.split("|")
+            places, season, heading, own, routes, route_season = text.split("|")
             return Config(float(places), bool(int(season)), bool(int(heading)),
-                          bool(int(own)))
+                          bool(int(own)), float(routes), bool(int(route_season)))
         months = [MonthResult(
             str(m["month"]), str(m["fingerprint"]),
             {config(k): float(v) for k, v in m["scores"].items()},
@@ -1346,13 +1562,13 @@ def _origins(df: pd.DataFrame, units: pd.Series, step_table: pd.DataFrame) -> pd
 def _score_cases(rows: pd.DataFrame, grid: Grid, history: "_History", model: StepModel,
                  priors: Dict[str, np.ndarray], candidates: List[Config], chosen: Config,
                  likely_mass: float, circle_r: Optional[float], result: "MonthResult",
-                 memo: Dict[tuple, tuple]) -> None:
+                 memo: Dict[tuple, tuple], routes: Optional[Routes] = None) -> None:
     """Score one morning's forecasts of groups whose next report came in time."""
     targets = grid.project(rows["To Latitude"].values, rows["To Longitude"].values)
     for situation, target, key, unit, start in zip(
             _situations(rows, grid, history), targets, grid.key_of(targets),
             rows["Unit"].to_numpy(), rows["From Date"].to_numpy()):
-        local, parts = _components(situation, grid, model, priors)
+        local, parts = _components(situation, grid, model, priors, routes)
         memo[(int(unit), np.datetime64(start, "ns"))] = (local, parts)
         at = int(np.searchsorted(local.keys, key))
         at = at if at < len(local.keys) and local.keys[at] == key else -1
@@ -1387,7 +1603,7 @@ def _score_landscape(mornings: pd.DataFrame, as_of: pd.Timestamp, df_days: np.nd
                      df_keys: np.ndarray, horizon_days: int, grid: Grid, history: "_History",
                      model: StepModel, priors: Dict[str, np.ndarray], chosen: Config,
                      likely_mass: float, result: "MonthResult",
-                     memo: Dict[tuple, tuple]) -> None:
+                     memo: Dict[tuple, tuple], routes: Optional[Routes] = None) -> None:
     """The morning's map as a whole, against every report of the days after.
 
     Every group the page would have shown gets its likely zone, whether or
@@ -1401,25 +1617,33 @@ def _score_landscape(mornings: pd.DataFrame, as_of: pd.Timestamp, df_days: np.nd
     if not after.any():
         return
     latest = mornings.groupby("Unit").tail(1)
-    zone_keys, circle_keys = set(), set()
+    zone_keys = set()
+    centres, radii = [], []
     for row in latest.itertuples(index=False):
         since = int((as_of - pd.Timestamp(row.Day)).days)
         days, span = lead(since, horizon_days)
         prev = float(row.Prev) if np.isfinite(row.Prev) else None
         situation = Situation(grid.project(row.Latitude, row.Longitude)[0], days, row.Class,
                               prev, history.own(row.Unit, row.Date), span,
-                              history.turns(row.Unit, row.Date))
+                              history.turns(row.Unit, row.Date), as_of)
         known = memo.get((int(row.Unit), np.datetime64(row.Date, "ns")))
-        local, parts = known if known is not None else _components(situation, grid, model,
-                                                                    priors)
+        local, parts = known if known is not None else _components(
+            situation, grid, model, priors, routes, only=chosen)
         likely = zone(_combine(parts, chosen), likely_mass)
         zone_keys.update(local.keys[likely].tolist())
-        radius = float(np.sqrt(likely.sum() * grid.cell_km ** 2 / np.pi))
-        circle_keys.update(grid.near(situation.xy, radius).keys.tolist())
+        centres.append(situation.xy)
+        radii.append(float(np.sqrt(likely.sum() * grid.cell_km ** 2 / np.pi)))
     targets = df_keys[after]
     result.field_reports += int(len(targets))
     result.field_hits += int(sum(k in zone_keys for k in targets.tolist()))
-    result.field_circle_hits += int(sum(k in circle_keys for k in targets.tolist()))
+    # Same-size circles round each group's last report: a report is caught
+    # if its cell's centre lies in any of them.
+    cell = grid.cell_km
+    target_xy = np.column_stack([(targets % _KEY_STRIDE + 0.5) * cell,
+                                 (targets // _KEY_STRIDE + 0.5) * cell])
+    gap = np.hypot(target_xy[:, None, 0] - np.array(centres)[None, :, 0],
+                   target_xy[:, None, 1] - np.array(centres)[None, :, 1])
+    result.field_circle_hits += int((gap <= np.array(radii)[None, :]).any(axis=1).sum())
     result.field_mornings += 1
     result.field_area_sum += len(zone_keys) * grid.cell_km ** 2
 
@@ -1475,6 +1699,8 @@ def train(df: pd.DataFrame, horizon_days: int = 1, previous=None,
     all_steps = steps(df, units_all)
     history = _History(df, units_all, grid, all_steps)
     origins = _origins(df, units_all, all_steps)
+    # Every move, remembered from the day its second report came in.
+    routes = Routes.from_steps(all_steps, grid)
     df_days = df["Date"].dt.normalize().to_numpy()
     df_keys = grid.key_of(grid.project(df["Latitude"].values, df["Longitude"].values))
 
@@ -1525,11 +1751,11 @@ def train(df: pd.DataFrame, horizon_days: int = 1, previous=None,
                 memo: Dict[tuple, tuple] = {}
                 if rows is not None:
                     _score_cases(rows, grid, history, model, priors, candidates, chosen,
-                                 likely_mass, circle_r, result, memo)
+                                 likely_mass, circle_r, result, memo, routes)
                 if not mornings.empty:
                     _score_landscape(mornings, as_of, df_days, df_keys, horizon_days, grid,
                                      history, model, priors, chosen, likely_mass, result,
-                                     memo)
+                                     memo, routes)
         results.append(result)
         for c in candidates:
             scores[c] += result.scores[c]
@@ -1595,7 +1821,9 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
     likely_mass, possible_mass = record.masses if record is not None else (
         LIKELY_MASS, POSSIBLE_MASS)
     out = {"groups": pd.DataFrame(), "cells": pd.DataFrame(), "villages": pd.DataFrame(),
-           "trails": pd.DataFrame(), "steps_learned": 0, "config": config,
+           "trails": pd.DataFrame(), "next_grids": pd.DataFrame(),
+           "grid_memory": pd.DataFrame(), "grid_moves": pd.DataFrame(),
+           "steps_learned": 0, "config": config,
            "masses": (likely_mass, possible_mass), "cell_km": CELL_KM}
     history = df[df["Date"] < as_of.normalize() + pd.Timedelta(days=1)]
     if history.empty:
@@ -1615,6 +1843,7 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
 
     grid = Grid.around(history)
     tracks = _History(history, units, grid, learned)
+    routes = Routes.from_steps(learned, grid)
     recent = usage_prior(history, grid, as_of.normalize() + pd.Timedelta(days=1))
     priors = {"places": recent}
     seasonal = season_prior(history, grid, as_of, recent) if config.season else None
@@ -1631,7 +1860,12 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
     likely_any = np.zeros(size, dtype=bool)
     possible_any = np.zeros(size, dtype=bool)
     village_hits: Dict[int, Dict[str, object]] = {}
-    rows, trails = [], []
+    rows, trails, next_rows, memory_rows = [], [], [], []
+
+    def place(key: int) -> str:
+        if village_xy is None:
+            return ""
+        return _village_names(grid_centre(key)[None, :], village_xy, located)[0]
     for row, rec in zip(active.to_dict("records"), _records(active)):
         since = max((as_of.normalize() - pd.Timestamp(row["Date"]).normalize()).days, 0)
         days, span = lead(since, horizon_days)
@@ -1646,8 +1880,9 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
                 prev = float(final["Angle"])
         situation = Situation(origin, days, rec["social"], prev,
                               tracks.own(unit, pd.Timestamp(row["Date"])), span,
-                              tracks.turns(unit, pd.Timestamp(row["Date"])))
-        local, parts = _components(situation, grid, model, priors)
+                              tracks.turns(unit, pd.Timestamp(row["Date"])),
+                              as_of.normalize())
+        local, parts = _components(situation, grid, model, priors, routes, only=config)
         prob = _combine(parts, config)
         likely, possible = zone(prob, likely_mass), zone(prob, possible_mass)
         # The map covers the grid; a zone cell beyond its margin is not drawn.
@@ -1687,6 +1922,22 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
             most_likely_near = str(located.iloc[nearest]["Village"])
 
         moved = float(np.hypot(*offset))
+        here = int(grid_key(origin)[0])
+        chances = pd.Series(prob).groupby(grid_key(local.centres)).sum()
+        chances = chances.sort_values(ascending=False, kind="stable")
+        for rank, (key, chance) in enumerate(chances.head(NEXT_GRIDS).items(), start=1):
+            centre = from_plane(grid_centre(key)[None, :], grid.ref_lat)[0]
+            next_rows.append({"Group": label, "Rank": rank, "Grid": grid_label(key),
+                              "Near": place(key), "Chance": float(chance),
+                              "Stay": int(key) == here,
+                              "Latitude": float(centre[0]), "Longitude": float(centre[1])})
+        memory = routes.from_grid(here, as_of)
+        for item in memory.head(NEXT_GRIDS * 2).itertuples(index=False):
+            memory_rows.append({"Group": label, "From Grid": grid_label(here),
+                                "To Grid": grid_label(item[0]), "Near": place(item[0]),
+                                "Moves": int(item.Moves),
+                                "This Time of Year": int(item[2]),
+                                "Last": pd.Timestamp(item.Last)})
         rows.append({
             "Group": label,
             "Class": SOCIAL_LABELS.get(rec["social"], rec["social"]),
@@ -1705,6 +1956,12 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
             "Likely Zone (km2)": float(likely.sum() * grid.cell_km ** 2),
             "Villages in Likely Zone": ", ".join(sorted(set(near))[:6])
             + (f" and {len(set(near)) - 6} more" if len(set(near)) > 6 else ""),
+            "Grid": grid_label(here),
+            "Next Grids": "; ".join(
+                f"{grid_label(key)}{' (stays)' if int(key) == here else ''} "
+                f"{chance:.0%}" for key, chance in chances.head(NEXT_GRIDS).items()),
+            "Moves From Grid": int(memory["Moves"].sum()) if len(memory) else 0,
+            "This Time of Year": int(memory["This Season"].sum()) if len(memory) else 0,
             "Latitude": float(row["Latitude"]),
             "Longitude": float(row["Longitude"]),
             "Spot Latitude": float(best_latlon[0]),
@@ -1719,12 +1976,68 @@ def next_moves(df: pd.DataFrame, as_of: pd.Timestamp, horizon_days: int = 1,
     })
     out["groups"] = pd.DataFrame(rows).sort_values(["Days Ago", "Group"]).reset_index(drop=True)
     out["trails"] = pd.concat(trails, ignore_index=True) if trails else pd.DataFrame()
+    out["next_grids"] = pd.DataFrame(next_rows)
+    out["grid_memory"] = pd.DataFrame(memory_rows)
+    out["grid_moves"] = grid_moves(routes, grid, villages)
     if village_hits:
         table = pd.DataFrame(village_hits.values())
         table["_order"] = (table["Band"] != "Likely").astype(int)
         out["villages"] = table.sort_values(["_order", "From last report (km)"]).drop(
             columns="_order").reset_index(drop=True)
     return out
+
+
+NEXT_GRIDS = 3
+SEASON_MONTHS = {"Winter (Oct-Feb)": (10, 11, 12, 1, 2), "Summer (Mar-May)": (3, 4, 5),
+                 "Monsoon (Jun-Sep)": (6, 7, 8, 9)}
+
+
+def _village_names(xy: np.ndarray, village_xy: np.ndarray, villages: pd.DataFrame,
+                   within_km: float = 3.0) -> List[str]:
+    """The nearest village to each point, or "" beyond ``within_km``."""
+    from scipy.spatial import cKDTree
+
+    if not len(xy):
+        return []
+    distance, index = cKDTree(village_xy).query(np.atleast_2d(xy))
+    names = villages["Village"].astype(str).to_numpy()
+    return [str(names[k]) if d <= within_km else "" for d, k in zip(distance, index)]
+
+
+def grid_moves(routes: Routes, grid: Grid, villages: Optional[pd.DataFrame] = None
+               ) -> pd.DataFrame:
+    """The whole route memory: every pair of grids groups moved between,
+    how often, in which season, and when last."""
+    columns = ["From Grid", "From Near", "To Grid", "To Near", "Moves", *SEASON_MONTHS,
+               "Last", "From Latitude", "From Longitude", "To Latitude", "To Longitude"]
+    if not len(routes):
+        return pd.DataFrame(columns=columns)
+    month = pd.DatetimeIndex(routes.start).month
+    frame = pd.DataFrame({"From": grid_key(routes.origin), "To": grid_key(routes.dest),
+                          "Last": routes.known})
+    for name, months in SEASON_MONTHS.items():
+        frame[name] = np.isin(month, months)
+    table = frame.groupby(["From", "To"]).agg(
+        Moves=("Last", "size"), Last=("Last", "max"),
+        **{name: (name, "sum") for name in SEASON_MONTHS}).reset_index()
+    located = village_xy = None
+    if villages is not None and len(villages):
+        located = villages.dropna(subset=["Latitude", "Longitude"]).reset_index(drop=True)
+        village_xy = grid.project(located["Latitude"].values, located["Longitude"].values)
+    out = pd.DataFrame({"From Grid": [grid_label(k) for k in table["From"]],
+                        "To Grid": [grid_label(k) for k in table["To"]]})
+    for side, keys in (("From", table["From"]), ("To", table["To"])):
+        centres = np.array([grid_centre(k) for k in keys])
+        latlon = from_plane(centres, grid.ref_lat)
+        out[f"{side} Latitude"] = latlon[:, 0].round(5)
+        out[f"{side} Longitude"] = latlon[:, 1].round(5)
+        out[f"{side} Near"] = (_village_names(centres, village_xy, located)
+                               if village_xy is not None else "")
+    out["Moves"] = table["Moves"].to_numpy()
+    for name in SEASON_MONTHS:
+        out[name] = table[name].astype(int).to_numpy()
+    out["Last"] = pd.to_datetime(table["Last"].to_numpy())
+    return out[columns].sort_values(["Moves", "Last"], ascending=False).reset_index(drop=True)
 
 
 def recent_groups(df: pd.DataFrame, as_of: pd.Timestamp,

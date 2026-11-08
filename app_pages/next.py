@@ -19,7 +19,7 @@ import streamlit as st
 from app_pages.common import movement_training, next_moves_for
 from core import movement as mv
 from core.brief_insights import names, plural
-from core.map_engine import ZONE_COLORS, render_forecast_map
+from core.map_engine import NEXT_GRID_COLOR, ZONE_COLORS, render_forecast_map
 from core.ui import map_legend, section
 
 HORIZONS = {"Next 24 hours": 1, "Next 2 days": 2, "Next 3 days": 3}
@@ -106,6 +106,58 @@ def _turn_phrase(turns: dict, shares=None) -> str:
     return "groups mostly turn off their last direction"
 
 
+def _shown(table, groups: set):
+    if table is None or not len(table):
+        return pd.DataFrame()
+    return table[table["Group"].isin(groups)]
+
+
+def _grid_memory(groups: pd.DataFrame, memory: pd.DataFrame, next_grids: pd.DataFrame,
+                 all_moves, record: mv.TrackRecord) -> None:
+    """What the register remembers about the grids the groups are in now."""
+    st.markdown(f"**Grid memory: where groups went next from these {mv.GRID_KM:g} km grids**")
+    used = record.config.routes > 0
+    seasonal = record.config.route_season
+    if used:
+        st.caption("Tested on past months, this memory improved the forecast, so it is "
+                   "part of it" + (", weighted to moves made at this time of year"
+                                   if seasonal else "") + ".")
+    else:
+        st.caption("Tested on past months, this memory did not improve the forecast on "
+                   "this register, so the zones do not use it. It is shown as a record.")
+    if memory is None or memory.empty:
+        st.info("No group seen recently is in a grid any group has been tracked out of "
+                "before.")
+    else:
+        st.dataframe(
+            memory[["Group", "From Grid", "To Grid", "Near", "Moves", "This Time of Year",
+                    "Last"]],
+            hide_index=True, width="stretch",
+            column_config={
+                "To Grid": st.column_config.TextColumn("Went to grid"),
+                "Moves": st.column_config.NumberColumn(
+                    "Moves", help="Moves from the group's grid to this one, any group, any "
+                                  "year."),
+                "This Time of Year": st.column_config.NumberColumn(
+                    "This time of year",
+                    help=f"Of those, made within {mv.ROUTE_SEASON_DAYS:.0f} days of today's "
+                         "date in any year."),
+                "Last": st.column_config.DateColumn("Last", format="D MMM YYYY"),
+            })
+    left, right = st.columns(2)
+    if next_grids is not None and len(next_grids):
+        left.download_button(
+            "Next grids (CSV)",
+            next_grids.drop(columns=["Stay"], errors="ignore").to_csv(index=False)
+            .encode("utf-8"), "next_grids.csv", mime="text/csv", on_click="ignore")
+    if all_moves is not None and len(all_moves):
+        right.download_button(
+            "Every grid-to-grid move (CSV)", all_moves.to_csv(index=False).encode("utf-8"),
+            "grid_moves.csv", mime="text/csv", on_click="ignore",
+            help="The whole memory: each pair of grids groups moved between, how often, "
+                 "in which season, and when last.")
+
+
 def _scaling_phrase(alpha: float) -> str:
     if alpha >= 0.9:
         return "about as fast as travel in a straight line (four days, four times as far)"
@@ -149,25 +201,35 @@ def render(c) -> None:
                    else "No village sits in a likely zone."))
     st.markdown(f'<p class="ci-headline">{escape(headline)}</p>', unsafe_allow_html=True)
 
+    next_grids = _shown(out.get("next_grids"), shown)
+    memory = _shown(out.get("grid_memory"), shown)
     map_col, table_col = st.columns([3, 2], gap="medium")
     with map_col:
         render_forecast_map(out["cells"], groups, trails, villages, out.get("cell_km", 1.0),
                             style_name=c.basemap, show_boundaries=c.layer_boundaries,
-                            boundary_level=c.boundary_level)
-        map_legend("Zones", {band: {"accent": "#%02x%02x%02x" % rgb, "glyph": "",
-                                    "label": f"{band} (catches about {share})"}
-                             for (band, rgb), share in zip(ZONE_COLORS.items(),
-                                                           ("1 in 2", "4 in 5"))})
+                            boundary_level=c.boundary_level, next_grids=next_grids,
+                            grid_km=mv.GRID_KM)
+        legend = {band: {"accent": "#%02x%02x%02x" % rgb, "glyph": "",
+                         "label": f"{band} (catches about {share})"}
+                  for (band, rgb), share in zip(ZONE_COLORS.items(), ("1 in 2", "4 in 5"))}
+        legend["grid"] = {"accent": "#%02x%02x%02x" % NEXT_GRID_COLOR, "glyph": "",
+                          "label": f"Likely next {mv.GRID_KM:g} km grid, with its chance"}
+        map_legend("Zones", legend)
         st.caption("Green dots are each group's last report, with its recent trail; the "
-                   "short line points to its likeliest spot. Villages in a likely zone are "
+                   "short line points to its likeliest spot. Blue squares are the grids it "
+                   "is likeliest to be reported in next. Villages in a likely zone are "
                    "labelled.")
     with table_col:
         st.markdown("**Groups**")
         st.dataframe(
-            groups[["Group", "Most Likely", "Heading", "Last Seen", "Class", "Size",
-                    "Likely Zone (km2)", "Villages in Likely Zone"]],
+            groups[["Group", "Most Likely", "Next Grids", "Heading", "Last Seen", "Class",
+                    "Size", "Likely Zone (km2)", "Villages in Likely Zone"]],
             hide_index=True, width="stretch",
             column_config={
+                "Next Grids": st.column_config.TextColumn(
+                    "Next grids", width="medium",
+                    help=f"The {mv.GRID_KM:g} km grids it is likeliest to be reported in "
+                         "next, with their chance; '(stays)' is the grid it was last seen in."),
                 "Last Seen": st.column_config.DateColumn("Last seen", format="D MMM"),
                 "Heading": st.column_config.TextColumn(
                     "Heading", help="Direction of its last move, a day or more apart."),
@@ -194,6 +256,8 @@ def render(c) -> None:
                                villages.to_csv(index=False).encode("utf-8"),
                                "next_moves_villages.csv", mime="text/csv")
 
+    _grid_memory(groups, memory, next_grids, out.get("grid_moves"), record)
+
     with st.expander("How this is worked out, and what it cannot do", expanded=False):
         likely_mass, possible_mass = out.get("masses", (mv.LIKELY_MASS, mv.POSSIBLE_MASS))
         st.markdown(
@@ -215,6 +279,14 @@ def render(c) -> None:
             "- **Where**: places with earlier reports, recent ones counting more and "
             "optionally the same weeks of earlier years, and each group's own earlier "
             "reports.\n"
+            f"- **Grid memory**: every move is remembered as from one {mv.GRID_KM:g} km grid "
+            "to the next. From a group's grid, the moves that began there (or within about "
+            f"{mv.ROUTE_ORIGIN_KM:g} km) are weighted: recent ones more (half the weight "
+            f"after {mv.ROUTE_HALF_LIFE_DAYS / 365:.0f} years), moves of the same length "
+            "in days more, and, with the season on, moves made within about "
+            f"{mv.ROUTE_SEASON_DAYS:.0f} days of today's date in any year more. Where they "
+            "went is mixed into the forecast, counting for more the more moves there are "
+            "to go on.\n"
             "- **Which of these to use** is chosen from past months: the combination that "
             "forecast them best. On this register: "
             + (", ".join(record.config.parts()) if record.config.parts()
